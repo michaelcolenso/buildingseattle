@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Cloudflare Wrangler local state/cache
+.wrangler/
+
+# Generated datasets
+seattle_permits.jsonl
+seattle_contractors.jsonl
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local/editor artifacts
+.DS_Store
+*.log
+
+# Local agent/tooling state
+.superpowers/
