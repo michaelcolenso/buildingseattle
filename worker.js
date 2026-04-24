@@ -1914,6 +1914,7 @@ async function renderContractorPage(slug, env, request) {
         AVG(JulianDay(issued_date) - JulianDay(applied_date)) as avg_permit_days,
         AVG(JulianDay(completed_date) - JulianDay(issued_date)) as avg_build_days,
         COUNT(*) as total_count,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_count,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count
       FROM permits 
       WHERE contractor_id = ?
@@ -1942,6 +1943,7 @@ async function renderContractorPage(slug, env, request) {
 
   const permitDays = metrics.avg_permit_days ? Math.round(metrics.avg_permit_days) : "—";
   const buildDays = metrics.avg_build_days ? Math.round(metrics.avg_build_days) : "—";
+  const activeProjects = metrics.active_count || 0;
   const completionRate = metrics.total_count ? Math.round((metrics.completed_count / metrics.total_count) * 100) : 0;
 
   const html = `<!DOCTYPE html>
@@ -1950,10 +1952,10 @@ async function renderContractorPage(slug, env, request) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${contractor.name} — ${contractor.specialty || "Contractor"} | Seattle | Building Seattle</title>
-    <meta name="description" content="${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${contractor.active_projects || 0} active projects and ${permits.results.length} total permits. View project history and contact information.">
+    <meta name="description" content="${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.">
     <link rel="canonical" href="${canonical}">
     <meta property="og:title" content="${contractor.name} — ${contractor.specialty || "Contractor"} | Seattle | Building Seattle">
-    <meta property="og:description" content="${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${contractor.active_projects || 0} active projects.">
+    <meta property="og:description" content="${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects.">
     <meta property="og:type" content="profile">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary">
@@ -2065,7 +2067,7 @@ async function renderContractorPage(slug, env, request) {
                             <div style="font-size:0.75rem;color:#64748b">Completion Rate</div>
                         </div>
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${contractor.active_projects || 0}</div>
+                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${activeProjects}</div>
                             <div style="font-size:0.75rem;color:#64748b">Active Projects</div>
                         </div>
                     </div>
@@ -2287,8 +2289,18 @@ async function ingestContractor(request, env) {
   const data = await request.json();
 
   const stmt = env.DB.prepare(`
-        INSERT OR REPLACE INTO contractors (name, slug, specialty, description, license_number, years_active, phone, email, website)
+        INSERT INTO contractors (name, slug, specialty, description, license_number, years_active, phone, email, website)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          name = excluded.name,
+          specialty = excluded.specialty,
+          description = COALESCE(excluded.description, contractors.description),
+          license_number = COALESCE(excluded.license_number, contractors.license_number),
+          years_active = COALESCE(excluded.years_active, contractors.years_active),
+          phone = COALESCE(excluded.phone, contractors.phone),
+          email = COALESCE(excluded.email, contractors.email),
+          website = COALESCE(excluded.website, contractors.website),
+          updated_at = CURRENT_TIMESTAMP
     `);
 
   await stmt
@@ -2315,8 +2327,14 @@ async function ingestContractorBatch(request, env) {
 
   for (const item of items) {
     const stmt = env.DB.prepare(`
-            INSERT OR REPLACE INTO contractors (name, slug, specialty, license_number, years_active)
+            INSERT INTO contractors (name, slug, specialty, license_number, years_active)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+              name = excluded.name,
+              specialty = excluded.specialty,
+              license_number = COALESCE(excluded.license_number, contractors.license_number),
+              years_active = COALESCE(excluded.years_active, contractors.years_active),
+              updated_at = CURRENT_TIMESTAMP
         `);
     await stmt
       .bind(item.name, item.slug, item.specialty || null, item.license_number || null, item.years_active || null)

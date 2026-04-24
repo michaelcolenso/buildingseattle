@@ -221,7 +221,7 @@ function createEnv() {
               return { success: true };
             }
 
-            if (sql.includes("INSERT OR REPLACE INTO contractors")) {
+            if (sql.includes("INSERT INTO contractors")) {
               return { success: true };
             }
 
