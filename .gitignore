@@ -21,6 +21,7 @@ seattle_contractors.jsonl
 .env
 .env.*
 !.env.example
+.dev.vars
 
 # Local/editor artifacts
 .DS_Store

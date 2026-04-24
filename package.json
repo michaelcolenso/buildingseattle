@@ -1,0 +1,9 @@
+{
+  "name": "buildingseattle",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "refresh-data": "uv run python sdci_scraper.py && uv run python direct_import.py",
+    "test": "node --test"
+  }
+}
