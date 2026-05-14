@@ -162,10 +162,17 @@ export default {
     }
   },
 
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(runScheduledIngest(env));
+  async scheduled(_event, env, _ctx) {
+    await runScheduledIngest(env);
   },
 };
+
+const SDCI_ENDPOINT = "https://data.seattle.gov/resource/k44w-2dcq.json";
+const SDCI_SELECT_FIELDS = [
+  "permitnum", "permitclass", "permittypemapped", "description", "housingunits", "statuscurrent",
+  "originaladdress1", "contractorcompanyname", "applieddate", "issueddate", "completeddate",
+  "estprojectcost", "latitude", "longitude"
+].join(",");
 
 function timeAgo(date) {
   const seconds = Math.floor((new Date() - date) / 1000);
@@ -2917,6 +2924,157 @@ async function ingestContractorBatch(request, env) {
   return new Response(JSON.stringify({ processed: items.length }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+async function runScheduledIngest(env) {
+  const startTime = new Date();
+  try {
+    const response = await fetch(`${SDCI_ENDPOINT}?$select=${encodeURIComponent(SDCI_SELECT_FIELDS)}&$where=${encodeURIComponent("applieddate > '2022-01-01'")}&$order=${encodeURIComponent("applieddate DESC")}&$limit=2000`);
+    if (!response.ok) {
+      throw new Error(`SDCI request failed: ${response.status}`);
+    }
+
+    const records = await response.json();
+    const contractors = new Set();
+    let added = 0;
+    let updated = 0;
+
+    for (const record of records) {
+      const permitNumber = record.permitnum;
+      if (!permitNumber) continue;
+
+      const contractorName = record.contractorcompanyname?.trim();
+      if (contractorName) {
+        contractors.add(contractorName);
+      }
+    }
+
+    for (const name of contractors) {
+      const slug = slugify(name);
+      await env.DB.prepare(`
+        INSERT INTO contractors (name, slug, specialty)
+        VALUES (?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          name = excluded.name,
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(name, slug, null).run();
+    }
+
+    for (const record of records) {
+      const permitNumber = record.permitnum;
+      if (!permitNumber) continue;
+
+      let contractorId = null;
+      const contractorName = record.contractorcompanyname?.trim();
+      if (contractorName) {
+        const contractor = await env.DB.prepare("SELECT id FROM contractors WHERE name = ? COLLATE NOCASE").bind(contractorName).first();
+        contractorId = contractor?.id || null;
+      }
+
+      const existing = await env.DB.prepare("SELECT id FROM permits WHERE permit_number = ?").bind(permitNumber).first();
+
+      await env.DB.prepare(`
+        INSERT OR REPLACE INTO permits (permit_number, contractor_id, applicant_name, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        permitNumber,
+        contractorId,
+        null,
+        record.originaladdress1 || null,
+        detectNeighborhood(record.latitude, record.longitude),
+        classifyPermitType(record.permitclass, record.permittypemapped),
+        extractValue(record.estprojectcost),
+        mapPermitStatus(record.statuscurrent),
+        record.description || null,
+        Number(record.housingunits || 0),
+        extractDate(record.applieddate),
+        extractDate(record.issueddate),
+        extractDate(record.completeddate),
+      ).run();
+
+      if (existing) updated++;
+      else added++;
+    }
+
+    await logIngest(env, {
+      run_type: "scheduled_refresh",
+      source: "cloudflare_cron",
+      status: "success",
+      records_added: added,
+      records_updated: updated,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+  } catch (error) {
+    await logIngest(env, {
+      run_type: "scheduled_refresh",
+      source: "cloudflare_cron",
+      status: "error",
+      error_message: error.message,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+    throw error;
+  }
+}
+
+function slugify(name) {
+  return String(name || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/[\s-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function classifyPermitType(permitClass, permitTypeMapped) {
+  const pc = String(permitClass || "").toLowerCase();
+  if (pc === "commercial" || pc === "institutional") return "commercial";
+  if (pc === "single family/duplex" || pc === "multifamily") return "residential";
+  if (pc === "industrial") return "industrial";
+  if (pc === "vacant land") return "land";
+
+  const pt = String(permitTypeMapped || "").toLowerCase();
+  if (pt.includes("demolition")) return "demolition";
+  if (pt.includes("grading")) return "grading";
+  if (pt.includes("roof")) return "residential";
+  return "other";
+}
+
+function detectNeighborhood(lat, lng) {
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return "Other";
+
+  if (latNum >= 47.6 && latNum <= 47.62 && lngNum >= -122.345 && lngNum <= -122.325) return "Downtown";
+  if (latNum >= 47.668 && latNum <= 47.692 && lngNum >= -122.41 && lngNum <= -122.37) return "Ballard";
+  if (latNum >= 47.53 && latNum <= 47.6 && lngNum >= -122.42 && lngNum <= -122.345) return "West Seattle";
+  if (latNum >= 47.61 && latNum <= 47.64 && lngNum >= -122.325 && lngNum <= -122.3) return "Capitol Hill";
+  if (latNum >= 47.49 && latNum <= 47.74 && lngNum >= -122.44 && lngNum <= -122.24) return "Other Seattle";
+  return "Other";
+}
+
+function mapPermitStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s.includes("issue") || s.includes("active") || s.includes("approved")) return "active";
+  if (s.includes("pending") || s.includes("review") || s.includes("applied")) return "pending";
+  if (s.includes("complete") || s.includes("final") || s.includes("closed")) return "completed";
+  if (s.includes("expir")) return "expired";
+  if (s.includes("cancel")) return "cancelled";
+  return "new";
+}
+
+function extractDate(value) {
+  if (!value) return null;
+  const text = String(value);
+  return text.includes("T") ? text.split("T")[0] : text.slice(0, 10);
+}
+
+function extractValue(value) {
+  if (!value) return 0;
+  const cleaned = String(value).replace(/[$,\s]/g, "");
+  const parsed = Number.parseFloat(cleaned);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
 }
 
 async function checkAuth(request, env) {
