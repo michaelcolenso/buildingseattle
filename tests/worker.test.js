@@ -103,6 +103,18 @@ function createEnv() {
               return { results: statuses };
             }
 
+            if (sql.includes("SELECT id, name FROM contractors")) {
+              return { results: contractors.map((contractor) => ({ id: contractor.id, name: contractor.name })) };
+            }
+
+            if (sql.includes("SELECT permit_number FROM permits WHERE permit_number IN")) {
+              return {
+                results: permits
+                  .filter((permit) => params.includes(permit.permit_number))
+                  .map((permit) => ({ permit_number: permit.permit_number })),
+              };
+            }
+
             if (sql.includes("FROM permits p") && sql.includes("WHERE 1=1")) {
               let results = permits.map((permit) => ({ ...permit }));
 
@@ -242,6 +254,13 @@ function createEnv() {
         };
 
         return statement;
+      },
+      async batch(statements) {
+        const results = [];
+        for (const statement of statements) {
+          results.push(await statement.run());
+        }
+        return results;
       },
     },
   };
