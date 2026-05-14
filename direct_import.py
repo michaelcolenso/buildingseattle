@@ -9,6 +9,7 @@ import os
 
 CF_WORKER_URL = "http://localhost:8787"  # Default to local dev; pass URL as arg for prod
 BATCH_SIZE = 100
+RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def read_dev_var(name, path=".dev.vars"):
@@ -49,6 +50,18 @@ def build_parser():
         action="store_true",
         help="Clear imported permits and contractors before importing the local JSONL files.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=BATCH_SIZE,
+        help=f"Records per ingest request. Defaults to {BATCH_SIZE}. Use 25-50 for production retries.",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=4,
+        help="Retries per failed batch for transient HTTP errors. Defaults to 4.",
+    )
     return parser
 
 
@@ -64,7 +77,7 @@ def chunk_items(items, batch_size):
         yield items[idx : idx + batch_size]
 
 
-async def import_batch_items(client, url, endpoint, items, label, batch_size):
+async def import_batch_items(client, url, endpoint, items, label, batch_size, retries=4):
     """Import records using the Worker batch endpoints."""
     total = len(items)
     if total == 0:
@@ -79,12 +92,7 @@ async def import_batch_items(client, url, endpoint, items, label, batch_size):
 
     for idx, batch in enumerate(batches, start=1):
         try:
-            response = await client.post(
-                f"{url}{endpoint}",
-                json={"items": batch},
-                timeout=60.0,
-                headers=headers,
-            )
+            response = await post_batch_with_retries(client, url, endpoint, batch, headers, retries)
             if response.status_code == 200:
                 payload = response.json()
                 processed = min(payload.get("processed", len(batch)), len(batch))
@@ -104,6 +112,34 @@ async def import_batch_items(client, url, endpoint, items, label, batch_size):
     if failed:
         print(f"  Failed: {failed}")
     return success
+
+
+async def post_batch_with_retries(client, url, endpoint, batch, headers, retries):
+    """Post one batch and retry transient Cloudflare/Worker failures."""
+    last_response = None
+    for attempt in range(retries + 1):
+        try:
+            response = await client.post(
+                f"{url}{endpoint}",
+                json={"items": batch},
+                timeout=90.0,
+                headers=headers,
+            )
+            if response.status_code == 200:
+                return response
+            last_response = response
+            if response.status_code not in RETRY_STATUS_CODES:
+                return response
+        except httpx.HTTPError as e:
+            last_response = e
+
+        if attempt < retries:
+            delay = min(2 ** attempt, 12)
+            await asyncio.sleep(delay)
+
+    if isinstance(last_response, httpx.HTTPError):
+        raise last_response
+    return last_response
 
 
 async def replace_all_data(client, url):
@@ -126,7 +162,7 @@ async def replace_all_data(client, url):
     )
 
 
-async def import_contractors(client, url, batch_size=BATCH_SIZE):
+async def import_contractors(client, url, batch_size=BATCH_SIZE, retries=4):
     """Import contractors from seattle_contractors.jsonl."""
     try:
         contractors = load_jsonl("seattle_contractors.jsonl")
@@ -141,10 +177,11 @@ async def import_contractors(client, url, batch_size=BATCH_SIZE):
         contractors,
         "contractors",
         batch_size,
+        retries,
     )
 
 
-async def import_permits(client, url, batch_size=BATCH_SIZE):
+async def import_permits(client, url, batch_size=BATCH_SIZE, retries=4):
     """Import permits from seattle_permits.jsonl."""
     permits = load_jsonl("seattle_permits.jsonl")
 
@@ -155,6 +192,7 @@ async def import_permits(client, url, batch_size=BATCH_SIZE):
         permits,
         "permits",
         batch_size,
+        retries,
     )
 
 
@@ -166,8 +204,8 @@ async def main():
     async with httpx.AsyncClient() as client:
         if args.replace_all:
             await replace_all_data(client, url)
-        await import_contractors(client, url)
-        await import_permits(client, url)
+        await import_contractors(client, url, batch_size=args.batch_size, retries=args.retries)
+        await import_permits(client, url, batch_size=args.batch_size, retries=args.retries)
 
     print(f"\nVerify at: {url}/api/permits")
     print(f"Stats at:  {url}/api/stats")
