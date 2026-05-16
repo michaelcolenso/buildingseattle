@@ -175,6 +175,15 @@ export default {
         return await renderPermitBrowser(request, env);
       }
 
+      if (path === "/permits/changes") {
+        ctx.waitUntil(logPageView(request, env, "/permits/changes"));
+        return await renderPermitChanges(request, env);
+      }
+
+      if (path === "/api/permits/changes") {
+        return await getPermitChanges(request, env);
+      }
+
       if (path.startsWith("/permits/")) {
         const permitNumber = decodeURIComponent(path.split("/permits/")[1] || "");
         if (permitNumber) {
@@ -2227,6 +2236,143 @@ async function renderContractorPage(slug, env, request) {
   return new Response(html, { headers: { "Content-Type": "text/html" } });
 }
 
+async function getPermitChanges(request, env) {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "24", 10), 168);
+  const { results } = await env.DB.prepare(`
+    SELECT p.permit_number, p.address, p.neighborhood, p.type, p.status,
+           p.value, p.description, p.applied_date, p.issued_date, p.completed_date,
+           p.updated_at, c.name as contractor_name
+    FROM permits p
+    LEFT JOIN contractors c ON p.contractor_id = c.id
+    WHERE p.updated_at >= datetime('now', ? || ' hours')
+    ORDER BY p.updated_at DESC
+    LIMIT 500
+  `).bind(`-${hours}`).all();
+  return new Response(JSON.stringify({ hours, count: results.length, permits: results }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+async function renderPermitChanges(request, env) {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "24", 10), 168);
+  const canonical = BASE_URL + "/permits/changes";
+
+  const { results: permits } = await env.DB.prepare(`
+    SELECT p.permit_number, p.address, p.neighborhood, p.type, p.status,
+           p.value, p.description, p.applied_date, p.issued_date, p.completed_date,
+           p.updated_at, p.created_at, c.name as contractor_name
+    FROM permits p
+    LEFT JOIN contractors c ON p.contractor_id = c.id
+    WHERE p.updated_at >= datetime('now', ? || ' hours')
+    ORDER BY p.updated_at DESC
+    LIMIT 500
+  `).bind(`-${hours}`).all();
+
+  const statusBadge = (s) => {
+    const colors = { active: "#16a34a", pending: "#d97706", completed: "#6366f1", expired: "#dc2626", cancelled: "#6b7280", new: "#0ea5e9" };
+    const c = colors[s] || "#6b7280";
+    return `<span style="display:inline-block;padding:0.2rem 0.6rem;border-radius:9999px;font-size:0.75rem;font-weight:600;background:${c}20;color:${c};border:1px solid ${c}40;">${s}</span>`;
+  };
+
+  const isNew = (p) => {
+    if (!p.created_at || !p.updated_at) return false;
+    return Math.abs(new Date(p.updated_at) - new Date(p.created_at)) < 5000;
+  };
+
+  const rows = permits.map(p => `
+    <tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:0.75rem 1rem;">
+        <a href="/permits/${encodeURIComponent(p.permit_number)}" style="font-weight:600;color:var(--accent);text-decoration:none;">${p.permit_number}</a>
+        ${isNew(p) ? `<span style="margin-left:0.4rem;font-size:0.7rem;font-weight:700;color:#0ea5e9;text-transform:uppercase;">New</span>` : ""}
+      </td>
+      <td style="padding:0.75rem 1rem;font-size:0.875rem;">${p.address || ""}</td>
+      <td style="padding:0.75rem 1rem;font-size:0.875rem;">${p.neighborhood || ""}</td>
+      <td style="padding:0.75rem 1rem;">${statusBadge(p.status || "new")}</td>
+      <td style="padding:0.75rem 1rem;font-size:0.875rem;">${p.contractor_name || "—"}</td>
+      <td style="padding:0.75rem 1rem;font-size:0.8rem;color:var(--muted);">${p.updated_at ? new Date(p.updated_at).toLocaleString("en-US", { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" }) : "—"}</td>
+    </tr>`).join("");
+
+  const hourOptions = [6, 24, 48, 72, 168].map(h =>
+    `<option value="${h}"${h === hours ? " selected" : ""}>${h === 168 ? "7 days" : h === 24 ? "24 hours" : `${h}h`}</option>`
+  ).join("");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recent Permit Changes | Building Seattle</title>
+  <meta name="description" content="Seattle construction permits with status changes in the last 24 hours.">
+  <link rel="canonical" href="${canonical}">
+  <style>
+    :root { --bg:#0f1117;--surface:#1a1d27;--border:#2a2d3a;--text:#e2e8f0;--muted:#64748b;--accent:#3b82f6; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;}
+    .nav{padding:1rem 2rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:2rem;}
+    .nav a{color:var(--muted);text-decoration:none;font-size:0.875rem;}
+    .nav a:hover{color:var(--text);}
+    .nav .brand{color:var(--text);font-weight:700;font-size:1.1rem;}
+    .container{max-width:1200px;margin:0 auto;padding:2rem;}
+    h1{font-size:1.75rem;font-weight:700;margin-bottom:0.5rem;}
+    .subtitle{color:var(--muted);margin-bottom:1.5rem;font-size:0.95rem;}
+    .controls{display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap;}
+    select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.75rem;border-radius:0.5rem;font-size:0.875rem;}
+    .count{font-size:0.875rem;color:var(--muted);}
+    .table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:0.75rem;}
+    table{width:100%;border-collapse:collapse;background:var(--surface);}
+    thead tr{background:var(--bg);}
+    th{padding:0.75rem 1rem;text-align:left;font-size:0.75rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid var(--border);}
+    tbody tr:hover{background:#ffffff08;}
+    .empty{padding:3rem;text-align:center;color:var(--muted);}
+    .api-link{margin-top:1.5rem;font-size:0.8rem;color:var(--muted);}
+    .api-link a{color:var(--accent);text-decoration:none;}
+  </style>
+</head>
+<body>
+<nav class="nav">
+  <a href="/" class="brand">Building Seattle</a>
+  <a href="/permits">All Permits</a>
+  <a href="/permits/changes" style="color:var(--text);">Recent Changes</a>
+</nav>
+<div class="container">
+  <h1>Recent Permit Changes</h1>
+  <p class="subtitle">Permits updated by the City of Seattle in the selected window, including new filings and status changes.</p>
+  <div class="controls">
+    <form method="get" style="display:flex;align-items:center;gap:0.5rem;">
+      <label for="hours" style="font-size:0.875rem;color:var(--muted);">Show last</label>
+      <select id="hours" name="hours" onchange="this.form.submit()">
+        ${hourOptions}
+      </select>
+    </form>
+    <span class="count">${permits.length} permit${permits.length !== 1 ? "s" : ""}</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Permit #</th>
+          <th>Address</th>
+          <th>Neighborhood</th>
+          <th>Status</th>
+          <th>Contractor</th>
+          <th>Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows || `<tr><td colspan="6" class="empty">No permits updated in the last ${hours} hours.</td></tr>`}
+      </tbody>
+    </table>
+  </div>
+  <p class="api-link">JSON: <a href="/api/permits/changes?hours=${hours}">/api/permits/changes?hours=${hours}</a></p>
+</div>
+</body>
+</html>`;
+
+  return new Response(html, { headers: { ...corsHeaders, "Content-Type": "text/html;charset=UTF-8" } });
+}
+
 async function scheduledSync(env) {
   const startTime = new Date();
 
@@ -2310,9 +2456,22 @@ async function scheduledSync(env) {
         ).bind(permitNum).first();
 
         await env.DB.prepare(`
-          INSERT OR REPLACE INTO permits
+          INSERT INTO permits
             (permit_number, contractor_id, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(permit_number) DO UPDATE SET
+            contractor_id = excluded.contractor_id,
+            address = excluded.address,
+            neighborhood = excluded.neighborhood,
+            type = excluded.type,
+            value = excluded.value,
+            status = excluded.status,
+            description = excluded.description,
+            housing_units = excluded.housing_units,
+            applied_date = excluded.applied_date,
+            issued_date = excluded.issued_date,
+            completed_date = excluded.completed_date,
+            updated_at = CURRENT_TIMESTAMP
         `).bind(
           permitNum,
           contractorId,
