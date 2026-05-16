@@ -2259,8 +2259,8 @@ async function scheduledSync(env) {
         "$select": SOCRATA_SELECT,
         "$limit": String(PAGE_SIZE),
         "$offset": String(offset),
-        "$order": "applieddate DESC",
-        "$where": `applieddate > '${sinceDate}'`,
+        "$order": ":updated_at DESC",
+        "$where": `:updated_at > '${sinceDate}'`,
       });
 
       const resp = await fetch(`${SOCRATA_URL}?${params}`, {
