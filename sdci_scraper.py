@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # sdci_scraper.py - Fetches real Seattle permit data from Seattle Open Data Portal
 
+import argparse
 import asyncio
 import httpx
 from datetime import datetime
@@ -179,7 +180,25 @@ def slugify(name):
     return slug.strip('-')
 
 
-async def fetch_seattle_permits(total=5000, page_size=1000):
+STATUS_FILTER_MAP = {
+    "active":   "(statuscurrent LIKE '%Issue%' OR statuscurrent LIKE '%Active%' OR statuscurrent LIKE '%Approved%')",
+    "pending":  "(statuscurrent LIKE '%Pending%' OR statuscurrent LIKE '%Review%' OR statuscurrent LIKE '%Applied%')",
+    "completed":"(statuscurrent LIKE '%Complete%' OR statuscurrent LIKE '%Final%' OR statuscurrent LIKE '%Closed%')",
+    "expired":  "(statuscurrent LIKE '%Expir%')",
+    "cancelled":"(statuscurrent LIKE '%Cancel%')",
+    "new":      "(statuscurrent IS NULL OR statuscurrent = '')",
+}
+
+
+def build_status_filter(status):
+    """Build a SODA $where clause fragment for a given simplified status."""
+    if not status:
+        return None
+    s = status.lower().strip()
+    return STATUS_FILTER_MAP.get(s)
+
+
+async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
     """Fetch permits from Seattle Open Data Portal with pagination."""
 
     url = "https://data.seattle.gov/resource/k44w-2dcq.json"
@@ -199,6 +218,11 @@ async def fetch_seattle_permits(total=5000, page_size=1000):
         "User-Agent": "BuildingSeattle-Scraper/2.0",
     }
 
+    where_clause = "applieddate > '2022-01-01'"
+    status_where = build_status_filter(status_filter)
+    if status_where:
+        where_clause += f" AND {status_where}"
+
     all_data = []
     async with httpx.AsyncClient() as client:
         offset = 0
@@ -209,7 +233,7 @@ async def fetch_seattle_permits(total=5000, page_size=1000):
                 "$limit": batch_size,
                 "$offset": offset,
                 "$order": "applieddate DESC",
-                "$where": "applieddate > '2022-01-01'",
+                "$where": where_clause,
             }
 
             print(f"Fetching records {offset+1}-{offset+batch_size}...")
@@ -339,8 +363,34 @@ def print_stats(permits, contractors):
     print(f"\n  Neighborhood coverage: {named_count}/{len(permits)} ({100*named_count/len(permits):.1f}%) matched to named neighborhoods")
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(description="Scrape Seattle permits from Open Data Portal.")
+    parser.add_argument(
+        "--total",
+        type=int,
+        default=5000,
+        help="Total permits to fetch. Defaults to 5000.",
+    )
+    parser.add_argument(
+        "--page-size",
+        type=int,
+        default=1000,
+        help="Records per API page. Defaults to 1000.",
+    )
+    parser.add_argument(
+        "--status",
+        type=str,
+        choices=["active", "pending", "completed", "expired", "cancelled", "new"],
+        help="Only fetch permits with this status.",
+    )
+    return parser
+
+
 async def main():
-    permits, contractors = await fetch_seattle_permits(total=5000)
+    args = build_parser().parse_args()
+    permits, contractors = await fetch_seattle_permits(
+        total=args.total, page_size=args.page_size, status_filter=args.status
+    )
 
     if not permits:
         print("\nNo permits fetched from API")

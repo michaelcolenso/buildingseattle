@@ -310,7 +310,18 @@ export default {
       );
     }
   },
+
+  async scheduled(_event, env, _ctx) {
+    await runScheduledIngest(env);
+  },
 };
+
+const SDCI_ENDPOINT = "https://data.seattle.gov/resource/k44w-2dcq.json";
+const SDCI_SELECT_FIELDS = [
+  "permitnum", "permitclass", "permittypemapped", "description", "housingunits", "statuscurrent",
+  "originaladdress1", "contractorcompanyname", "applieddate", "issueddate", "completeddate",
+  "estprojectcost", "latitude", "longitude"
+].join(",");
 
 function timeAgo(date) {
   const seconds = Math.floor((new Date() - date) / 1000);
@@ -404,7 +415,7 @@ async function handleRoot(request, env) {
     <meta property="og:image:height" content="630">
     <meta name="twitter:image" content="${BASE_URL}/og-image.png">
     <style>
-        :root { --primary: #0f172a; --accent: #3b82f6; --bg: #ffffff; --bg-alt: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; }
+        :root { --primary: #0f172a; --accent: #3b82f6; --bg: #ffffff; --bg-alt: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; --steel: #475569; --amber: #f59e0b; --success: #10b981; --danger: #ef4444; --shadow: 0 22px 60px rgba(15,23,42,0.14); }
         @media (prefers-color-scheme: dark) { :root { --primary: #f8fafc; --bg: #0f172a; --bg-alt: #1e293b; --text: #e2e8f0; --text-muted: #94a3b8; --border: #334155; } }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
@@ -428,8 +439,9 @@ async function handleRoot(request, env) {
         .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; font-size: 0.875rem; }
         .btn-primary { background: var(--accent); color: white; }
         .btn-primary:hover { background: #2563eb; transform: translateY(-1px); }
-        .hero { padding-top: 8rem; padding-bottom: 4rem; position: relative; overflow: hidden; }
+        .hero { padding-top: 8rem; padding-bottom: 4rem; position: relative; overflow: hidden; min-height: 760px; display: flex; align-items: center; }
         .hero::before { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(180deg, rgba(15,23,42,0.25) 0%, rgba(15,23,42,0.6) 100%); z-index: 1; pointer-events: none; }
+        .hero::after { content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: 0.22; background-image: linear-gradient(rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px); background-size: 72px 72px; mask-image: linear-gradient(90deg, transparent, #000 18%, #000 78%, transparent); }
         #skyline { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; }
         .hero .container { position: relative; z-index: 2; }
         .hero h1, .hero .stat-value { color: #ffffff; text-shadow: 0 2px 20px rgba(0,0,0,0.4); }
@@ -443,22 +455,37 @@ async function handleRoot(request, env) {
         .hero h1 { font-size: 3rem; line-height: 1.1; font-weight: 800; margin-bottom: 1.5rem; letter-spacing: -0.02em; }
         @media (min-width: 768px) { .hero h1 { font-size: 4rem; } }
         .hero p { font-size: 1.25rem; margin-bottom: 2rem; max-width: 540px; }
-        .hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--border); }
+        .ops-strip { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.25rem 0 2rem; }
+        .ops-chip { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2.25rem; padding: 0.45rem 0.7rem; border: 1px solid rgba(255,255,255,0.18); background: rgba(15,23,42,0.42); color: rgba(255,255,255,0.86); backdrop-filter: blur(10px); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+        .ops-dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; background: var(--success); box-shadow: 0 0 0 0 rgba(16,185,129,0.45); animation: radarPulse 1.8s infinite; }
+        @keyframes radarPulse { 70% { box-shadow: 0 0 0 9px rgba(16,185,129,0); } 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); } }
+        .hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.85rem; margin-top: 3rem; padding-top: 0; border-top: 0; }
+        .stat-tile { position: relative; min-height: 112px; padding: 1rem; background: rgba(15,23,42,0.5); border: 1px solid rgba(255,255,255,0.16); box-shadow: 0 16px 50px rgba(2,6,23,0.22); backdrop-filter: blur(12px); overflow: hidden; }
+        .stat-tile::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: linear-gradient(90deg, var(--success), var(--accent), var(--amber)); transform-origin: left; transform: scaleX(var(--load, 0.18)); transition: transform 900ms cubic-bezier(.16,1,.3,1); }
+        .stat-kicker { color: rgba(255,255,255,0.58); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.35rem; }
         .stat-value { font-size: 2rem; font-weight: 800; color: var(--primary); }
         .stat-label { font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .stat-delta { margin-top: 0.5rem; color: rgba(255,255,255,0.68); font-size: 0.72rem; font-weight: 650; }
         .section-header { text-align: center; max-width: 600px; margin: 0 auto 4rem; }
         .section-header h2 { font-size: 2.5rem; font-weight: 800; color: var(--primary); margin-bottom: 1rem; }
         .section-header p { color: var(--text-muted); font-size: 1.125rem; }
         .live-data { padding: 6rem 0; background: var(--bg); }
         .data-grid { display: grid; grid-template-columns: 1fr; gap: 2rem; margin-top: 3rem; }
         @media (min-width: 768px) { .data-grid { grid-template-columns: repeat(2, 1fr); } }
-        .data-panel { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 1rem; overflow: hidden; }
+        .data-panel { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 0.75rem; overflow: hidden; box-shadow: 0 14px 45px rgba(15,23,42,0.06); }
         .panel-header { padding: 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
         .panel-header h3 { font-weight: 700; display: flex; align-items: center; gap: 0.5rem; }
         .live-indicator { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; font-weight: 600; color: #10b981; }
         .pulse { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         .panel-content { padding: 1.5rem; }
+        .ops-panel-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.65rem; padding: 0 1.5rem 1.35rem; border-bottom: 1px solid var(--border); }
+        .summary-cell { min-height: 76px; padding: 0.75rem; border: 1px solid var(--border); background: var(--bg); }
+        .summary-value { font-size: 1.2rem; font-weight: 850; color: var(--primary); line-height: 1.1; }
+        .summary-label { margin-top: 0.35rem; color: var(--text-muted); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+        .density-map { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; padding: 1.25rem 1.5rem 0; }
+        .density-cell { height: 18px; background: color-mix(in srgb, var(--accent) calc(var(--heat) * 1%), var(--border)); border: 1px solid color-mix(in srgb, var(--accent) calc(var(--heat) * 0.8%), transparent); transform: scaleY(0.35); transform-origin: bottom; animation: growCell 760ms cubic-bezier(.16,1,.3,1) forwards; animation-delay: calc(var(--i) * 24ms); }
+        @keyframes growCell { to { transform: scaleY(1); } }
         .list-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; margin: 0 -0.75rem; border-radius: 0.5rem; cursor: pointer; transition: all 0.2s ease; border-bottom: 1px solid var(--border); }
         .list-item:last-child { border-bottom: none; }
         .list-item:hover { background: rgba(59, 130, 246, 0.05); transform: translateX(4px); }
@@ -478,6 +505,9 @@ async function handleRoot(request, env) {
         .footer-bottom { padding-top: 2rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 1rem; align-items: center; }
         @media (min-width: 768px) { .footer-bottom { flex-direction: row; justify-content: space-between; } }
         .loading { padding: 2rem; text-align: center; color: var(--text-muted); }
+        .skeleton-stack { display: grid; gap: 0.85rem; }
+        .skeleton-row { height: 54px; border-radius: 0.5rem; background: linear-gradient(90deg, color-mix(in srgb, var(--border), transparent 20%), color-mix(in srgb, var(--bg), var(--border) 28%), color-mix(in srgb, var(--border), transparent 20%)); background-size: 240% 100%; animation: skeletonSweep 1.35s infinite; }
+        @keyframes skeletonSweep { to { background-position: -240% 0; } }
         .error { padding: 2rem; text-align: center; color: #ef4444; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; backdrop-filter: blur(4px); align-items: center; justify-content: center; }
         .modal.active { display: flex; }
@@ -491,6 +521,15 @@ async function handleRoot(request, env) {
         .loader { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: white; animation: spin 1s ease-in-out infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .hidden { display: none; }
+        @media (max-width: 767px) {
+          .hero { min-height: 690px; padding-top: 7rem; }
+          .hero-stats, .ops-panel-summary { grid-template-columns: 1fr; }
+          .stat-tile { min-height: 92px; }
+          .density-map { grid-template-columns: repeat(6, 1fr); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.001ms !important; }
+        }
     </style>
     <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","name":"Building Seattle","url":"https://buildingseattle.com","logo":"https://buildingseattle.com/og-image.png","description":"Real-time Seattle construction permits, contractor profiles, and development opportunities."},{"@type":"WebSite","name":"Building Seattle","url":"https://buildingseattle.com","potentialAction":{"@type":"SearchAction","target":"https://buildingseattle.com/permits?neighborhood={search_term_string}","query-input":"required name=search_term_string"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"}]}]}</script>
 </head>
@@ -512,17 +551,22 @@ async function handleRoot(request, env) {
         <div class="container">
             <div class="hero-grid">
                 <div class="hero-content">
-                    <div class="hero-badge"><span>🚀</span><span>Now tracking live permits</span></div>
+                    <div class="hero-badge"><span class="ops-dot"></span><span>Now tracking live permits</span></div>
                     <h1>Construction intelligence for the Seattle metro</h1>
                     <p>Track live Seattle permits, explore active contractors, and capture opportunities without bouncing between city portals and PDFs.</p>
+                    <div class="ops-strip">
+                        <div class="ops-chip"><span class="ops-dot"></span><span>Seattle DCI feed</span></div>
+                        <div class="ops-chip">Daily ingest</div>
+                        <div class="ops-chip">Permit value radar</div>
+                    </div>
                     <div style="display:flex;gap:1rem;flex-wrap:wrap;">
                         <a class="btn btn-primary" href="/permits">Browse Live Permits</a>
                         <button class="btn" style="background:var(--bg-alt);color:var(--text);border:1px solid var(--border);" onclick="document.getElementById('data').scrollIntoView({behavior:'smooth'})">View Live Data</button>
                     </div>
                     <div class="hero-stats" id="hero-stats">
-                        <div><div class="stat-value">—</div><div class="stat-label">Loading...</div></div>
-                        <div><div class="stat-value">—</div><div class="stat-label">Loading...</div></div>
-                        <div><div class="stat-value">$8B</div><div class="stat-label">Market Value</div></div>
+                        <div class="stat-tile"><div class="stat-kicker">Permits</div><div class="stat-value">—</div><div class="stat-label">Loading</div><div class="stat-delta">Waiting for D1</div></div>
+                        <div class="stat-tile"><div class="stat-kicker">Contractors</div><div class="stat-value">—</div><div class="stat-label">Loading</div><div class="stat-delta">Resolving links</div></div>
+                        <div class="stat-tile"><div class="stat-kicker">Pipeline</div><div class="stat-value">$—</div><div class="stat-label">Loading</div><div class="stat-delta">Summing project value</div></div>
                     </div>
                 </div>
             </div>
@@ -538,11 +582,22 @@ async function handleRoot(request, env) {
             <div class="data-grid" id="data-panels">
                 <div class="data-panel">
                     <div class="panel-header"><h3>Latest Permits</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
-                    <div class="panel-content"><div class="loading">Loading...</div></div>
+                    <div class="ops-panel-summary" id="permit-summary">
+                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Latest active</div></div>
+                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Latest pending</div></div>
+                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Avg value</div></div>
+                    </div>
+                    <div class="density-map" id="permit-density" aria-label="Permit density by recent record"></div>
+                    <div class="panel-content"><div class="skeleton-stack"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div></div>
                 </div>
                 <div class="data-panel">
                     <div class="panel-header"><h3>Top Contractors</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
-                    <div class="panel-content"><div class="loading">Loading...</div></div>
+                    <div class="ops-panel-summary" id="contractor-summary">
+                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Shown</div></div>
+                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">With active work</div></div>
+                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Top workload</div></div>
+                    </div>
+                    <div class="panel-content"><div class="skeleton-stack"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div></div>
                 </div>
             </div>
         </div>
@@ -567,14 +622,87 @@ async function handleRoot(request, env) {
     </footer>
 
     <script>
+        var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        function compactNumber(value) {
+            if (!value) return '0';
+            if (value >= 1000000000) return '$' + (value / 1000000000).toFixed(1) + 'B';
+            if (value >= 1000000) return '$' + (value / 1000000).toFixed(0) + 'M';
+            if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
+            return String(value);
+        }
+
+        function animateTextNumber(el, target, formatter) {
+            if (!el) return;
+            formatter = formatter || function(v) { return Math.round(v).toLocaleString(); };
+            if (reduceMotion) {
+                el.textContent = formatter(target);
+                return;
+            }
+            var start = performance.now();
+            var duration = 950;
+            function frame(now) {
+                var t = Math.min(1, (now - start) / duration);
+                var eased = 1 - Math.pow(1 - t, 4);
+                el.textContent = formatter(target * eased);
+                if (t < 1) requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+        }
+
+        function setHeroStats(stats) {
+            var totalValue = stats.total_value || 0;
+            var tiles = document.querySelectorAll('#hero-stats .stat-tile');
+            if (!tiles.length) return;
+            tiles[0].style.setProperty('--load', '1');
+            tiles[1].style.setProperty('--load', '0.74');
+            tiles[2].style.setProperty('--load', '0.92');
+            tiles[0].innerHTML = '<div class="stat-kicker">Permits</div><div class="stat-value" data-count="permits">0</div><div class="stat-label">Total permits</div><div class="stat-delta">' + (stats.active_permits || 0).toLocaleString() + ' active right now</div>';
+            tiles[1].innerHTML = '<div class="stat-kicker">Contractors</div><div class="stat-value" data-count="contractors">0</div><div class="stat-label">Tracked firms</div><div class="stat-delta">Linked to live permits</div>';
+            tiles[2].innerHTML = '<div class="stat-kicker">Pipeline</div><div class="stat-value" data-count="value">$0</div><div class="stat-label">Project value</div><div class="stat-delta">Average ' + compactNumber(stats.avg_value || 0) + ' per permit</div>';
+            animateTextNumber(document.querySelector('[data-count="permits"]'), stats.permits || 0);
+            animateTextNumber(document.querySelector('[data-count="contractors"]'), stats.contractors || 0);
+            animateTextNumber(document.querySelector('[data-count="value"]'), totalValue, compactNumber);
+        }
+
+        function normalizePermitPayload(payload) {
+            if (Array.isArray(payload)) return payload;
+            if (payload && Array.isArray(payload.results)) return payload.results;
+            return [];
+        }
+
+        function updatePermitSummary(permits) {
+            var active = 0, pending = 0, totalValue = 0;
+            for (var i = 0; i < permits.length; i++) {
+                if (permits[i].status === 'active') active++;
+                if (permits[i].status === 'pending') pending++;
+                totalValue += permits[i].value || 0;
+            }
+            var avg = permits.length ? totalValue / permits.length : 0;
+            document.getElementById('permit-summary').innerHTML =
+                '<div class="summary-cell"><div class="summary-value">' + active.toLocaleString() + '</div><div class="summary-label">Latest active</div></div>' +
+                '<div class="summary-cell"><div class="summary-value">' + pending.toLocaleString() + '</div><div class="summary-label">Latest pending</div></div>' +
+                '<div class="summary-cell"><div class="summary-value">' + compactNumber(avg) + '</div><div class="summary-label">Avg value</div></div>';
+
+            var density = document.getElementById('permit-density');
+            var sample = permits.slice(0, 36);
+            var maxValue = sample.reduce(function(max, p) { return Math.max(max, p.value || 0); }, 1);
+            density.innerHTML = sample.map(function(p, index) {
+                var heat = Math.max(18, Math.round(((p.value || 0) / maxValue) * 100));
+                return '<div class="density-cell" title="' + (p.neighborhood || 'Seattle') + ' · ' + compactNumber(p.value || 0) + '" style="--heat:' + heat + ';--i:' + index + '"></div>';
+            }).join('');
+        }
+
         fetch('/api/permits')
             .then(function(r) { return r.json(); })
-            .then(function(permits) {
+            .then(function(payload) {
+                var permits = normalizePermitPayload(payload);
                 window.__permitsData = permits;
 
                 // Latest permits panel
                 var panel = document.querySelectorAll('#data-panels .data-panel')[0].querySelector('.panel-content');
                 var recent = permits.slice(0, 6);
+                updatePermitSummary(permits);
                 var panelHtml = '';
                 for (var i = 0; i < recent.length; i++) {
                     var p = recent[i];
@@ -583,7 +711,7 @@ async function handleRoot(request, env) {
                     var value = (p.value || 0).toLocaleString();
                     var status = p.status || 'New';
                     var badgeClass = status === 'active' ? 'green' : 'blue';
-                    panelHtml += '<div class="list-item" style="cursor: pointer;" onclick="window.location=&grave;/permits/' + encodeURIComponent(p.permit_number) + '&grave;">';
+                    panelHtml += '<div class="list-item" style="cursor: pointer; animation: slideUp 420ms cubic-bezier(.16,1,.3,1) both; animation-delay:' + (i * 45) + 'ms" onclick="window.location=&grave;/permits/' + encodeURIComponent(p.permit_number) + '&grave;">';
                     panelHtml += '<div><div class="list-item-title">' + address + '</div>';
                     panelHtml += '<div class="list-item-meta">' + type + ' &bull; $' + value + '</div></div>';
                     panelHtml += '<span class="badge badge-' + badgeClass + '">' + status + '</span></div>';
@@ -598,14 +726,7 @@ async function handleRoot(request, env) {
         fetch('/api/stats')
             .then(function(r) { return r.json(); })
             .then(function(stats) {
-                var permits = stats.permits ? stats.permits.toLocaleString() : '0';
-                var contractors = stats.contractors ? stats.contractors.toLocaleString() : '0';
-                var totalValue = stats.total_value || 0;
-                var valueLabel = totalValue >= 1000000000 ? '$' + (totalValue / 1000000000).toFixed(1) + 'B' : '$' + (totalValue / 1000000).toFixed(0) + 'M';
-                document.getElementById('hero-stats').innerHTML = 
-                    '<div><div class="stat-value">' + permits + '</div><div class="stat-label">Total Permits</div></div>' +
-                    '<div><div class="stat-value">' + contractors + '</div><div class="stat-label">Contractors</div></div>' +
-                    '<div><div class="stat-value">' + valueLabel + '</div><div class="stat-label">Market Value</div></div>';
+                setHeroStats(stats);
             });
 
         fetch('/api/contractors')
@@ -620,9 +741,19 @@ async function handleRoot(request, env) {
                 }
 
                 var html = '';
+                var activeContractors = 0;
+                var topWorkload = 0;
+                for (var s = 0; s < contractors.length; s++) {
+                    if ((contractors[s].active_projects || 0) > 0) activeContractors++;
+                    topWorkload = Math.max(topWorkload, contractors[s].active_projects || 0);
+                }
+                document.getElementById('contractor-summary').innerHTML =
+                    '<div class="summary-cell"><div class="summary-value">' + contractors.length.toLocaleString() + '</div><div class="summary-label">Shown</div></div>' +
+                    '<div class="summary-cell"><div class="summary-value">' + activeContractors.toLocaleString() + '</div><div class="summary-label">With active work</div></div>' +
+                    '<div class="summary-cell"><div class="summary-value">' + topWorkload.toLocaleString() + '</div><div class="summary-label">Top workload</div></div>';
                 for (var i = 0; i < topContractors.length; i++) {
                     var c = topContractors[i];
-                    html += '<div class="list-item" style="cursor: pointer;" onclick="window.location=&grave;/contractor/' + encodeURIComponent(c.slug) + '&grave;">';
+                    html += '<div class="list-item" style="cursor: pointer; animation: slideUp 420ms cubic-bezier(.16,1,.3,1) both; animation-delay:' + (i * 45) + 'ms" onclick="window.location=&grave;/contractor/' + encodeURIComponent(c.slug) + '&grave;">';
                     html += '<div><div class="list-item-title">' + c.name + '</div>';
                     html += '<div class="list-item-meta">' + (c.specialty || 'Contractor') + ' &bull; ' + (c.active_projects || 0) + ' active projects</div></div>';
                     html += '<span class="badge badge-green">Active</span></div>';
@@ -841,7 +972,12 @@ async function handleRoot(request, env) {
       window.addEventListener('resize', resize);
       document.addEventListener('mousemove', function(e){ mouseX = e.clientX; mouseY = e.clientY; });
       resize();
-      fetch('/api/permits').then(function(r){ return r.json(); }).then(function(permits){ generateSkyline(permits); }).catch(function(){ generateSkyline([]); });
+      function normalizePermitPayload(payload) {
+        if (Array.isArray(payload)) return payload;
+        if (payload && Array.isArray(payload.results)) return payload.results;
+        return [];
+      }
+      fetch('/api/permits').then(function(r){ return r.json(); }).then(function(payload){ generateSkyline(normalizePermitPayload(payload)); }).catch(function(){ generateSkyline([]); });
       animId = requestAnimationFrame(render);
     })();
     </script>
@@ -2528,6 +2664,416 @@ async function logIngest(env, { run_type, source, status, records_added = 0, rec
   ).run();
 }
 
+const SDCI_PERMIT_URL = "https://data.seattle.gov/resource/k44w-2dcq.json";
+const SCHEDULED_INGEST_LIMIT = 5000;
+const SCHEDULED_INGEST_PAGE_SIZE = 1000;
+
+const NEIGHBORHOOD_BOUNDS = [
+  ["Ballard", 47.668, 47.692, -122.410, -122.370],
+  ["Crown Hill", 47.692, 47.710, -122.390, -122.370],
+  ["Fremont", 47.650, 47.668, -122.370, -122.340],
+  ["Phinney Ridge", 47.668, 47.692, -122.370, -122.350],
+  ["Greenwood", 47.692, 47.710, -122.370, -122.340],
+  ["Broadview", 47.710, 47.735, -122.370, -122.340],
+  ["Bitter Lake", 47.710, 47.735, -122.360, -122.335],
+  ["Magnolia", 47.630, 47.670, -122.420, -122.385],
+  ["Interbay", 47.640, 47.660, -122.385, -122.365],
+  ["Green Lake", 47.668, 47.692, -122.360, -122.325],
+  ["Wallingford", 47.650, 47.668, -122.340, -122.315],
+  ["Roosevelt", 47.668, 47.685, -122.325, -122.310],
+  ["Maple Leaf", 47.685, 47.710, -122.325, -122.300],
+  ["Northgate", 47.700, 47.720, -122.340, -122.310],
+  ["Licton Springs", 47.692, 47.710, -122.345, -122.325],
+  ["Haller Lake", 47.715, 47.735, -122.345, -122.320],
+  ["Pinehurst", 47.720, 47.740, -122.320, -122.295],
+  ["University District", 47.650, 47.668, -122.315, -122.290],
+  ["Ravenna", 47.668, 47.688, -122.310, -122.280],
+  ["Wedgwood", 47.685, 47.700, -122.300, -122.280],
+  ["View Ridge", 47.680, 47.695, -122.280, -122.260],
+  ["Sand Point", 47.680, 47.695, -122.270, -122.250],
+  ["Laurelhurst", 47.660, 47.680, -122.285, -122.265],
+  ["Bryant", 47.668, 47.685, -122.290, -122.270],
+  ["Meadowbrook", 47.700, 47.715, -122.300, -122.280],
+  ["Lake City", 47.710, 47.735, -122.300, -122.270],
+  ["Olympic Hills", 47.720, 47.740, -122.300, -122.275],
+  ["Queen Anne", 47.625, 47.650, -122.370, -122.345],
+  ["South Lake Union", 47.620, 47.635, -122.345, -122.325],
+  ["Eastlake", 47.635, 47.650, -122.335, -122.320],
+  ["Capitol Hill", 47.610, 47.640, -122.325, -122.300],
+  ["First Hill", 47.600, 47.615, -122.330, -122.315],
+  ["Central District", 47.600, 47.620, -122.310, -122.290],
+  ["Madrona", 47.608, 47.625, -122.295, -122.280],
+  ["Leschi", 47.596, 47.608, -122.295, -122.280],
+  ["Madison Park", 47.630, 47.645, -122.290, -122.270],
+  ["Madison Valley", 47.625, 47.640, -122.300, -122.285],
+  ["Montlake", 47.640, 47.655, -122.310, -122.290],
+  ["Downtown", 47.600, 47.620, -122.345, -122.325],
+  ["Belltown", 47.612, 47.622, -122.355, -122.340],
+  ["Pioneer Square", 47.598, 47.605, -122.340, -122.325],
+  ["International District", 47.593, 47.602, -122.330, -122.315],
+  ["SoDo", 47.565, 47.595, -122.345, -122.320],
+  ["Georgetown", 47.540, 47.565, -122.340, -122.310],
+  ["Beacon Hill", 47.555, 47.600, -122.315, -122.295],
+  ["North Beacon Hill", 47.575, 47.600, -122.315, -122.295],
+  ["Mt Baker", 47.570, 47.590, -122.295, -122.280],
+  ["Columbia City", 47.555, 47.575, -122.295, -122.275],
+  ["Hillman City", 47.545, 47.558, -122.295, -122.275],
+  ["Rainier Beach", 47.505, 47.535, -122.275, -122.245],
+  ["Seward Park", 47.530, 47.560, -122.270, -122.250],
+  ["Rainier Valley", 47.520, 47.555, -122.300, -122.270],
+  ["South Park", 47.520, 47.540, -122.340, -122.315],
+  ["Dunlap", 47.530, 47.545, -122.280, -122.260],
+  ["West Seattle", 47.530, 47.600, -122.420, -122.345],
+  ["Admiral", 47.570, 47.585, -122.410, -122.380],
+  ["Alki", 47.576, 47.592, -122.420, -122.400],
+  ["White Center", 47.505, 47.530, -122.380, -122.345],
+];
+
+async function runScheduledIngest(env) {
+  const startTime = new Date();
+
+  try {
+    const rawPermits = await fetchSdciPermits();
+    const { permits, contractors } = normalizeSdciPermits(rawPermits);
+
+    await upsertScheduledContractors(env, contractors);
+    const { added, updated } = await upsertScheduledPermits(env, permits);
+
+    await logIngest(env, {
+      run_type: "scheduled",
+      source: "seattle_open_data",
+      status: "success",
+      records_added: added,
+      records_updated: updated,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+
+    console.log(`Scheduled ingest complete: ${added} added, ${updated} updated`);
+    return { added, updated, contractors: contractors.length };
+  } catch (error) {
+    console.error("Scheduled ingest failed:", error);
+    await logIngest(env, {
+      run_type: "scheduled",
+      source: "seattle_open_data",
+      status: "error",
+      error_message: error.message,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+    throw error;
+  }
+}
+
+async function fetchSdciPermits(total = SCHEDULED_INGEST_LIMIT, pageSize = SCHEDULED_INGEST_PAGE_SIZE) {
+  const selectFields = [
+    "permitnum",
+    "permitclass",
+    "permitclassmapped",
+    "permittypemapped",
+    "permittypedesc",
+    "description",
+    "housingunits",
+    "statuscurrent",
+    "originaladdress1",
+    "originalcity",
+    "originalstate",
+    "originalzip",
+    "contractorcompanyname",
+    "link",
+    "latitude",
+    "longitude",
+    "applieddate",
+    "issueddate",
+    "expiresdate",
+    "completeddate",
+    "estprojectcost",
+    "readytoissuedate",
+    "planreviewcompletedate",
+  ].join(",");
+  const records = [];
+
+  for (let offset = 0; offset < total; offset += pageSize) {
+    const limit = Math.min(pageSize, total - offset);
+    const url = new URL(SDCI_PERMIT_URL);
+    url.searchParams.set("$select", selectFields);
+    url.searchParams.set("$limit", String(limit));
+    url.searchParams.set("$offset", String(offset));
+    url.searchParams.set("$order", "applieddate DESC");
+    url.searchParams.set("$where", "applieddate > '2022-01-01'");
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        "Accept": "application/json",
+        "User-Agent": "BuildingSeattle-Worker/1.0",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Seattle Open Data returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    }
+
+    const page = await response.json();
+    if (!Array.isArray(page) || page.length === 0) {
+      break;
+    }
+
+    records.push(...page);
+    if (page.length < limit) {
+      break;
+    }
+  }
+
+  return records;
+}
+
+function normalizeSdciPermits(rawPermits) {
+  const permits = [];
+  const contractorsBySlug = new Map();
+
+  for (const item of rawPermits) {
+    const permitNumber = item.permitnum;
+    if (!permitNumber) {
+      continue;
+    }
+
+    const contractorName = String(item.contractorcompanyname || "").trim();
+    if (contractorName && !["n/a", "none"].includes(contractorName.toLowerCase())) {
+      const slug = slugify(contractorName);
+      if (slug && !contractorsBySlug.has(slug)) {
+        contractorsBySlug.set(slug, {
+          name: contractorName,
+          slug,
+          specialty: item.permitclass || "General",
+        });
+      }
+    }
+
+    const address = [
+      item.originaladdress1 || "",
+      item.originalcity || "Seattle",
+      item.originalstate || "WA",
+    ].filter(Boolean).join(", ");
+
+    permits.push({
+      permit_number: permitNumber,
+      contractor_name: contractorName && !["n/a", "none"].includes(contractorName.toLowerCase()) ? contractorName : "",
+      applicant_name: "",
+      address: address || "Seattle, WA",
+      neighborhood: detectNeighborhood(item.latitude, item.longitude),
+      type: classifyPermitType(item.permitclass, item.permittypemapped),
+      value: extractValue(item.estprojectcost),
+      status: mapPermitStatus(item.statuscurrent),
+      description: item.description || "No description",
+      housing_units: parseInt(item.housingunits || "0", 10) || 0,
+      applied_date: extractDate(item.applieddate),
+      issued_date: extractDate(item.issueddate),
+      completed_date: extractDate(item.completeddate),
+    });
+  }
+
+  return { permits, contractors: [...contractorsBySlug.values()] };
+}
+
+async function upsertScheduledContractors(env, contractors) {
+  for (let i = 0; i < contractors.length; i += 100) {
+    const batch = contractors.slice(i, i + 100).map((contractor) => env.DB.prepare(`
+      INSERT INTO contractors (name, slug, specialty)
+      VALUES (?, ?, ?)
+      ON CONFLICT(slug) DO UPDATE SET
+        name = excluded.name,
+        specialty = COALESCE(excluded.specialty, contractors.specialty),
+        updated_at = CURRENT_TIMESTAMP
+    `).bind(contractor.name, contractor.slug, contractor.specialty || null));
+
+    if (batch.length) {
+      await env.DB.batch(batch);
+    }
+  }
+}
+
+async function upsertScheduledPermits(env, permits) {
+  let added = 0;
+  let updated = 0;
+  const { results: allContractors } = await env.DB.prepare("SELECT id, name FROM contractors").all();
+  const contractorMap = new Map((allContractors || []).map((contractor) => [contractor.name.toLowerCase(), contractor.id]));
+
+  for (let i = 0; i < permits.length; i += 100) {
+    const batchPermits = permits.slice(i, i + 100);
+    const permitNumbers = batchPermits.map((permit) => permit.permit_number).filter(Boolean);
+    const existingSet = await getExistingPermitNumbers(env, permitNumbers);
+
+    const statements = batchPermits.map((permit) => {
+      if (existingSet.has(permit.permit_number)) {
+        updated++;
+      } else {
+        added++;
+      }
+
+      const contractorId = permit.contractor_name
+        ? contractorMap.get(permit.contractor_name.toLowerCase()) || null
+        : null;
+
+      return env.DB.prepare(`
+        INSERT OR REPLACE INTO permits (
+          permit_number, contractor_id, applicant_name, address, neighborhood,
+          type, value, status, description, housing_units,
+          applied_date, issued_date, completed_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        permit.permit_number,
+        contractorId,
+        permit.applicant_name || null,
+        permit.address,
+        permit.neighborhood || null,
+        permit.type || null,
+        permit.value || null,
+        permit.status || "new",
+        permit.description || null,
+        permit.housing_units || 0,
+        permit.applied_date || null,
+        permit.issued_date || null,
+        permit.completed_date || null,
+      );
+    });
+
+    if (statements.length) {
+      await env.DB.batch(statements);
+    }
+  }
+
+  return { added, updated };
+}
+
+async function getExistingPermitNumbers(env, permitNumbers) {
+  const existingSet = new Set();
+  if (!permitNumbers.length) {
+    return existingSet;
+  }
+
+  const placeholders = permitNumbers.map(() => "?").join(",");
+  const { results } = await env.DB.prepare(
+    `SELECT permit_number FROM permits WHERE permit_number IN (${placeholders})`
+  ).bind(...permitNumbers).all();
+
+  for (const row of results || []) {
+    existingSet.add(row.permit_number);
+  }
+
+  return existingSet;
+}
+
+function detectNeighborhood(lat, lng) {
+  if (!lat || !lng) {
+    return "Other";
+  }
+
+  const parsedLat = Number(lat);
+  const parsedLng = Number(lng);
+  if (Number.isNaN(parsedLat) || Number.isNaN(parsedLng)) {
+    return "Other";
+  }
+
+  for (const [name, minLat, maxLat, minLng, maxLng] of NEIGHBORHOOD_BOUNDS) {
+    if (parsedLat >= minLat && parsedLat <= maxLat && parsedLng >= minLng && parsedLng <= maxLng) {
+      return name;
+    }
+  }
+
+  if (parsedLat >= 47.49 && parsedLat <= 47.74 && parsedLng >= -122.44 && parsedLng <= -122.24) {
+    return "Other Seattle";
+  }
+
+  return "Other";
+}
+
+function classifyPermitType(permitClass, permitTypeMapped) {
+  const permitClassValue = String(permitClass || "").toLowerCase();
+  if (["commercial", "institutional"].includes(permitClassValue)) {
+    return "commercial";
+  }
+  if (["single family/duplex", "multifamily"].includes(permitClassValue)) {
+    return "residential";
+  }
+  if (permitClassValue === "industrial") {
+    return "industrial";
+  }
+  if (permitClassValue === "vacant land") {
+    return "land";
+  }
+
+  const mappedValue = String(permitTypeMapped || "").toLowerCase();
+  if (mappedValue.includes("demolition")) {
+    return "demolition";
+  }
+  if (mappedValue.includes("grading")) {
+    return "grading";
+  }
+  if (mappedValue.includes("roof")) {
+    return "residential";
+  }
+
+  return "other";
+}
+
+function extractValue(value) {
+  if (!value) {
+    return 0;
+  }
+
+  const parsed = Number(String(value).replace(/[$,\s]/g, ""));
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+}
+
+function mapPermitStatus(status) {
+  const value = String(status || "").toLowerCase();
+  if (!value) {
+    return "new";
+  }
+  if (value.includes("issue") || value.includes("active") || value.includes("approved")) {
+    return "active";
+  }
+  if (value.includes("pending") || value.includes("review") || value.includes("applied")) {
+    return "pending";
+  }
+  if (value.includes("complete") || value.includes("final") || value.includes("closed")) {
+    return "completed";
+  }
+  if (value.includes("expir")) {
+    return "expired";
+  }
+  if (value.includes("cancel")) {
+    return "cancelled";
+  }
+  return "new";
+}
+
+function extractDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+    return text.slice(0, 10);
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function slugify(name) {
+  return String(name || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/[\s-]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 async function ingestPermit(request, env) {
   const data = await request.json();
 
@@ -2588,25 +3134,48 @@ async function ingestPermitBatch(request, env) {
   let updated = 0;
 
   try {
-    for (const item of items) {
-      let contractorId = null;
-      if (item.contractor_name) {
-        const contractor = await env.DB.prepare("SELECT id FROM contractors WHERE name = ? COLLATE NOCASE")
-          .bind(item.contractor_name)
-          .first();
-        if (contractor) {
-          contractorId = contractor.id;
-        }
+    // 1. Pre-load contractors for fast in-memory lookup
+    const { results: allContractors } = await env.DB.prepare(
+      "SELECT id, name FROM contractors"
+    ).all();
+    const contractorMap = new Map();
+    for (const c of allContractors) {
+      contractorMap.set(c.name.toLowerCase(), c.id);
+    }
+
+    // 2. Check existing permits in chunked queries
+    const permitNumbers = items.map((i) => i.permit_number).filter(Boolean);
+    const existingSet = new Set();
+    if (permitNumbers.length > 0) {
+      const chunkSize = 100;
+      for (let i = 0; i < permitNumbers.length; i += chunkSize) {
+        const chunk = permitNumbers.slice(i, i + chunkSize);
+        const placeholders = chunk.map(() => "?").join(",");
+        const { results } = await env.DB.prepare(
+          `SELECT permit_number FROM permits WHERE permit_number IN (${placeholders})`
+        ).bind(...chunk).all();
+        for (const r of results) existingSet.add(r.permit_number);
       }
+    }
 
-      const existing = await env.DB.prepare("SELECT id FROM permits WHERE permit_number = ?").bind(item.permit_number).first();
+    // 3. Build batched insert statements
+    const statements = [];
+    for (const item of items) {
+      const contractorId = item.contractor_name
+        ? (contractorMap.get(item.contractor_name.toLowerCase()) || null)
+        : null;
 
-      const stmt = env.DB.prepare(`
-            INSERT OR REPLACE INTO permits (permit_number, contractor_id, applicant_name, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-      await stmt
-        .bind(
+      if (existingSet.has(item.permit_number)) updated++;
+      else added++;
+
+      statements.push(
+        env.DB.prepare(`
+          INSERT OR REPLACE INTO permits (
+            permit_number, contractor_id, applicant_name, address, neighborhood,
+            type, value, status, description, housing_units,
+            applied_date, issued_date, completed_date
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
           item.permit_number,
           contractorId,
           item.applicant_name || null,
@@ -2621,11 +3190,10 @@ async function ingestPermitBatch(request, env) {
           item.issued_date || null,
           item.completed_date || null,
         )
-        .run();
-
-      if (existing) updated++;
-      else added++;
+      );
     }
+
+    await env.DB.batch(statements);
 
     await logIngest(env, {
       run_type: "permit",
@@ -2748,25 +3316,188 @@ async function ingestContractor(request, env) {
 async function ingestContractorBatch(request, env) {
   const { items } = await request.json();
 
-  for (const item of items) {
-    const stmt = env.DB.prepare(`
-            INSERT INTO contractors (name, slug, specialty, license_number, years_active)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(slug) DO UPDATE SET
-              name = excluded.name,
-              specialty = excluded.specialty,
-              license_number = COALESCE(excluded.license_number, contractors.license_number),
-              years_active = COALESCE(excluded.years_active, contractors.years_active),
-              updated_at = CURRENT_TIMESTAMP
-        `);
-    await stmt
-      .bind(item.name, item.slug, item.specialty || null, item.license_number || null, item.years_active || null)
-      .run();
+  if (!Array.isArray(items)) {
+    return new Response(JSON.stringify({ error: "items must be an array" }), { status: 400 });
   }
+
+  const statements = [];
+  for (const item of items) {
+    statements.push(
+      env.DB.prepare(`
+        INSERT INTO contractors (name, slug, specialty, license_number, years_active)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          name = excluded.name,
+          specialty = excluded.specialty,
+          license_number = COALESCE(excluded.license_number, contractors.license_number),
+          years_active = COALESCE(excluded.years_active, contractors.years_active),
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(
+        item.name,
+        item.slug,
+        item.specialty || null,
+        item.license_number || null,
+        item.years_active || null,
+      )
+    );
+  }
+
+  await env.DB.batch(statements);
 
   return new Response(JSON.stringify({ processed: items.length }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+async function runScheduledIngest(env) {
+  const startTime = new Date();
+  try {
+    const response = await fetch(`${SDCI_ENDPOINT}?$select=${encodeURIComponent(SDCI_SELECT_FIELDS)}&$where=${encodeURIComponent("applieddate > '2022-01-01'")}&$order=${encodeURIComponent("applieddate DESC")}&$limit=2000`);
+    if (!response.ok) {
+      throw new Error(`SDCI request failed: ${response.status}`);
+    }
+
+    const records = await response.json();
+    const contractors = new Set();
+    let added = 0;
+    let updated = 0;
+
+    for (const record of records) {
+      const permitNumber = record.permitnum;
+      if (!permitNumber) continue;
+
+      const contractorName = record.contractorcompanyname?.trim();
+      if (contractorName) {
+        contractors.add(contractorName);
+      }
+    }
+
+    for (const name of contractors) {
+      const slug = slugify(name);
+      await env.DB.prepare(`
+        INSERT INTO contractors (name, slug, specialty)
+        VALUES (?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          name = excluded.name,
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(name, slug, null).run();
+    }
+
+    for (const record of records) {
+      const permitNumber = record.permitnum;
+      if (!permitNumber) continue;
+
+      let contractorId = null;
+      const contractorName = record.contractorcompanyname?.trim();
+      if (contractorName) {
+        const contractor = await env.DB.prepare("SELECT id FROM contractors WHERE name = ? COLLATE NOCASE").bind(contractorName).first();
+        contractorId = contractor?.id || null;
+      }
+
+      const existing = await env.DB.prepare("SELECT id FROM permits WHERE permit_number = ?").bind(permitNumber).first();
+
+      await env.DB.prepare(`
+        INSERT OR REPLACE INTO permits (permit_number, contractor_id, applicant_name, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        permitNumber,
+        contractorId,
+        null,
+        record.originaladdress1 || null,
+        detectNeighborhood(record.latitude, record.longitude),
+        classifyPermitType(record.permitclass, record.permittypemapped),
+        extractValue(record.estprojectcost),
+        mapPermitStatus(record.statuscurrent),
+        record.description || null,
+        Number(record.housingunits || 0),
+        extractDate(record.applieddate),
+        extractDate(record.issueddate),
+        extractDate(record.completeddate),
+      ).run();
+
+      if (existing) updated++;
+      else added++;
+    }
+
+    await logIngest(env, {
+      run_type: "scheduled_refresh",
+      source: "cloudflare_cron",
+      status: "success",
+      records_added: added,
+      records_updated: updated,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+  } catch (error) {
+    await logIngest(env, {
+      run_type: "scheduled_refresh",
+      source: "cloudflare_cron",
+      status: "error",
+      error_message: error.message,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+    throw error;
+  }
+}
+
+function slugify(name) {
+  return String(name || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/[\s-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function classifyPermitType(permitClass, permitTypeMapped) {
+  const pc = String(permitClass || "").toLowerCase();
+  if (pc === "commercial" || pc === "institutional") return "commercial";
+  if (pc === "single family/duplex" || pc === "multifamily") return "residential";
+  if (pc === "industrial") return "industrial";
+  if (pc === "vacant land") return "land";
+
+  const pt = String(permitTypeMapped || "").toLowerCase();
+  if (pt.includes("demolition")) return "demolition";
+  if (pt.includes("grading")) return "grading";
+  if (pt.includes("roof")) return "residential";
+  return "other";
+}
+
+function detectNeighborhood(lat, lng) {
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return "Other";
+
+  if (latNum >= 47.6 && latNum <= 47.62 && lngNum >= -122.345 && lngNum <= -122.325) return "Downtown";
+  if (latNum >= 47.668 && latNum <= 47.692 && lngNum >= -122.41 && lngNum <= -122.37) return "Ballard";
+  if (latNum >= 47.53 && latNum <= 47.6 && lngNum >= -122.42 && lngNum <= -122.345) return "West Seattle";
+  if (latNum >= 47.61 && latNum <= 47.64 && lngNum >= -122.325 && lngNum <= -122.3) return "Capitol Hill";
+  if (latNum >= 47.49 && latNum <= 47.74 && lngNum >= -122.44 && lngNum <= -122.24) return "Other Seattle";
+  return "Other";
+}
+
+function mapPermitStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s.includes("issue") || s.includes("active") || s.includes("approved")) return "active";
+  if (s.includes("pending") || s.includes("review") || s.includes("applied")) return "pending";
+  if (s.includes("complete") || s.includes("final") || s.includes("closed")) return "completed";
+  if (s.includes("expir")) return "expired";
+  if (s.includes("cancel")) return "cancelled";
+  return "new";
+}
+
+function extractDate(value) {
+  if (!value) return null;
+  const text = String(value);
+  return text.includes("T") ? text.split("T")[0] : text.slice(0, 10);
+}
+
+function extractValue(value) {
+  if (!value) return 0;
+  const cleaned = String(value).replace(/[$,\s]/g, "");
+  const parsed = Number.parseFloat(cleaned);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
 }
 
 async function checkAuth(request, env) {
