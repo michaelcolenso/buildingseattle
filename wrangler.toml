@@ -2,6 +2,9 @@ name = "buildingseattle"
 main = "worker.js"
 compatibility_date = "2026-03-14"
 
+[triggers]
+crons = ["0 3 * * *"]  # Daily at 03:00 UTC
+
 # D1 Database binding
 [[d1_databases]]
 binding = "DB"

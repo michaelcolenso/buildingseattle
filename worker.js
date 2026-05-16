@@ -7,8 +7,139 @@ const corsHeaders = {
 };
 const INGEST_TOKEN_HEADER = "X-Ingest-Token";
 const BASE_URL = "https://buildingseattle.com";
+const SOCRATA_URL = "https://data.seattle.gov/resource/k44w-2dcq.json";
+const SOCRATA_SELECT = [
+  "permitnum", "permitclass", "permittypemapped", "description",
+  "housingunits", "statuscurrent", "originaladdress1", "originalcity",
+  "originalstate", "contractorcompanyname", "latitude", "longitude",
+  "applieddate", "issueddate", "completeddate", "estprojectcost",
+].join(",");
+
+// Neighborhood bounding boxes (mirrors sdci_scraper.py)
+const NEIGHBORHOOD_BOUNDS = [
+  ["Ballard",             47.668, 47.692, -122.410, -122.370],
+  ["Crown Hill",          47.692, 47.710, -122.390, -122.370],
+  ["Fremont",             47.650, 47.668, -122.370, -122.340],
+  ["Phinney Ridge",       47.668, 47.692, -122.370, -122.350],
+  ["Greenwood",           47.692, 47.710, -122.370, -122.340],
+  ["Broadview",           47.710, 47.735, -122.370, -122.340],
+  ["Bitter Lake",         47.710, 47.735, -122.360, -122.335],
+  ["Magnolia",            47.630, 47.670, -122.420, -122.385],
+  ["Interbay",            47.640, 47.660, -122.385, -122.365],
+  ["Green Lake",          47.668, 47.692, -122.360, -122.325],
+  ["Wallingford",         47.650, 47.668, -122.340, -122.315],
+  ["Roosevelt",           47.668, 47.685, -122.325, -122.310],
+  ["Maple Leaf",          47.685, 47.710, -122.325, -122.300],
+  ["Northgate",           47.700, 47.720, -122.340, -122.310],
+  ["Licton Springs",      47.692, 47.710, -122.345, -122.325],
+  ["Haller Lake",         47.715, 47.735, -122.345, -122.320],
+  ["Pinehurst",           47.720, 47.740, -122.320, -122.295],
+  ["University District", 47.650, 47.668, -122.315, -122.290],
+  ["Ravenna",             47.668, 47.688, -122.310, -122.280],
+  ["Wedgwood",            47.685, 47.700, -122.300, -122.280],
+  ["View Ridge",          47.680, 47.695, -122.280, -122.260],
+  ["Sand Point",          47.680, 47.695, -122.270, -122.250],
+  ["Laurelhurst",         47.660, 47.680, -122.285, -122.265],
+  ["Bryant",              47.668, 47.685, -122.290, -122.270],
+  ["Meadowbrook",         47.700, 47.715, -122.300, -122.280],
+  ["Lake City",           47.710, 47.735, -122.300, -122.270],
+  ["Olympic Hills",       47.720, 47.740, -122.300, -122.275],
+  ["Queen Anne",          47.625, 47.650, -122.370, -122.345],
+  ["South Lake Union",    47.620, 47.635, -122.345, -122.325],
+  ["Eastlake",            47.635, 47.650, -122.335, -122.320],
+  ["Capitol Hill",        47.610, 47.640, -122.325, -122.300],
+  ["First Hill",          47.600, 47.615, -122.330, -122.315],
+  ["Central District",    47.600, 47.620, -122.310, -122.290],
+  ["Madrona",             47.608, 47.625, -122.295, -122.280],
+  ["Leschi",              47.596, 47.608, -122.295, -122.280],
+  ["Madison Park",        47.630, 47.645, -122.290, -122.270],
+  ["Madison Valley",      47.625, 47.640, -122.300, -122.285],
+  ["Montlake",            47.640, 47.655, -122.310, -122.290],
+  ["Downtown",            47.600, 47.620, -122.345, -122.325],
+  ["Belltown",            47.612, 47.622, -122.355, -122.340],
+  ["Pioneer Square",      47.598, 47.605, -122.340, -122.325],
+  ["International District", 47.593, 47.602, -122.330, -122.315],
+  ["SoDo",                47.565, 47.595, -122.345, -122.320],
+  ["Georgetown",          47.540, 47.565, -122.340, -122.310],
+  ["Beacon Hill",         47.555, 47.600, -122.315, -122.295],
+  ["North Beacon Hill",   47.575, 47.600, -122.315, -122.295],
+  ["Mt Baker",            47.570, 47.590, -122.295, -122.280],
+  ["Columbia City",       47.555, 47.575, -122.295, -122.275],
+  ["Hillman City",        47.545, 47.558, -122.295, -122.275],
+  ["Rainier Beach",       47.505, 47.535, -122.275, -122.245],
+  ["Seward Park",         47.530, 47.560, -122.270, -122.250],
+  ["Rainier Valley",      47.520, 47.555, -122.300, -122.270],
+  ["South Park",          47.520, 47.540, -122.340, -122.315],
+  ["Dunlap",              47.530, 47.545, -122.280, -122.260],
+  ["West Seattle",        47.530, 47.600, -122.420, -122.345],
+  ["Admiral",             47.570, 47.585, -122.410, -122.380],
+  ["Alki",                47.576, 47.592, -122.420, -122.400],
+  ["White Center",        47.505, 47.530, -122.380, -122.345],
+];
+
+function detectNeighborhood(lat, lng) {
+  if (!lat || !lng) return "Other";
+  const la = parseFloat(lat), lo = parseFloat(lng);
+  if (isNaN(la) || isNaN(lo)) return "Other";
+  for (const [name, minLat, maxLat, minLng, maxLng] of NEIGHBORHOOD_BOUNDS) {
+    if (la >= minLat && la <= maxLat && lo >= minLng && lo <= maxLng) return name;
+  }
+  if (la >= 47.49 && la <= 47.74 && lo >= -122.44 && lo <= -122.24) return "Other Seattle";
+  return "Other";
+}
+
+function classifyPermitType(permitclass, permittypemapped) {
+  if (permitclass) {
+    const pc = permitclass.toLowerCase();
+    if (pc === "commercial" || pc === "institutional") return "commercial";
+    if (pc === "single family/duplex" || pc === "multifamily") return "residential";
+    if (pc === "industrial") return "industrial";
+    if (pc === "vacant land") return "land";
+  }
+  if (permittypemapped) {
+    const pt = permittypemapped.toLowerCase();
+    if (pt.includes("demolition")) return "demolition";
+    if (pt.includes("grading")) return "grading";
+    if (pt.includes("roof")) return "residential";
+  }
+  return "other";
+}
+
+function mapPermitStatus(status) {
+  if (!status) return "new";
+  const s = status.toLowerCase();
+  if (s.includes("issue") || s.includes("active") || s.includes("approved")) return "active";
+  if (s.includes("pending") || s.includes("review") || s.includes("applied")) return "pending";
+  if (s.includes("complete") || s.includes("final") || s.includes("closed")) return "completed";
+  if (s.includes("expir")) return "expired";
+  if (s.includes("cancel")) return "cancelled";
+  return "new";
+}
+
+function extractPermitValue(costStr) {
+  if (!costStr) return 0;
+  const n = parseFloat(String(costStr).replace(/[$, ]/g, ""));
+  return isNaN(n) ? 0 : Math.round(n);
+}
+
+function slugifyContractor(name) {
+  return name.toLowerCase().trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/[\s-]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function normalizeDate(dateStr) {
+  if (!dateStr) return null;
+  const s = String(dateStr);
+  return s.includes("T") ? s.split("T")[0] : s.slice(0, 10) || null;
+}
 
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(scheduledSync(env));
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -128,6 +259,15 @@ export default {
           return authError;
         }
         return await replaceIngestData(request, env);
+      }
+
+      if (path === "/ingest/sync" && request.method === "POST") {
+        const authError = requireIngestAuth(request, env);
+        if (authError) return authError;
+        ctx.waitUntil(scheduledSync(env));
+        return new Response(JSON.stringify({ ok: true, message: "Sync started" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       if (path === "/api/user") {
@@ -2085,6 +2225,130 @@ async function renderContractorPage(slug, env, request) {
 </html>`;
 
   return new Response(html, { headers: { "Content-Type": "text/html" } });
+}
+
+async function scheduledSync(env) {
+  const startTime = new Date();
+
+  // Determine how far back to fetch. Overlap by 1 day to catch late-arriving records.
+  const lastRun = await env.DB.prepare(
+    `SELECT end_time FROM ingest_logs WHERE run_type = 'scheduled' AND status = 'success' ORDER BY end_time DESC LIMIT 1`
+  ).first();
+
+  let sinceDate;
+  if (lastRun?.end_time) {
+    const d = new Date(lastRun.end_time);
+    d.setDate(d.getDate() - 1);
+    sinceDate = d.toISOString().split("T")[0];
+  } else {
+    const d = new Date();
+    d.setDate(d.getDate() - 90);
+    sinceDate = d.toISOString().split("T")[0];
+  }
+
+  let added = 0;
+  let updated = 0;
+  let offset = 0;
+  const PAGE_SIZE = 1000;
+  // Cache contractor name -> D1 id to avoid redundant lookups within a run
+  const contractorCache = new Map();
+
+  try {
+    while (true) {
+      const params = new URLSearchParams({
+        "$select": SOCRATA_SELECT,
+        "$limit": String(PAGE_SIZE),
+        "$offset": String(offset),
+        "$order": "applieddate DESC",
+        "$where": `applieddate > '${sinceDate}'`,
+      });
+
+      const resp = await fetch(`${SOCRATA_URL}?${params}`, {
+        headers: { "Accept": "application/json", "User-Agent": "BuildingSeattle/3.0" },
+      });
+      if (!resp.ok) throw new Error(`Socrata API error: ${resp.status}`);
+
+      const items = await resp.json();
+      if (!items.length) break;
+
+      // Upsert unique contractors first so we can resolve IDs for permits
+      for (const item of items) {
+        const name = (item.contractorcompanyname || "").trim();
+        const nameLower = name.toLowerCase();
+        if (!name || nameLower === "n/a" || nameLower === "none") continue;
+        if (contractorCache.has(name)) continue;
+
+        const slug = slugifyContractor(name);
+        if (!slug) continue;
+
+        await env.DB.prepare(`
+          INSERT INTO contractors (name, slug, specialty)
+          VALUES (?, ?, ?)
+          ON CONFLICT(slug) DO UPDATE SET
+            name = excluded.name,
+            specialty = COALESCE(excluded.specialty, contractors.specialty),
+            updated_at = CURRENT_TIMESTAMP
+        `).bind(name, slug, item.permitclass || "General").run();
+
+        const row = await env.DB.prepare(`SELECT id FROM contractors WHERE slug = ?`).bind(slug).first();
+        if (row) contractorCache.set(name, row.id);
+      }
+
+      // Upsert permits
+      for (const item of items) {
+        const permitNum = item.permitnum;
+        if (!permitNum) continue;
+
+        const address = [item.originaladdress1, item.originalcity || "Seattle", item.originalstate || "WA"]
+          .filter(Boolean).join(", ");
+
+        const contractorName = (item.contractorcompanyname || "").trim();
+        const contractorId = contractorCache.get(contractorName) ?? null;
+
+        const existing = await env.DB.prepare(
+          `SELECT id FROM permits WHERE permit_number = ?`
+        ).bind(permitNum).first();
+
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO permits
+            (permit_number, contractor_id, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          permitNum,
+          contractorId,
+          address,
+          detectNeighborhood(item.latitude, item.longitude),
+          classifyPermitType(item.permitclass, item.permittypemapped),
+          extractPermitValue(item.estprojectcost),
+          mapPermitStatus(item.statuscurrent),
+          item.description || null,
+          parseInt(item.housingunits) || 0,
+          normalizeDate(item.applieddate),
+          normalizeDate(item.issueddate),
+          normalizeDate(item.completeddate),
+        ).run();
+
+        if (existing) updated++;
+        else added++;
+      }
+
+      offset += items.length;
+      if (items.length < PAGE_SIZE) break;
+    }
+
+    await logIngest(env, {
+      run_type: "scheduled", source: "seattle_open_data", status: "success",
+      records_added: added, records_updated: updated,
+      start_time: startTime, end_time: new Date(),
+    });
+  } catch (err) {
+    await logIngest(env, {
+      run_type: "scheduled", source: "seattle_open_data", status: "error",
+      records_added: added, records_updated: updated, error_message: err.message,
+      start_time: startTime, end_time: new Date(),
+    });
+    throw err;
+  }
 }
 
 async function logIngest(env, { run_type, source, status, records_added = 0, records_updated = 0, error_message = null, start_time, end_time }) {
