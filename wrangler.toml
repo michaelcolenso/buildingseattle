@@ -3,13 +3,10 @@ main = "worker.js"
 compatibility_date = "2026-03-14"
 
 [triggers]
-crons = ["0 3 * * *"]  # Daily at 03:00 UTC
+crons = ["0 13 * * *"]
 
 # D1 Database binding
 [[d1_databases]]
 binding = "DB"
 database_name = "buildingseattle"
 database_id = "e065e988-045f-42b5-b47a-4027c2e5c417"  # Replace with your actual ID from Dashboard
-
-[triggers]
-crons = ["0 13 * * *"]
