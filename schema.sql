@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS permits (
     has_completed_inspections INTEGER DEFAULT 0,
     last_enriched_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (contractor_id) REFERENCES contractors(id)
 );
 
