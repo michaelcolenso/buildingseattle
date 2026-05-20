@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS contractors (
     specialty TEXT,
     description TEXT,
     license_number TEXT,
+    license_status TEXT,
+    ubi TEXT,
+    insurance_amount INTEGER,
+    insurance_expires_date DATE,
     bonding_capacity TEXT,
     years_active INTEGER,
     specialties TEXT,
@@ -47,17 +51,47 @@ CREATE TABLE IF NOT EXISTS permits (
     status TEXT,
     description TEXT,
     housing_units INTEGER DEFAULT 0,
+    housing_units_added INTEGER,
+    housing_units_removed INTEGER,
+    housing_units_existing INTEGER,
+    sleeping_rooms INTEGER,
     applied_date DATE,
     issued_date DATE,
+    expires_date DATE,
     completed_date DATE,
+    permit_detail_url TEXT,
+    contractor_license TEXT,
+    contractor_source TEXT,
+    work_performed_by TEXT,
+    review_level TEXT,
+    primary_property_use TEXT,
+    parcel_number TEXT,
+    detailed_description TEXT,
+    record_status_detail TEXT,
+    has_required_inspections INTEGER DEFAULT 0,
+    has_completed_inspections INTEGER DEFAULT 0,
+    last_enriched_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (contractor_id) REFERENCES contractors(id)
 );
 
+CREATE TABLE IF NOT EXISTS permit_status_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    permit_number TEXT NOT NULL,
+    previous_status TEXT,
+    new_status TEXT NOT NULL,
+    changed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_contractors_slug ON contractors(slug);
 CREATE INDEX IF NOT EXISTS idx_contractors_specialty ON contractors(specialty);
+CREATE INDEX IF NOT EXISTS idx_contractors_license_number ON contractors(license_number);
 CREATE INDEX IF NOT EXISTS idx_permits_neighborhood ON permits(neighborhood);
 CREATE INDEX IF NOT EXISTS idx_permits_status ON permits(status);
+CREATE INDEX IF NOT EXISTS idx_permits_contractor_license ON permits(contractor_license);
+CREATE INDEX IF NOT EXISTS idx_permits_last_enriched_at ON permits(last_enriched_at);
+CREATE INDEX IF NOT EXISTS idx_permit_status_changes_changed_at ON permit_status_changes(changed_at);
+CREATE INDEX IF NOT EXISTS idx_permit_status_changes_permit_number ON permit_status_changes(permit_number);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
 

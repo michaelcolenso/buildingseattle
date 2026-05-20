@@ -7,67 +7,103 @@ const corsHeaders = {
 };
 const INGEST_TOKEN_HEADER = "X-Ingest-Token";
 const BASE_URL = "https://buildingseattle.com";
+const ADMIN_TOKEN_HEADER = "X-Admin-Token";
+const SECURITY_HEADERS = {
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https:",
+    "connect-src 'self' https://cloudflareinsights.com https://*.cloudflareinsights.com",
+    "frame-src https://maps.google.com https://www.google.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "upgrade-insecure-requests",
+  ].join("; "),
+};
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const secure = (response) => withSecurityHeaders(response);
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+      return secure(new Response(null, { headers: corsHeaders }));
     }
 
     try {
+      if (url.hostname === "www.buildingseattle.com") {
+        url.hostname = "buildingseattle.com";
+        return secure(Response.redirect(url.toString(), 301));
+      }
+
       if (path === "/" || path === "") {
         ctx.waitUntil(logPageView(request, env, "/"));
-        return await handleRoot(request, env);
+        return secure(await handleRoot(request, env));
       }
 
       if (path === "/admin") {
-        return await renderAdminDashboard(request, env);
+        const authError = requireAdminAuth(request, env);
+        if (authError) return secure(authError);
+        return secure(await renderAdminDashboard(request, env));
       }
 
       if (path === "/leads" && request.method === "POST") {
-        return await handleLeadCapture(request, env);
+        return secure(await handleLeadCapture(request, env));
       }
 
       if (path === "/leads/batch" && request.method === "POST") {
-        return await handleLeadBatch(request, env);
+        return secure(await handleLeadBatch(request, env));
       }
 
       if (path === "/api/permits") {
-        return await getPermits(request, env);
+        return secure(await getPermits(request, env));
       }
 
       if (path === "/permits" || path === "/permits/") {
         ctx.waitUntil(logPageView(request, env, "/permits"));
-        return await renderPermitBrowser(request, env);
+        return secure(await renderPermitBrowser(request, env));
       }
 
       if (path.startsWith("/permits/")) {
         const permitNumber = decodeURIComponent(path.split("/permits/")[1] || "");
         if (permitNumber) {
           ctx.waitUntil(logPageView(request, env, "/permits/:id"));
-          return await renderPermitDetail(permitNumber, env, request);
+          return secure(await renderPermitDetail(permitNumber, env, request));
         }
       }
 
       if (path === "/api/contractors") {
-        return await getContractors(request, env);
+        return secure(await getContractors(request, env));
       }
 
       if (path === "/api/stats") {
-        return await getStats(env);
+        return secure(await getStats(env));
+      }
+
+      if (path === "/api/status-changes") {
+        return secure(await getStatusChanges(request, env));
       }
 
       if (path === "/api/admin/stats") {
+        const authError = requireAdminAuth(request, env);
+        if (authError) return secure(authError);
         const stats = await getAdminStats(env);
-        return new Response(JSON.stringify(stats), {
+        return secure(new Response(JSON.stringify(stats), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        }));
       }
 
       if (path === "/api/admin/analytics") {
+        const authError = requireAdminAuth(request, env);
+        if (authError) return secure(authError);
         const days = parseInt(url.searchParams.get("days") || "7", 10);
         const since = new Date();
         since.setDate(since.getDate() - days);
@@ -79,77 +115,85 @@ export default {
           env.DB.prepare(`SELECT date(created_at) as day, COUNT(*) as views FROM page_views WHERE created_at >= ? GROUP BY day ORDER BY day DESC`).bind(sinceStr).all(),
         ]);
 
-        return new Response(JSON.stringify({ days, total: totals[0]?.total || 0, top_pages: pages, daily: daily }), {
+        return secure(new Response(JSON.stringify({ days, total: totals[0]?.total || 0, top_pages: pages, daily: daily }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        }));
       }
 
       if (path.startsWith("/contractor/")) {
         const slug = path.split("/contractor/")[1];
         ctx.waitUntil(logPageView(request, env, "/contractor/:slug"));
-        return await renderContractorPage(slug, env, request);
+        return secure(await renderContractorPage(slug, env, request));
       }
 
       if (path === "/ingest/permit" && request.method === "POST") {
-        const authError = requireIngestAuth(request, env);
+        const authError = await requireIngestAuth(request, env);
         if (authError) {
-          return authError;
+          return secure(authError);
         }
-        return await ingestPermit(request, env);
+        return secure(await ingestPermit(request, env));
       }
 
       if (path === "/ingest/permit/batch" && request.method === "POST") {
-        const authError = requireIngestAuth(request, env);
+        const authError = await requireIngestAuth(request, env);
         if (authError) {
-          return authError;
+          return secure(authError);
         }
-        return await ingestPermitBatch(request, env);
+        return secure(await ingestPermitBatch(request, env));
+      }
+
+      if (path === "/ingest/permit/enrichment/batch" && request.method === "POST") {
+        const authError = await requireIngestAuth(request, env);
+        if (authError) {
+          return secure(authError);
+        }
+        return secure(await ingestPermitEnrichmentBatch(request, env));
       }
 
       if (path === "/ingest/contractor" && request.method === "POST") {
-        const authError = requireIngestAuth(request, env);
+        const authError = await requireIngestAuth(request, env);
         if (authError) {
-          return authError;
+          return secure(authError);
         }
-        return await ingestContractor(request, env);
+        return secure(await ingestContractor(request, env));
       }
 
       if (path === "/ingest/contractor/batch" && request.method === "POST") {
-        const authError = requireIngestAuth(request, env);
+        const authError = await requireIngestAuth(request, env);
         if (authError) {
-          return authError;
+          return secure(authError);
         }
-        return await ingestContractorBatch(request, env);
+        return secure(await ingestContractorBatch(request, env));
       }
 
       if (path === "/ingest/refresh" && request.method === "POST") {
-        const authError = requireIngestAuth(request, env);
+        const authError = await requireIngestAuth(request, env);
         if (authError) {
-          return authError;
+          return secure(authError);
         }
-        return await replaceIngestData(request, env);
+        return secure(await replaceIngestData(request, env));
       }
 
       if (path === "/api/user") {
-        return await checkAuth(request, env);
+        return secure(await checkAuth(request, env));
       }
 
-      if (path === "/og-image.png") {
-        return renderOgImage();
+      if (path === "/og-image.png" || path === "/favicon.ico") {
+        return secure(renderOgImage());
       }
 
       if (path === "/robots.txt") {
-        return renderRobotsTxt();
+        return secure(renderRobotsTxt());
       }
 
       if (path === "/sitemap.xml") {
-        return await renderSitemapXml(env, request);
+        return secure(await renderSitemapXml(env, request));
       }
 
-      return render404();
+      return secure(render404());
     } catch (error) {
       console.error("Worker error:", error);
-      return new Response(
+      return secure(new Response(
         JSON.stringify({
           error: "Internal Server Error",
           details: error.message,
@@ -158,7 +202,7 @@ export default {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         },
-      );
+      ));
     }
   },
 
@@ -166,6 +210,18 @@ export default {
     ctx.waitUntil(runScheduledIngest(env));
   },
 };
+
+function withSecurityHeaders(response) {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 function timeAgo(date) {
   const seconds = Math.floor((new Date() - date) / 1000);
@@ -181,6 +237,57 @@ function timeAgo(date) {
     if (count >= 1) return `${count} ${interval.label}${count > 1 ? "s" : ""} ago`;
   }
   return "Just now";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeStoredStatus(status) {
+  const value = String(status || "").trim();
+  return value || "new";
+}
+
+function intOrNull(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+}
+
+function dateOrNull(value) {
+  if (!value) {
+    return null;
+  }
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+    return text.slice(0, 10);
+  }
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (match) {
+    const [, month, day, year] = match;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString().slice(0, 10);
 }
 
 async function logPageView(request, env, path) {
@@ -218,20 +325,55 @@ function renderPagination(url, page, totalPages, total, shown, offset) {
   return html;
 }
 
-function requireIngestAuth(request, env) {
+function unauthorizedResponse(message, status = 401) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function requireAdminAuth(request, env) {
+  if (request.headers.get("CF-Access-Jwt-Assertion")) {
+    return null;
+  }
+
+  const configuredToken = env.ADMIN_API_TOKEN;
+  if (configuredToken && request.headers.get(ADMIN_TOKEN_HEADER) === configuredToken) {
+    return null;
+  }
+
+  return unauthorizedResponse("Unauthorized admin request");
+}
+
+async function timingSafeEqualString(provided, expected) {
+  if (!provided || !expected) {
+    return false;
+  }
+  const encoder = new TextEncoder();
+  const providedBytes = encoder.encode(provided);
+  const expectedBytes = encoder.encode(expected);
+  if (providedBytes.length !== expectedBytes.length) {
+    return false;
+  }
+  const providedDigest = await crypto.subtle.digest("SHA-256", providedBytes);
+  const expectedDigest = await crypto.subtle.digest("SHA-256", expectedBytes);
+  const providedHash = new Uint8Array(providedDigest);
+  const expectedHash = new Uint8Array(expectedDigest);
+  let diff = 0;
+  for (let i = 0; i < providedHash.length; i++) {
+    diff |= providedHash[i] ^ expectedHash[i];
+  }
+  return diff === 0;
+}
+
+async function requireIngestAuth(request, env) {
   if (!env.INGEST_API_TOKEN) {
-    return new Response(JSON.stringify({ error: "Ingest auth is not configured" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return unauthorizedResponse("Ingest auth is not configured", 500);
   }
 
   const providedToken = request.headers.get(INGEST_TOKEN_HEADER);
-  if (providedToken !== env.INGEST_API_TOKEN) {
-    return new Response(JSON.stringify({ error: "Unauthorized ingest request" }), {
-      status: 401,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  if (!(await timingSafeEqualString(providedToken, env.INGEST_API_TOKEN))) {
+    return unauthorizedResponse("Unauthorized ingest request");
   }
 
   return null;
@@ -246,8 +388,8 @@ async function handleRoot(request, env) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Building Seattle | Seattle Construction Intelligence & Lead Generation</title>
-    <meta name="description" content="Real-time Seattle construction permits, contractor profiles, and development opportunities. Intelligence for builders, suppliers, and service providers targeting the $8B Seattle metro market.">
+    <title>Seattle Construction Permits & Contractor Intelligence | Building Seattle</title>
+    <meta name="description" content="Track live Seattle construction permits, contractors, project values, and status changes from public records in one fast market-intelligence view.">
     <link rel="canonical" href="${canonical}">
     <meta property="og:title" content="Building Seattle | Seattle Construction Intelligence & Lead Generation">
     <meta property="og:description" content="Real-time Seattle construction permits, contractor profiles, and development opportunities.">
@@ -257,7 +399,8 @@ async function handleRoot(request, env) {
     <meta property="og:image" content="${BASE_URL}/og-image.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
+	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
+	    <link rel="icon" href="/favicon.ico" type="image/png">
     <style>
         :root { --primary: #0f172a; --accent: #3b82f6; --bg: #ffffff; --bg-alt: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; --steel: #475569; --amber: #f59e0b; --success: #10b981; --danger: #ef4444; --shadow: 0 22px 60px rgba(15,23,42,0.14); }
         @media (prefers-color-scheme: dark) { :root { --primary: #f8fafc; --bg: #0f172a; --bg-alt: #1e293b; --text: #e2e8f0; --text-muted: #94a3b8; --border: #334155; } }
@@ -468,13 +611,22 @@ async function handleRoot(request, env) {
     <script>
         var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-        function compactNumber(value) {
-            if (!value) return '0';
+	        function compactNumber(value) {
+	            if (!value) return '0';
             if (value >= 1000000000) return '$' + (value / 1000000000).toFixed(1) + 'B';
             if (value >= 1000000) return '$' + (value / 1000000).toFixed(0) + 'M';
             if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
-            return String(value);
-        }
+	            return String(value);
+	        }
+
+	        function escapeText(value) {
+	            return String(value == null ? '' : value)
+	                .replace(/&/g, '&amp;')
+	                .replace(/</g, '&lt;')
+	                .replace(/>/g, '&gt;')
+	                .replace(/"/g, '&quot;')
+	                .replace(/'/g, '&#39;');
+	        }
 
         function animateTextNumber(el, target, formatter) {
             if (!el) return;
@@ -533,14 +685,14 @@ async function handleRoot(request, env) {
             var maxValue = sample.reduce(function(max, p) { return Math.max(max, p.value || 0); }, 1);
             density.innerHTML = sample.map(function(p, index) {
                 var heat = Math.max(18, Math.round(((p.value || 0) / maxValue) * 100));
-                return '<div class="density-cell" title="' + (p.neighborhood || 'Seattle') + ' · ' + compactNumber(p.value || 0) + '" style="--heat:' + heat + ';--i:' + index + '"></div>';
+	                return '<div class="density-cell" title="' + escapeText(p.neighborhood || 'Seattle') + ' · ' + compactNumber(p.value || 0) + '" style="--heat:' + heat + ';--i:' + index + '"></div>';
             }).join('');
         }
 
-        fetch('/api/permits')
-            .then(function(r) { return r.json(); })
-            .then(function(payload) {
-                var permits = normalizePermitPayload(payload);
+	        window.__permitsPromise = fetch('/api/permits')
+	            .then(function(r) { return r.json(); })
+	            .then(function(payload) {
+	                var permits = normalizePermitPayload(payload);
                 window.__permitsData = permits;
 
                 // Latest permits panel
@@ -556,16 +708,18 @@ async function handleRoot(request, env) {
                     var status = p.status || 'New';
                     var badgeClass = status === 'active' ? 'green' : 'blue';
                     panelHtml += '<div class="list-item" style="cursor: pointer; animation: slideUp 420ms cubic-bezier(.16,1,.3,1) both; animation-delay:' + (i * 45) + 'ms" onclick="window.location=&grave;/permits/' + encodeURIComponent(p.permit_number) + '&grave;">';
-                    panelHtml += '<div><div class="list-item-title">' + address + '</div>';
-                    panelHtml += '<div class="list-item-meta">' + type + ' &bull; $' + value + '</div></div>';
-                    panelHtml += '<span class="badge badge-' + badgeClass + '">' + status + '</span></div>';
+	                    panelHtml += '<div><div class="list-item-title">' + escapeText(address) + '</div>';
+	                    panelHtml += '<div class="list-item-meta">' + escapeText(type) + ' &bull; $' + value + '</div></div>';
+	                    panelHtml += '<span class="badge badge-' + badgeClass + '">' + escapeText(status) + '</span></div>';
                 }
-                panel.innerHTML = panelHtml;
-            })
-            .catch(function(e) {
-                var panel = document.querySelectorAll('#data-panels .data-panel')[0].querySelector('.panel-content');
-                if (panel) panel.innerHTML = '<div class="error">Error loading permits</div>';
-            });
+	                panel.innerHTML = panelHtml;
+	                return permits;
+	            })
+	            .catch(function(e) {
+	                var panel = document.querySelectorAll('#data-panels .data-panel')[0].querySelector('.panel-content');
+	                if (panel) panel.innerHTML = '<div class="error">Error loading permits</div>';
+	                return [];
+	            });
 
         fetch('/api/stats')
             .then(function(r) { return r.json(); })
@@ -598,8 +752,8 @@ async function handleRoot(request, env) {
                 for (var i = 0; i < topContractors.length; i++) {
                     var c = topContractors[i];
                     html += '<div class="list-item" style="cursor: pointer; animation: slideUp 420ms cubic-bezier(.16,1,.3,1) both; animation-delay:' + (i * 45) + 'ms" onclick="window.location=&grave;/contractor/' + encodeURIComponent(c.slug) + '&grave;">';
-                    html += '<div><div class="list-item-title">' + c.name + '</div>';
-                    html += '<div class="list-item-meta">' + (c.specialty || 'Contractor') + ' &bull; ' + (c.active_projects || 0) + ' active projects</div></div>';
+	                    html += '<div><div class="list-item-title">' + escapeText(c.name) + '</div>';
+	                    html += '<div class="list-item-meta">' + escapeText(c.specialty || 'Contractor') + ' &bull; ' + (c.active_projects || 0) + ' active projects</div></div>';
                     html += '<span class="badge badge-green">Active</span></div>';
                 }
                 panel.innerHTML = html;
@@ -821,28 +975,30 @@ async function handleRoot(request, env) {
         if (payload && Array.isArray(payload.results)) return payload.results;
         return [];
       }
-      fetch('/api/permits').then(function(r){ return r.json(); }).then(function(payload){ generateSkyline(normalizePermitPayload(payload)); }).catch(function(){ generateSkyline([]); });
+	      (window.__permitsPromise || fetch('/api/permits').then(function(r){ return r.json(); }).then(normalizePermitPayload))
+	        .then(function(permits){ generateSkyline(permits); })
+	        .catch(function(){ generateSkyline([]); });
       animId = requestAnimationFrame(render);
     })();
     </script>
 
-    <div id="leadModal" class="modal">
+    <div id="leadModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
         <div class="modal-content">
-            <button class="modal-close" onclick="closeModal()">&times;</button>
-            <h3 style="margin-bottom:0.5rem;">Get Early Access</h3>
-            <p style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Join 200+ contractors and suppliers tracking Seattle's construction market.</p>
+            <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
+            <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">Get Early Access</h3>
+            <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Join 200+ contractors and suppliers tracking Seattle's construction market.</p>
             <form id="leadForm" onsubmit="submitLead(event)">
                 <div class="form-group">
-                    <label>Email *</label>
-                    <input type="email" name="email" required placeholder="you@company.com">
+                    <label for="lead-email">Email *</label>
+                    <input id="lead-email" type="email" name="email" required placeholder="you@company.com">
                 </div>
                 <div class="form-group">
-                    <label>Company Name *</label>
-                    <input type="text" name="company" required placeholder="Your Company">
+                    <label for="lead-company">Company Name *</label>
+                    <input id="lead-company" type="text" name="company" required placeholder="Your Company">
                 </div>
                 <div class="form-group">
-                    <label>Interest Type *</label>
-                    <select name="interest" required>
+                    <label for="lead-interest">Interest Type *</label>
+                    <select id="lead-interest" name="interest" required>
                         <option value="">Select...</option>
                         <option value="contractor">General Contractor</option>
                         <option value="subcontractor">Subcontractor</option>
@@ -852,8 +1008,8 @@ async function handleRoot(request, env) {
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Target Neighborhoods (optional)</label>
-                    <input type="text" name="neighborhoods" placeholder="e.g., Capitol Hill, Ballard, Downtown">
+                    <label for="lead-neighborhoods">Target Neighborhoods (optional)</label>
+                    <input id="lead-neighborhoods" type="text" name="neighborhoods" placeholder="e.g., Capitol Hill, Ballard, Downtown">
                 </div>
                 <button type="submit" class="btn btn-primary" style="width:100%;">
                     <span id="submitText">Join Waitlist</span>
@@ -869,9 +1025,10 @@ async function handleRoot(request, env) {
     </div>
 
     <script>
-        function openModal() { document.getElementById('leadModal').classList.add('active'); }
+        function openModal() { document.getElementById('leadModal').classList.add('active'); var field = document.getElementById('lead-email'); if (field) field.focus(); }
         function closeModal() { document.getElementById('leadModal').classList.remove('active'); }
         document.getElementById('leadModal').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeModal(); });
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
         async function submitLead(e) {
             e.preventDefault();
@@ -975,7 +1132,8 @@ async function getPermits(request, env) {
   const status = url.searchParams.get("status");
   const q = url.searchParams.get("q");
   const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
-  const perPage = 50;
+  const requestedPerPage = parseInt(url.searchParams.get("per_page") || "50", 10);
+  const perPage = Math.max(1, Math.min(100, Number.isFinite(requestedPerPage) ? requestedPerPage : 50));
   const offset = (page - 1) * perPage;
 
   if (permitNumber) {
@@ -1011,9 +1169,81 @@ async function getPermits(request, env) {
     env.DB.prepare(countQuery).bind(...params).first(),
   ]);
 
-  return new Response(JSON.stringify({ total, page, per_page: perPage, results }), {
+  return new Response(JSON.stringify({ total, page, per_page: perPage, results: (results || []).slice(0, perPage) }), {
     headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=60" },
   });
+}
+
+async function getRecentStatusChanges(env, limit = 20) {
+  const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT
+        sc.id,
+        sc.permit_number,
+        sc.previous_status,
+        sc.new_status,
+        sc.changed_at,
+        p.address,
+        p.neighborhood,
+        p.type,
+        p.value,
+        p.issued_date,
+        c.name as contractor_name,
+        c.slug as contractor_slug
+      FROM permit_status_changes sc
+      LEFT JOIN permits p ON p.permit_number = sc.permit_number
+      LEFT JOIN contractors c ON p.contractor_id = c.id
+      ORDER BY sc.changed_at DESC, sc.id DESC
+      LIMIT ${safeLimit}
+    `).all();
+
+    return results || [];
+  } catch (error) {
+    console.warn("Status change feed unavailable:", error.message);
+    return [];
+  }
+}
+
+async function getStatusChanges(request, env) {
+  const url = new URL(request.url);
+  const changes = await getRecentStatusChanges(env, url.searchParams.get("limit") || 20);
+
+  return new Response(JSON.stringify({ total: changes.length, results: changes }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=60" },
+  });
+}
+
+function renderStatusChangeCards(changes) {
+  if (!changes.length) {
+    return '<div class="empty">No status changes have been recorded yet. Future ingests will populate this feed when a permit moves between statuses.</div>';
+  }
+
+  return changes
+    .map((change) => {
+      const changedAt = change.changed_at ? timeAgo(new Date(change.changed_at)) : "Recently";
+      const previousStatus = escapeHtml(normalizeStoredStatus(change.previous_status));
+      const newStatus = escapeHtml(normalizeStoredStatus(change.new_status));
+      const address = escapeHtml(change.address || "Unknown address");
+      const neighborhood = escapeHtml(change.neighborhood || "Seattle");
+      const permitNumber = escapeHtml(change.permit_number);
+      const type = escapeHtml(change.type || "General");
+      const value = change.value ? `$${Number(change.value).toLocaleString()}` : "Value pending";
+
+      return `<article class="change-card">
+        <div>
+          <div class="change-title"><a href="/permits/${encodeURIComponent(change.permit_number)}">${address}</a></div>
+          <div class="change-meta">Permit ${permitNumber} &bull; ${neighborhood} &bull; ${type} &bull; ${value}</div>
+        </div>
+        <div class="change-status">
+          <span class="status-pill muted">${previousStatus}</span>
+          <span class="change-arrow">&rarr;</span>
+          <span class="status-pill">${newStatus}</span>
+          <span class="change-time">${escapeHtml(changedAt)}</span>
+        </div>
+      </article>`;
+    })
+    .join("");
 }
 
 async function renderPermitBrowser(request, env) {
@@ -1050,13 +1280,22 @@ async function renderPermitBrowser(request, env) {
   const listQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
   const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where}`;
 
-  const [{ results: permits }, { results: neighborhoods }, { results: types }, { results: statuses }, { total: totalRaw }, lastRun] = await Promise.all([
+  const [
+    { results: permits },
+    { results: neighborhoods },
+    { results: types },
+    { results: statuses },
+    { total: totalRaw },
+    lastRun,
+    recentStatusChanges,
+  ] = await Promise.all([
     env.DB.prepare(listQuery).bind(...params).all(),
     env.DB.prepare(`SELECT DISTINCT neighborhood FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != '' ORDER BY neighborhood ASC`).all(),
     env.DB.prepare(`SELECT DISTINCT type FROM permits WHERE type IS NOT NULL AND type != '' ORDER BY type ASC`).all(),
     env.DB.prepare(`SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`).all(),
     env.DB.prepare(countQuery).bind(...params).first(),
     env.DB.prepare(`SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`).first(),
+    getRecentStatusChanges(env, 8),
   ]);
   const total = totalRaw || 0;
   const totalPages = Math.ceil(total / perPage);
@@ -1065,16 +1304,17 @@ async function renderPermitBrowser(request, env) {
   const neighborhoodOptions = neighborhoods
     .map(
       (item) =>
-        `<option value="${item.neighborhood}"${item.neighborhood === neighborhood ? " selected" : ""}>${item.neighborhood}</option>`,
+        `<option value="${escapeHtml(item.neighborhood)}"${item.neighborhood === neighborhood ? " selected" : ""}>${escapeHtml(item.neighborhood)}</option>`,
     )
     .join("");
   const typeOptions = types
-    .map((item) => `<option value="${item.type}"${item.type === type ? " selected" : ""}>${item.type}</option>`)
+    .map((item) => `<option value="${escapeHtml(item.type)}"${item.type === type ? " selected" : ""}>${escapeHtml(item.type)}</option>`)
     .join("");
   const statusOptions = statuses
-    .map((item) => `<option value="${item.status}"${item.status === status ? " selected" : ""}>${item.status.charAt(0).toUpperCase() + item.status.slice(1)}</option>`)
+    .map((item) => `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}</option>`)
     .join("");
   const activeFilterDesc = [q ? `search: "${q}"` : null, neighborhood, type, status].filter(Boolean).join(", ") || "All permits";
+  const recentChangeCards = renderStatusChangeCards(recentStatusChanges);
   const cards = permits
     .map((permit) => {
       const value = permit.value ? `$${Number(permit.value).toLocaleString()}` : "Value pending";
@@ -1082,22 +1322,28 @@ async function renderPermitBrowser(request, env) {
         ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
         : "Date pending";
       const contractor = permit.contractor_slug
-        ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${permit.contractor_name || "View contractor"}</a>`
+        ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name || "View contractor")}</a>`
         : `<span style="color:var(--text-muted);">Contractor not linked yet</span>`;
+      const address = escapeHtml(permit.address || "Unknown address");
+      const permitNumber = escapeHtml(permit.permit_number);
+      const neighborhoodLabel = escapeHtml(permit.neighborhood || "Seattle");
+      const typeLabel = escapeHtml(permit.type || "General");
+      const statusLabel = escapeHtml(permit.status || "new");
+      const description = escapeHtml(permit.description || "No project description available yet.");
 
       return `<article class="permit-card">
         <div class="permit-card-top">
           <div>
-            <div class="permit-address"><a href="/permits/${encodeURIComponent(permit.permit_number)}">${permit.address || "Unknown address"}</a></div>
-            <div class="permit-meta">${permit.neighborhood || "Seattle"} &bull; ${permit.type || "General"} &bull; ${issued}</div>
+            <div class="permit-address"><a href="/permits/${encodeURIComponent(permit.permit_number)}">${address}</a></div>
+            <div class="permit-meta">${neighborhoodLabel} &bull; ${typeLabel} &bull; ${issued}</div>
           </div>
-          <span class="status-pill">${permit.status || "new"}</span>
+          <span class="status-pill">${statusLabel}</span>
         </div>
-        <p class="permit-description">${permit.description || "No project description available yet."}</p>
+        <p class="permit-description">${description}</p>
         <div class="permit-footer">
           <div>
             <div class="permit-value">${value}</div>
-            <div class="permit-number">Permit ${permit.permit_number}</div>
+            <div class="permit-number">Permit ${permitNumber}</div>
           </div>
           <div class="permit-contractor">${contractor}</div>
         </div>
@@ -1119,10 +1365,11 @@ async function renderPermitBrowser(request, env) {
     <meta property="og:url" content="${BASE_URL}/permits">
     <meta name="twitter:card" content="summary">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
-    <style>
+	    <meta property="og:image:width" content="1200">
+	    <meta property="og:image:height" content="630">
+	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
+	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <style>
         :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --surface: #ffffff; --text: #1e293b; --muted: #64748b; --border: #dbe4f0; }
         * { box-sizing: border-box; }
         body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
@@ -1142,12 +1389,23 @@ async function renderPermitBrowser(request, env) {
         .hero h1 { margin: 0 0 0.75rem; font-size: clamp(2rem, 4vw, 3.25rem); line-height: 1.05; }
         .hero p { margin: 0; max-width: 720px; color: var(--muted); font-size: 1.05rem; }
         .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
-        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.4rem; }
-        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
-        button { background: var(--accent); color: white; font-weight: 700; cursor: pointer; border-color: var(--accent); }
-        .secondary-link { background: transparent; color: var(--text); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+	        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.4rem; }
+	        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
+	        button { background: var(--accent); color: white; font-weight: 700; cursor: pointer; border-color: var(--accent); }
+	        .hamburger { width: auto; border: none; padding: 0.25rem; }
+	        .secondary-link { background: transparent; color: var(--text); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
         .results-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
         .results-head p { margin: 0; color: var(--muted); }
+        .status-changes { margin: 0 0 2rem; }
+        .status-changes-header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1rem; }
+        .status-changes-header h2 { margin: 0; }
+        .status-changes-header p { margin: 0.35rem 0 0; color: var(--muted); }
+        .change-list { display: grid; gap: 0.75rem; }
+        .change-card { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; box-shadow: 0 8px 30px rgba(15, 23, 42, 0.04); }
+        .change-title a { color: var(--primary); text-decoration: none; font-size: 1rem; font-weight: 800; }
+        .change-meta, .change-time { color: var(--muted); font-size: 0.85rem; }
+        .change-status { display: flex; align-items: center; justify-content: flex-end; gap: 0.45rem; flex-wrap: wrap; min-width: 260px; }
+        .change-arrow { color: var(--muted); font-weight: 800; }
         .permits { display: grid; gap: 1rem; padding-bottom: 3rem; }
         .permit-card { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem; box-shadow: 0 8px 30px rgba(15, 23, 42, 0.04); }
         .permit-card-top, .permit-footer { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
@@ -1156,9 +1414,12 @@ async function renderPermitBrowser(request, env) {
         .permit-description { margin: 0.85rem 0 1rem; line-height: 1.6; }
         .permit-value { font-size: 1.35rem; font-weight: 800; color: var(--primary); }
         .status-pill { background: rgba(37,99,235,0.12); color: var(--accent); border-radius: 999px; padding: 0.35rem 0.7rem; text-transform: capitalize; font-size: 0.8rem; font-weight: 700; }
+        .status-pill.muted { background: rgba(100,116,139,0.12); color: var(--muted); }
         .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 1rem; padding: 2rem; text-align: center; color: var(--muted); }
         @media (max-width: 720px) {
-          .nav-row, .permit-card-top, .permit-footer, .results-head { flex-direction: column; align-items: stretch; }
+          .nav-row { flex-direction: row; align-items: center; }
+          .permit-card-top, .permit-footer, .results-head, .status-changes-header, .change-card { flex-direction: column; align-items: stretch; }
+          .change-status { justify-content: flex-start; min-width: 0; }
         }
     </style>
     <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"},{"@type":"ListItem","position":2,"name":"Permits","item":"https://buildingseattle.com/permits"}]}</script>
@@ -1188,7 +1449,7 @@ async function renderPermitBrowser(request, env) {
         <form class="filters" action="/permits" method="GET">
             <div>
                 <label for="q">Search</label>
-                <input type="text" id="q" name="q" value="${q || ''}" placeholder="Address, permit #, contractor..." style="width:100%;border-radius:0.75rem;border:1px solid var(--border);padding:0.8rem 0.9rem;font:inherit;">
+                <input type="text" id="q" name="q" value="${escapeHtml(q || "")}" placeholder="Address, permit #, contractor..." style="width:100%;border-radius:0.75rem;border:1px solid var(--border);padding:0.8rem 0.9rem;font:inherit;">
             </div>
             <div>
                 <label for="neighborhood">Neighborhood</label>
@@ -1221,9 +1482,21 @@ async function renderPermitBrowser(request, env) {
             </div>
         </form>
         <div class="results-head">
-            <h2 style="margin:0;">${activeFilterDesc}</h2>
+            <h2 style="margin:0;">${escapeHtml(activeFilterDesc)}</h2>
             <p>Updated ${lastUpdated}</p>
         </div>
+        <section class="status-changes" aria-labelledby="status-changes-heading">
+            <div class="status-changes-header">
+                <div>
+                    <h2 id="status-changes-heading">Recently changed status</h2>
+                    <p>Permits that moved between statuses during the latest ingests.</p>
+                </div>
+                <a class="secondary-link" style="width:auto;padding:0.65rem 0.9rem;" href="/api/status-changes">JSON</a>
+            </div>
+            <div class="change-list">
+                ${recentChangeCards}
+            </div>
+        </section>
         <section class="permits">
             ${cards || '<div class="empty">No permits matched these filters yet.</div>'}
         </section>
@@ -1364,65 +1637,107 @@ async function renderPermitDetail(permitNumber, env, request) {
     ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
     : "N/A";
 
-  const statusColors = {
-    active: "#10b981",
-    pending: "#f59e0b",
-    completed: "#3b82f6",
-    new: "#8b5cf6",
-  };
-  const statusColor = statusColors[permit.status] || "#64748b";
-  const peopleCards = [
+	  const statusColors = {
+	    active: "#10b981",
+	    pending: "#f59e0b",
+	    completed: "#3b82f6",
+	    new: "#8b5cf6",
+	  };
+	  const statusColor = statusColors[permit.status] || "#64748b";
+	  const officialDetailUrl = safeHttpUrl(permit.permit_detail_url);
+	  const peopleCards = [
     permit.owner_name
-      ? `
-                <div class="card">
-                    <div class="card-label">Property Owner</div>
-                    <div class="card-value">${permit.owner_name}</div>
-                    ${permit.owner_address ? `<div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${permit.owner_address}</div>` : ""}
-                </div>
-      `
+	      ? `
+	                <div class="card">
+	                    <div class="card-label">Property Owner</div>
+	                    <div class="card-value">${escapeHtml(permit.owner_name)}</div>
+	                    ${permit.owner_address ? `<div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.owner_address)}</div>` : ""}
+	                </div>
+	      `
       : "",
     permit.applicant_name
       ? `
-                <div class="card">
-                    <div class="card-label">Applicant</div>
-                    <div class="card-value">${permit.applicant_name}</div>
-                </div>
+	                <div class="card">
+	                    <div class="card-label">Applicant</div>
+	                    <div class="card-value">${escapeHtml(permit.applicant_name)}</div>
+	                </div>
       `
       : "",
     permit.architect_name
       ? `
-                <div class="card">
-                    <div class="card-label">Architect</div>
-                    <div class="card-value">${permit.architect_name}</div>
-                </div>
+	                <div class="card">
+	                    <div class="card-label">Architect</div>
+	                    <div class="card-value">${escapeHtml(permit.architect_name)}</div>
+	                </div>
       `
       : "",
   ]
     .filter(Boolean)
     .join("");
+  const enrichmentFields = [
+    ["Work performed by", permit.work_performed_by],
+    ["Contractor license", permit.contractor_license],
+    ["Review level", permit.review_level],
+    ["Primary use", permit.primary_property_use],
+    ["Parcel", permit.parcel_number],
+    ["Expires", permit.expires_date ? new Date(permit.expires_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : null],
+    ["Existing units", permit.housing_units_existing],
+    ["Units added", permit.housing_units_added],
+    ["Units removed", permit.housing_units_removed],
+    ["Sleeping rooms", permit.sleeping_rooms],
+  ].filter(([, value]) => value !== null && value !== undefined && value !== "");
+  const enrichmentCards = enrichmentFields.length
+    ? `
+                <div class="card card-full">
+                    <div class="card-label">Permit Intelligence</div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin-top:0.75rem;">
+                        ${enrichmentFields
+                          .map(
+                            ([label, value]) => `
+                        <div>
+                            <div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">${label}</div>
+                            <div style="font-size:1rem;font-weight:650;color:var(--primary);">${escapeHtml(value)}</div>
+                        </div>`,
+                          )
+                          .join("")}
+                    </div>
+	                    ${officialDetailUrl ? `<div style="margin-top:1rem;"><a href="${escapeHtml(officialDetailUrl)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-weight:650;">Open official SDCI detail &rarr;</a></div>` : ""}
+                </div>
+      `
+    : "";
   const primaryLeadLabel = permit.contractor_name ? "Request Project Updates" : "Request Permit Updates";
   const leadSource = `permit_detail:${permit.permit_number}`;
 
   const permitType = typeMap[(permit.type || "").toLowerCase()] || (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
   const metaDesc = `${permit.address || "Seattle location"}: ${permitType} permit (${permit.status || "new"}) in ${neighborhood}. Project value: ${valueFormatted}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
+  const safePermitNumber = escapeHtml(permit.permit_number);
+  const safeAddress = escapeHtml(permit.address || "Unknown Address");
+  const safeNeighborhood = escapeHtml(neighborhood);
+  const safePermitType = escapeHtml(permitType);
+  const safeStatus = escapeHtml(permit.status || "Unknown");
+  const safeMetaDesc = escapeHtml(metaDesc);
+  const safeTitleAddress = escapeHtml(permit.address || "Seattle");
+  const safeDescription = escapeHtml(permit.detailed_description || permit.description || "No description available for this permit.");
+  const mapsQuery = encodeURIComponent(permit.address || "Seattle, WA");
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Permit ${permit.permit_number} — ${permit.address || "Seattle"} | Building Seattle</title>
-    <meta name="description" content="${metaDesc}">
-    <link rel="canonical" href="${canonical}">
-    <meta property="og:title" content="Permit ${permit.permit_number} — ${permit.address || "Seattle"} | Building Seattle">
-    <meta property="og:description" content="${metaDesc}">
+	    <title>Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle</title>
+	    <meta name="description" content="${safeMetaDesc}">
+	    <link rel="canonical" href="${canonical}">
+	    <meta property="og:title" content="Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle">
+	    <meta property="og:description" content="${safeMetaDesc}">
     <meta property="og:type" content="article">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
     <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
+	    <meta property="og:image:height" content="630">
+	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
+	    <link rel="icon" href="/favicon.ico" type="image/png">
     <style>
         :root {
             --primary: #0f172a;
@@ -1516,7 +1831,7 @@ async function renderPermitDetail(permitNumber, env, request) {
         @media (max-width: 720px) { .hamburger { display: block; } .back-link { display: none; } }
 
         /* Main Content */
-        main { padding-top: 6rem; padding-bottom: 4rem; }
+	        main { padding-top: 1.5rem; padding-bottom: 4rem; }
 
         /* Permit Header */
         .permit-header {
@@ -1676,16 +1991,24 @@ async function renderPermitDetail(permitNumber, env, request) {
         }
 
         /* Footer */
-        footer {
-            background: var(--bg-alt);
-            border-top: 1px solid var(--border);
-            padding: 2rem 0;
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }
-    </style>
-    <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"},{"@type":"ListItem","position":2,"name":"Permits","item":"https://buildingseattle.com/permits"},{"@type":"ListItem","position":3,"name":"Permit ${permit.permit_number}","item":"https://buildingseattle.com/permits/${permit.permit_number}"}]}</script>
+	        footer {
+	            background: var(--bg-alt);
+	            border-top: 1px solid var(--border);
+	            padding: 2rem 0;
+	            text-align: center;
+	            color: var(--text-muted);
+	            font-size: 0.875rem;
+	        }
+	        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; backdrop-filter: blur(4px); align-items: center; justify-content: center; }
+	        .modal.active { display: flex; }
+	        .modal-content { background: var(--bg); padding: 2rem; border-radius: 1rem; width: min(90vw, 500px); position: relative; box-shadow: var(--shadow-lg); }
+	        .modal-close { position: absolute; top: 1rem; right: 1rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); }
+	        .form-group { margin-bottom: 1.25rem; }
+	        .form-group label { display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--primary); }
+	        .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--bg); color: var(--text); font-size: 1rem; }
+	        .hidden { display: none; }
+	    </style>
+	    <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"},{"@type":"ListItem","position":2,"name":"Permits","item":"https://buildingseattle.com/permits"},{"@type":"ListItem","position":3,"name":"Permit ${safePermitNumber}","item":"https://buildingseattle.com/permits/${encodeURIComponent(permit.permit_number)}"}]}</script>
 </head>
 <body>
     <nav>
@@ -1705,20 +2028,20 @@ async function renderPermitDetail(permitNumber, env, request) {
             </div>
         </div>
     </nav>
-    <div class="container" style="padding-top:1.25rem;">
+	    <div class="container" style="padding-top:5.25rem;">
         <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:var(--text-muted);">
-            <a href="/" style="color:var(--text-muted);text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:var(--text-muted);text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:var(--text);font-weight:600;">Permit ${permit.permit_number}</span>
+	            <a href="/" style="color:var(--text-muted);text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:var(--text-muted);text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:var(--text);font-weight:600;">Permit ${safePermitNumber}</span>
         </nav>
     </div>
 
     <main>
         <div class="container">
             <div class="permit-header">
-                <div class="permit-number">PERMIT #${permit.permit_number}</div>
-                <h1 class="permit-title">${permit.address || "Unknown Address"}</h1>
-                <span class="status-badge" style="background: ${statusColor}20; color: ${statusColor};">
-                    <span class="status-dot"></span>
-                    ${permit.status || "Unknown"}
+	                <div class="permit-number">PERMIT #${safePermitNumber}</div>
+	                <h1 class="permit-title">${safeAddress}</h1>
+	                <span class="status-badge" style="background: ${statusColor}20; color: ${statusColor};">
+	                    <span class="status-dot"></span>
+	                    ${safeStatus}
                 </span>
             </div>
             <div class="detail-grid">
@@ -1726,9 +2049,9 @@ async function renderPermitDetail(permitNumber, env, request) {
                     <div class="card-label">Project Details</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem;">
                         <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Value</div><div style="font-size:1.25rem;font-weight:800;color:var(--primary);">${valueFormatted}</div></div>
-                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Type</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${permitType}</div></div>
-                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Issued</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${issuedDate}</div></div>
-                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Location</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${neighborhood}</div></div>
+	                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Type</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${safePermitType}</div></div>
+	                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Issued</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${issuedDate}</div></div>
+	                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Location</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${safeNeighborhood}</div></div>
                     </div>
                 </div>
 
@@ -1737,61 +2060,64 @@ async function renderPermitDetail(permitNumber, env, request) {
                     ${
                       permit.contractor_slug
                         ? `
-                        <div class="card-value" style="cursor: pointer; color: var(--accent); margin-top: 0.5rem;" onclick="window.location=` + String.fromCharCode(96) + `/contractor/${permit.contractor_slug}` + String.fromCharCode(96) + `">${permit.contractor_name || "View Contractor"}</div>
-                        ${permit.contractor_specialty ? `<div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${permit.contractor_specialty}</div>` : ""}
-                        ${permit.contractor_phone ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">${permit.contractor_phone}</div>` : ""}
-                        ${permit.contractor_email ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">${permit.contractor_email}</div>` : ""}
+	                        <a class="card-value" style="display:block;color:var(--accent);margin-top:0.5rem;text-decoration:none;" href="/contractor/${encodeURIComponent(permit.contractor_slug)}">${escapeHtml(permit.contractor_name || "View Contractor")}</a>
+	                        ${permit.contractor_specialty ? `<div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.contractor_specialty)}</div>` : ""}
+	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
+	                        ${permit.contractor_phone ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.contractor_phone)}</div>` : ""}
+	                        ${permit.contractor_email ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.contractor_email)}</div>` : ""}
                     `
                         : `
-                        <div class="card-value" style="color: var(--text-muted); margin-top: 0.5rem;">Not yet assigned</div>
+	                        <div class="card-value" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
+	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
                     `
                     }
                     ${peopleCards}
                 </div>
 
                 <div class="card" style="padding: 0; overflow: hidden;">
-                    <iframe width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${encodeURIComponent(permit.address || "Seattle, WA")}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
+	                    <iframe width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
                     <div style="padding: 0.75rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: center;">
-                        <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(permit.address || "Seattle, WA")}" target="_blank" rel="noopener" style="font-size: 0.8125rem; color: var(--accent); text-decoration: none; font-weight: 500;">Google Maps &rarr;</a>
-                        <a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${encodeURIComponent(permit.address || "Seattle, WA")}" target="_blank" rel="noopener" style="font-size: 0.8125rem; color: var(--accent); text-decoration: none; font-weight: 500;">Street View &rarr;</a>
+	                        <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" style="font-size: 0.8125rem; color: var(--accent); text-decoration: none; font-weight: 500;">Google Maps &rarr;</a>
+	                        <a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${mapsQuery}" target="_blank" rel="noopener" style="font-size: 0.8125rem; color: var(--accent); text-decoration: none; font-weight: 500;">Street View &rarr;</a>
                     </div>
                 </div>
 
                 <div class="card card-full description-card">
                     <div class="card-label">Project Description</div>
-                    <div class="description-text">${permit.description || "No description available for this permit."}</div>
+	                    <div class="description-text">${safeDescription}</div>
                 </div>
+                ${enrichmentCards}
             </div>
 
             <div class="actions">
                 <button class="btn btn-primary" onclick="openModal()">${primaryLeadLabel}</button>
                 ${
                   permit.contractor_slug
-                    ? `<a href="/contractor/${permit.contractor_slug}" class="btn btn-secondary">View Contractor</a>`
-                    : `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(permit.address || "Seattle, WA")}" target="_blank" rel="noopener" class="btn btn-secondary">Open Map</a>`
+	                    ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="btn btn-secondary">View Contractor</a>`
+	                    : `<a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" class="btn btn-secondary">Open Map</a>`
                 }
             </div>
             </div>
         </div>
     </main>
 
-    <div id="leadModal" class="modal">
+    <div id="leadModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
         <div class="modal-content">
-            <button class="modal-close" onclick="closeModal()">&times;</button>
-            <h3 style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
-            <p style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get notified about permit ${permit.permit_number} and similar Seattle projects.</p>
+            <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
+            <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
+            <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get notified about permit ${safePermitNumber} and similar Seattle projects.</p>
             <form id="leadForm" onsubmit="submitLead(event)">
                 <div class="form-group">
-                    <label>Email *</label>
-                    <input type="email" name="email" required placeholder="you@company.com">
+                    <label for="lead-email">Email *</label>
+                    <input id="lead-email" type="email" name="email" required placeholder="you@company.com">
                 </div>
                 <div class="form-group">
-                    <label>Company Name *</label>
-                    <input type="text" name="company" required placeholder="Your Company">
+                    <label for="lead-company">Company Name *</label>
+                    <input id="lead-company" type="text" name="company" required placeholder="Your Company">
                 </div>
                 <div class="form-group">
-                    <label>Interest Type *</label>
-                    <select name="interest" required>
+                    <label for="lead-interest">Interest Type *</label>
+                    <select id="lead-interest" name="interest" required>
                         <option value="">Select...</option>
                         <option value="contractor">General Contractor</option>
                         <option value="subcontractor">Subcontractor</option>
@@ -1819,9 +2145,10 @@ async function renderPermitDetail(permitNumber, env, request) {
         </div>
     </footer>
     <script>
-        function openModal() { document.getElementById('leadModal').classList.add('active'); }
+        function openModal() { document.getElementById('leadModal').classList.add('active'); var field = document.getElementById('lead-email'); if (field) field.focus(); }
         function closeModal() { document.getElementById('leadModal').classList.remove('active'); }
         document.getElementById('leadModal').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeModal(); });
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
         async function submitLead(e) {
             e.preventDefault();
@@ -1953,32 +2280,32 @@ async function renderAdminDashboard(request, env) {
     env.DB.prepare("SELECT * FROM leads ORDER BY created_at DESC LIMIT 50").all(),
   ]);
 
-  const logRows = logs.results.map(log => `
-    <tr style="border-bottom: 1px solid var(--border);">
-      <td style="padding: 0.75rem;">${log.start_time}</td>
-      <td style="padding: 0.75rem; font-weight: 600;">${log.run_type}</td>
-      <td style="padding: 0.75rem;">
-        <span class="badge" style="background: ${log.status === 'success' ? '#10b98120; color: #10b981' : '#ef444420; color: #ef4444'}">
-          ${log.status}
-        </span>
-      </td>
-      <td style="padding: 0.75rem;">+${log.records_added}</td>
-      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${log.error_message || 'None'}</td>
-    </tr>
-  `).join('');
+	  const logRows = logs.results.map(log => `
+	    <tr style="border-bottom: 1px solid var(--border);">
+	      <td style="padding: 0.75rem;">${escapeHtml(log.start_time)}</td>
+	      <td style="padding: 0.75rem; font-weight: 600;">${escapeHtml(log.run_type)}</td>
+	      <td style="padding: 0.75rem;">
+	        <span class="badge" style="background: ${log.status === 'success' ? '#10b98120; color: #10b981' : '#ef444420; color: #ef4444'}">
+	          ${escapeHtml(log.status)}
+	        </span>
+	      </td>
+	      <td style="padding: 0.75rem;">+${Number(log.records_added || 0).toLocaleString()}</td>
+	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(log.error_message || 'None')}</td>
+	    </tr>
+	  `).join('');
 
   const leadRows = leads.results.length === 0
     ? '<tr><td colspan="6" style="padding: 2rem; text-align: center; color: var(--text-muted);">No leads captured yet.</td></tr>'
     : leads.results.map(lead => `
-    <tr style="border-bottom: 1px solid var(--border);">
-      <td style="padding: 0.75rem;">${lead.created_at}</td>
-      <td style="padding: 0.75rem; font-weight: 600;">${lead.email}</td>
-      <td style="padding: 0.75rem;">${lead.company}</td>
-      <td style="padding: 0.75rem;"><span class="badge" style="background: #eff6ff; color: #3b82f6;">${lead.interest}</span></td>
-      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${lead.neighborhoods || '-'}</td>
-      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${lead.source}</td>
-    </tr>
-  `).join('');
+	    <tr style="border-bottom: 1px solid var(--border);">
+	      <td style="padding: 0.75rem;">${escapeHtml(lead.created_at)}</td>
+	      <td style="padding: 0.75rem; font-weight: 600;">${escapeHtml(lead.email)}</td>
+	      <td style="padding: 0.75rem;">${escapeHtml(lead.company)}</td>
+	      <td style="padding: 0.75rem;"><span class="badge" style="background: #eff6ff; color: #3b82f6;">${escapeHtml(lead.interest)}</span></td>
+	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(lead.neighborhoods || '-')}</td>
+	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(lead.source)}</td>
+	    </tr>
+	  `).join('');
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -2070,28 +2397,60 @@ async function renderContractorPage(slug, env, request) {
     `).bind(contractor.id).all(),
   ]);
 
-  const permitDays = metrics.avg_permit_days ? Math.round(metrics.avg_permit_days) : "—";
-  const buildDays = metrics.avg_build_days ? Math.round(metrics.avg_build_days) : "—";
-  const activeProjects = metrics.active_count || 0;
-  const completionRate = metrics.total_count ? Math.round((metrics.completed_count / metrics.total_count) * 100) : 0;
+	  const permitDays = metrics.avg_permit_days ? Math.round(metrics.avg_permit_days) : "—";
+	  const buildDays = metrics.avg_build_days ? Math.round(metrics.avg_build_days) : "—";
+	  const activeProjects = metrics.active_count || 0;
+	  const completionRate = metrics.total_count ? Math.round((metrics.completed_count / metrics.total_count) * 100) : 0;
+	  const safeContractorName = escapeHtml(contractor.name);
+	  const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
+	  const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
+	  const safeContractorMetaDescription = escapeHtml(`${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.`);
+	  const contractorWebsite = safeHttpUrl(contractor.website);
+	  const contractorJsonLd = JSON.stringify({
+	    "@context": "https://schema.org",
+	    "@graph": [
+	      {
+	        "@type": "LocalBusiness",
+	        name: contractor.name,
+	        description: contractor.specialty || "Construction contractor in Seattle",
+	        url: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
+	        address: {
+	          "@type": "PostalAddress",
+	          addressLocality: "Seattle",
+	          addressRegion: "WA",
+	          addressCountry: "US",
+	        },
+	        knowsAbout: contractor.specialty || "Construction",
+	      },
+	      {
+	        "@type": "BreadcrumbList",
+	        itemListElement: [
+	          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+	          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+	          { "@type": "ListItem", position: 3, name: contractor.name, item: `${BASE_URL}/contractor/${encodeURIComponent(slug)}` },
+	        ],
+	      },
+	    ],
+	  }).replace(/</g, "\\u003c");
 
-  const html = `<!DOCTYPE html>
+	  const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${contractor.name} — ${contractor.specialty || "Contractor"} | Seattle | Building Seattle</title>
-    <meta name="description" content="${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.">
-    <link rel="canonical" href="${canonical}">
-    <meta property="og:title" content="${contractor.name} — ${contractor.specialty || "Contractor"} | Seattle | Building Seattle">
-    <meta property="og:description" content="${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects.">
+	    <title>${safeContractorName} — ${safeContractorSpecialty} | Seattle | Building Seattle</title>
+	    <meta name="description" content="${safeContractorMetaDescription}">
+	    <link rel="canonical" href="${canonical}">
+	    <meta property="og:title" content="${safeContractorName} — ${safeContractorSpecialty} | Seattle | Building Seattle">
+	    <meta property="og:description" content="${safeContractorMetaDescription}">
     <meta property="og:type" content="profile">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
+	    <meta property="og:image:width" content="1200">
+	    <meta property="og:image:height" content="630">
+	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
+	    <link rel="icon" href="/favicon.ico" type="image/png">
     <style>
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:#f8fafc;color:#1e293b}
         .container{max-width:1200px;margin:0 auto;padding:0 1.5rem}
@@ -2108,7 +2467,7 @@ async function renderContractorPage(slug, env, request) {
         .mobile-nav a:hover{color:#3b82f6}
         @media(max-width:768px){.hamburger{display:block}.btn{display:none}}
     </style>
-    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"LocalBusiness","name":"${contractor.name}","description":"${contractor.specialty || 'Construction contractor in Seattle'}","url":"https://buildingseattle.com/contractor/${slug}","address":{"@type":"PostalAddress","addressLocality":"Seattle","addressRegion":"WA","addressCountry":"US"},"knowsAbout":"${contractor.specialty || 'Construction'}"},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"},{"@type":"ListItem","position":2,"name":"Permits","item":"https://buildingseattle.com/permits"},{"@type":"ListItem","position":3,"name":"${contractor.name}","item":"https://buildingseattle.com/contractor/${slug}"}]}]}</script>
+	    <script type="application/ld+json">${contractorJsonLd}</script>
 </head>
 <body>
     <nav style="position:fixed;top:0;width:100%;background:rgba(255,255,255,0.9);backdrop-filter:blur(10px);border-bottom:1px solid #e2e8f0;z-index:50">
@@ -2127,13 +2486,13 @@ async function renderContractorPage(slug, env, request) {
     <div class="seo-hero">
         <div class="container">
             <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:#94a3b8;margin-bottom:1rem;">
-                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:#94a3b8;text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${contractor.name}</span>
+	                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:#94a3b8;text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${safeContractorName}</span>
             </nav>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:2rem;">
                 <div style="max-width:600px">
-                    <div style="color:#94a3b8;font-size:0.875rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">${contractor.specialty || "Contractor"}</div>
-                    <h1 style="font-size:3rem;font-weight:800;margin:0 0 1rem 0">${contractor.name}</h1>
-                    <p style="font-size:1.25rem;color:#94a3b8;margin:0">${contractor.description || "Seattle area construction professional"}</p>
+	                    <div style="color:#94a3b8;font-size:0.875rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">${safeContractorSpecialty}</div>
+	                    <h1 style="font-size:3rem;font-weight:800;margin:0 0 1rem 0">${safeContractorName}</h1>
+	                    <p style="font-size:1.25rem;color:#94a3b8;margin:0">${safeContractorDescription}</p>
                 </div>
                 <div style="display:flex; gap:1.5rem;">
                     <div style="text-align:right">
@@ -2158,8 +2517,8 @@ async function renderContractorPage(slug, env, request) {
                       .map(
                         (p) => `
                         <div style="padding:1rem 0;border-bottom:1px solid #e2e8f0">
-                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}" style="color:inherit;text-decoration:none">${p.address}</a></div>
-                            <div style="font-size:0.875rem;color:#64748b">${p.type || "Unknown"} • $${(p.value || 0).toLocaleString()} • ${p.status}</div>
+	                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}" style="color:inherit;text-decoration:none">${escapeHtml(p.address)}</a></div>
+	                            <div style="font-size:0.875rem;color:#64748b">${escapeHtml(p.type || "Unknown")} &bull; $${(p.value || 0).toLocaleString()} &bull; ${escapeHtml(p.status)}</div>
                         </div>
                     `,
                       )
@@ -2173,7 +2532,7 @@ async function renderContractorPage(slug, env, request) {
                         <div style="font-size:0.875rem; color:#64748b; margin-bottom:0.75rem">Top Neighborhoods</div>
                         ${marketFocus.results.map(f => `
                             <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.9375rem">
-                                <span style="font-weight:600">${f.neighborhood}</span>
+	                                <span style="font-weight:600">${escapeHtml(f.neighborhood)}</span>
                                 <span style="color:#64748b">${f.count} projects</span>
                             </div>
                         `).join('')}
@@ -2182,7 +2541,7 @@ async function renderContractorPage(slug, env, request) {
                         <div style="font-size:0.875rem; color:#64748b; margin-bottom:0.75rem">Project Composition</div>
                         <div style="display:flex; flex-wrap:wrap; gap:0.5rem">
                             ${projectTypes.results.map(t => `
-                                <span style="background:#eff6ff; color:#3b82f6; padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${t.type}</span>
+	                                <span style="background:#eff6ff; color:#3b82f6; padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
                             `).join('')}
                         </div>
                     </div>
@@ -2202,9 +2561,9 @@ async function renderContractorPage(slug, env, request) {
                     </div>
                     
                     <div style="padding-top:1rem; border-top:1px solid #e2e8f0">
-                        ${contractor.phone ? `<p style="margin:0.5rem 0">📞 <span style="font-weight:500">${contractor.phone}</span></p>` : ""}
-                        ${contractor.email ? `<p style="margin:0.5rem 0">✉️ <span style="font-weight:500">${contractor.email}</span></p>` : ""}
-                        ${contractor.website ? `<p style="margin:0.5rem 0">🌐 <a href="${contractor.website}" target="_blank" style="color:#3b82f6; text-decoration:none">${contractor.website.replace('https://','').replace('http://','')}</a></p>` : ""}
+	                        ${contractor.phone ? `<p style="margin:0.5rem 0">Phone <span style="font-weight:500">${escapeHtml(contractor.phone)}</span></p>` : ""}
+	                        ${contractor.email ? `<p style="margin:0.5rem 0">Email <span style="font-weight:500">${escapeHtml(contractor.email)}</span></p>` : ""}
+	                        ${contractorWebsite ? `<p style="margin:0.5rem 0">Web <a href="${escapeHtml(contractorWebsite)}" target="_blank" rel="noopener" style="color:#3b82f6; text-decoration:none">${escapeHtml(contractorWebsite.replace('https://','').replace('http://',''))}</a></p>` : ""}
                     </div>
                 </div>
             </div>
@@ -2471,11 +2830,21 @@ async function upsertScheduledPermits(env, permits) {
   for (let i = 0; i < permits.length; i += 100) {
     const batchPermits = permits.slice(i, i + 100);
     const permitNumbers = batchPermits.map((permit) => permit.permit_number).filter(Boolean);
-    const existingSet = await getExistingPermitNumbers(env, permitNumbers);
+    const existingStatuses = await getExistingPermitStatuses(env, permitNumbers);
+    const statusChanges = [];
 
     const statements = batchPermits.map((permit) => {
-      if (existingSet.has(permit.permit_number)) {
+      const incomingStatus = normalizeStoredStatus(permit.status);
+      if (existingStatuses.has(permit.permit_number)) {
         updated++;
+        const previousStatus = normalizeStoredStatus(existingStatuses.get(permit.permit_number));
+        if (previousStatus !== incomingStatus) {
+          statusChanges.push({
+            permit_number: permit.permit_number,
+            previous_status: previousStatus,
+            new_status: incomingStatus,
+          });
+        }
       } else {
         added++;
       }
@@ -2498,7 +2867,7 @@ async function upsertScheduledPermits(env, permits) {
         permit.neighborhood || null,
         permit.type || null,
         permit.value || null,
-        permit.status || "new",
+        incomingStatus,
         permit.description || null,
         permit.housing_units || 0,
         permit.applied_date || null,
@@ -2506,6 +2875,8 @@ async function upsertScheduledPermits(env, permits) {
         permit.completed_date || null,
       );
     });
+
+    statements.push(...buildStatusChangeStatements(env, statusChanges));
 
     if (statements.length) {
       await env.DB.batch(statements);
@@ -2515,22 +2886,35 @@ async function upsertScheduledPermits(env, permits) {
   return { added, updated };
 }
 
-async function getExistingPermitNumbers(env, permitNumbers) {
-  const existingSet = new Set();
+async function getExistingPermitStatuses(env, permitNumbers) {
+  const existingStatuses = new Map();
   if (!permitNumbers.length) {
-    return existingSet;
+    return existingStatuses;
   }
 
   const placeholders = permitNumbers.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT permit_number FROM permits WHERE permit_number IN (${placeholders})`
+    `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`
   ).bind(...permitNumbers).all();
 
   for (const row of results || []) {
-    existingSet.add(row.permit_number);
+    existingStatuses.set(row.permit_number, row.status);
   }
 
-  return existingSet;
+  return existingStatuses;
+}
+
+function buildStatusChangeStatements(env, statusChanges) {
+  return statusChanges.map((change) =>
+    env.DB.prepare(`
+      INSERT INTO permit_status_changes (permit_number, previous_status, new_status)
+      VALUES (?, ?, ?)
+    `).bind(
+      change.permit_number,
+      change.previous_status || null,
+      change.new_status || "new",
+    ),
+  );
 }
 
 function detectNeighborhood(lat, lng) {
@@ -2646,6 +3030,10 @@ function slugify(name) {
 
 async function ingestPermit(request, env) {
   const data = await request.json();
+  const incomingStatus = normalizeStoredStatus(data.status);
+  const existingPermit = data.permit_number
+    ? await env.DB.prepare(`SELECT status FROM permits WHERE permit_number = ?`).bind(data.permit_number).first()
+    : null;
 
   // Resolve contractor_id from contractor_name if provided
   let contractorId = null;
@@ -2672,7 +3060,7 @@ async function ingestPermit(request, env) {
       data.neighborhood || null,
       data.type || null,
       data.value || null,
-      data.status || "new",
+      incomingStatus,
       data.description || null,
       data.housing_units || 0,
       data.applied_date || null,
@@ -2680,6 +3068,16 @@ async function ingestPermit(request, env) {
       data.completed_date || null,
     )
     .run();
+
+  if (existingPermit) {
+    const previousStatus = normalizeStoredStatus(existingPermit.status);
+    if (previousStatus !== incomingStatus) {
+      await env.DB.prepare(`
+        INSERT INTO permit_status_changes (permit_number, previous_status, new_status)
+        VALUES (?, ?, ?)
+      `).bind(data.permit_number, previousStatus, incomingStatus).run();
+    }
+  }
 
   return new Response(JSON.stringify({ success: true }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -2715,28 +3113,41 @@ async function ingestPermitBatch(request, env) {
 
     // 2. Check existing permits in chunked queries
     const permitNumbers = items.map((i) => i.permit_number).filter(Boolean);
-    const existingSet = new Set();
+    const existingStatuses = new Map();
     if (permitNumbers.length > 0) {
       const chunkSize = 100;
       for (let i = 0; i < permitNumbers.length; i += chunkSize) {
         const chunk = permitNumbers.slice(i, i + chunkSize);
         const placeholders = chunk.map(() => "?").join(",");
         const { results } = await env.DB.prepare(
-          `SELECT permit_number FROM permits WHERE permit_number IN (${placeholders})`
+          `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`
         ).bind(...chunk).all();
-        for (const r of results) existingSet.add(r.permit_number);
+        for (const r of results) existingStatuses.set(r.permit_number, r.status);
       }
     }
 
     // 3. Build batched insert statements
     const statements = [];
+    const statusChanges = [];
     for (const item of items) {
       const contractorId = item.contractor_name
         ? (contractorMap.get(item.contractor_name.toLowerCase()) || null)
         : null;
+      const incomingStatus = normalizeStoredStatus(item.status);
 
-      if (existingSet.has(item.permit_number)) updated++;
-      else added++;
+      if (existingStatuses.has(item.permit_number)) {
+        updated++;
+        const previousStatus = normalizeStoredStatus(existingStatuses.get(item.permit_number));
+        if (previousStatus !== incomingStatus) {
+          statusChanges.push({
+            permit_number: item.permit_number,
+            previous_status: previousStatus,
+            new_status: incomingStatus,
+          });
+        }
+      } else {
+        added++;
+      }
 
       statements.push(
         env.DB.prepare(`
@@ -2753,7 +3164,7 @@ async function ingestPermitBatch(request, env) {
           item.neighborhood || null,
           item.type || null,
           item.value || null,
-          item.status || "new",
+          incomingStatus,
           item.description || null,
           item.housing_units || 0,
           item.applied_date || null,
@@ -2762,6 +3173,8 @@ async function ingestPermitBatch(request, env) {
         )
       );
     }
+
+    statements.push(...buildStatusChangeStatements(env, statusChanges));
 
     await env.DB.batch(statements);
 
@@ -2791,6 +3204,212 @@ async function ingestPermitBatch(request, env) {
   }
 }
 
+function normalizeEnrichmentItem(item) {
+  const licenseLookup = item.contractor_license_lookup || {};
+  const contractorDisclosure = item.contractor_disclosure || {};
+  const applicationInfo = item.application_info || {};
+  const otherInfo = item.other_info || {};
+  const contractorLicense = item.contractor_license || contractorDisclosure.contractor_license || licenseLookup.contractorlicensenumber || "";
+  const contractorName = item.contractor_name || licenseLookup.businessname || "";
+
+  return {
+    permit_number: item.permit_number,
+    contractor_name: contractorName ? String(contractorName).trim() : "",
+    contractor_license: contractorLicense ? String(contractorLicense).trim() : "",
+    contractor_license_status: item.contractor_license_status || licenseLookup.licensestatusdesc || "",
+    contractor_ubi: item.contractor_ubi || licenseLookup.ubi || "",
+    contractor_insurance_amount: intOrNull(item.contractor_insurance_amount || licenseLookup.insuranceamt),
+    contractor_insurance_expires_date: dateOrNull(item.contractor_insurance_expires_date || licenseLookup.expirationdate),
+    permit_detail_url: item.permit_detail_url || item.detail_url || null,
+    work_performed_by: item.work_performed_by || contractorDisclosure.performing_work || applicationInfo["Who will be performing all the work?"] || null,
+    review_level: item.review_level || applicationInfo["Review Level"] || null,
+    primary_property_use: item.primary_property_use || applicationInfo["Choose the Primary Property Use"] || null,
+    parcel_number: item.parcel_number || item.parcel || null,
+    detailed_description: item.detailed_description || item.project_description_detail || null,
+    record_status_detail: item.record_status_detail || item.record_status || null,
+    expires_date: dateOrNull(item.expires_date || item.expiration_date),
+    housing_units_added: intOrNull(item.housing_units_added || otherInfo["Number of Added Units"]),
+    housing_units_removed: intOrNull(item.housing_units_removed || otherInfo["Number of Removed Units"]),
+    housing_units_existing: intOrNull(item.housing_units_existing || otherInfo["Number of Existing Units"]),
+    sleeping_rooms: intOrNull(item.sleeping_rooms || otherInfo["Number of Sleeping Rooms"]),
+    has_required_inspections: item.has_required_inspections ? 1 : 0,
+    has_completed_inspections: item.has_completed_inspections ? 1 : 0,
+  };
+}
+
+async function ingestPermitEnrichmentBatch(request, env) {
+  const startTime = new Date();
+  let items;
+  try {
+    const body = await request.json();
+    items = body.items;
+  } catch (e) {
+    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  if (!Array.isArray(items)) {
+    return new Response(JSON.stringify({ error: "items must be an array" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const normalizedItems = items.map(normalizeEnrichmentItem).filter((item) => item.permit_number);
+  let permitsUpdated = 0;
+  let contractorsUpserted = 0;
+  let contractorsLinked = 0;
+
+  try {
+    const contractorCandidates = new Map();
+    for (const item of normalizedItems) {
+      if (!item.contractor_name) {
+        continue;
+      }
+      const slug = slugify(item.contractor_name);
+      if (!slug) {
+        continue;
+      }
+      contractorCandidates.set(slug, {
+        slug,
+        name: item.contractor_name,
+        license_number: item.contractor_license || null,
+        license_status: item.contractor_license_status || null,
+        ubi: item.contractor_ubi || null,
+        insurance_amount: item.contractor_insurance_amount,
+        insurance_expires_date: item.contractor_insurance_expires_date,
+      });
+    }
+
+    const contractorStatements = [...contractorCandidates.values()].map((contractor) =>
+      env.DB.prepare(`
+        INSERT INTO contractors (name, slug, specialty, license_number, license_status, ubi, insurance_amount, insurance_expires_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          name = excluded.name,
+          specialty = COALESCE(contractors.specialty, excluded.specialty),
+          license_number = COALESCE(excluded.license_number, contractors.license_number),
+          license_status = COALESCE(excluded.license_status, contractors.license_status),
+          ubi = COALESCE(excluded.ubi, contractors.ubi),
+          insurance_amount = COALESCE(excluded.insurance_amount, contractors.insurance_amount),
+          insurance_expires_date = COALESCE(excluded.insurance_expires_date, contractors.insurance_expires_date),
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(
+        contractor.name,
+        contractor.slug,
+        "General Contractor",
+        contractor.license_number,
+        contractor.license_status,
+        contractor.ubi,
+        contractor.insurance_amount,
+        contractor.insurance_expires_date,
+      ),
+    );
+
+    if (contractorStatements.length) {
+      await env.DB.batch(contractorStatements);
+      contractorsUpserted = contractorStatements.length;
+    }
+
+    const contractorBySlug = new Map();
+    const contractorSlugs = [...contractorCandidates.keys()];
+    for (let i = 0; i < contractorSlugs.length; i += 100) {
+      const chunk = contractorSlugs.slice(i, i + 100);
+      const placeholders = chunk.map(() => "?").join(",");
+      const { results } = await env.DB.prepare(
+        `SELECT id, slug FROM contractors WHERE slug IN (${placeholders})`,
+      ).bind(...chunk).all();
+      for (const row of results || []) {
+        contractorBySlug.set(row.slug, row.id);
+      }
+    }
+
+    const permitStatements = normalizedItems.map((item) => {
+      const contractorId = item.contractor_name ? contractorBySlug.get(slugify(item.contractor_name)) || null : null;
+      if (contractorId) {
+        contractorsLinked++;
+      }
+      permitsUpdated++;
+      return env.DB.prepare(`
+        UPDATE permits SET
+          contractor_id = COALESCE(?, contractor_id),
+          permit_detail_url = COALESCE(?, permit_detail_url),
+          contractor_license = COALESCE(?, contractor_license),
+          contractor_source = COALESCE(?, contractor_source),
+          work_performed_by = COALESCE(?, work_performed_by),
+          review_level = COALESCE(?, review_level),
+          primary_property_use = COALESCE(?, primary_property_use),
+          parcel_number = COALESCE(?, parcel_number),
+          detailed_description = COALESCE(?, detailed_description),
+          record_status_detail = COALESCE(?, record_status_detail),
+          expires_date = COALESCE(?, expires_date),
+          housing_units_added = COALESCE(?, housing_units_added),
+          housing_units_removed = COALESCE(?, housing_units_removed),
+          housing_units_existing = COALESCE(?, housing_units_existing),
+          sleeping_rooms = COALESCE(?, sleeping_rooms),
+          has_required_inspections = ?,
+          has_completed_inspections = ?,
+          last_enriched_at = CURRENT_TIMESTAMP
+        WHERE permit_number = ?
+      `).bind(
+        contractorId,
+        item.permit_detail_url,
+        item.contractor_license || null,
+        item.contractor_name ? "wa_lni_license" : "sdci_detail",
+        item.work_performed_by,
+        item.review_level,
+        item.primary_property_use,
+        item.parcel_number,
+        item.detailed_description,
+        item.record_status_detail,
+        item.expires_date,
+        item.housing_units_added,
+        item.housing_units_removed,
+        item.housing_units_existing,
+        item.sleeping_rooms,
+        item.has_required_inspections,
+        item.has_completed_inspections,
+        item.permit_number,
+      );
+    });
+
+    for (let i = 0; i < permitStatements.length; i += 100) {
+      await env.DB.batch(permitStatements.slice(i, i + 100));
+    }
+
+    await logIngest(env, {
+      run_type: "permit_enrichment",
+      source: "sdci_detail_lni",
+      status: "success",
+      records_added: contractorsUpserted,
+      records_updated: permitsUpdated,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+
+    return new Response(JSON.stringify({
+      processed: normalizedItems.length,
+      permits_updated: permitsUpdated,
+      contractors_upserted: contractorsUpserted,
+      contractors_linked: contractorsLinked,
+    }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (error) {
+    await logIngest(env, {
+      run_type: "permit_enrichment",
+      source: "sdci_detail_lni",
+      status: "error",
+      error_message: error.message,
+      start_time: startTime,
+      end_time: new Date(),
+    });
+    throw error;
+  }
+}
+
 async function replaceIngestData(request, env) {
   let body;
   try {
@@ -2811,6 +3430,7 @@ async function replaceIngestData(request, env) {
 
   const startTime = new Date();
   try {
+    await env.DB.prepare("DELETE FROM permit_status_changes").run();
     const permitsResult = await env.DB.prepare("DELETE FROM permits").run();
     const contractorsResult = await env.DB.prepare("DELETE FROM contractors").run();
     const permitsDeleted = permitsResult.meta?.changes || 0;
@@ -2984,14 +3604,14 @@ async function renderSitemapXml(env, request) {
 
   const allUrls = [...staticUrls, ...permitUrls, ...contractorUrls];
 
-  const urlEntries = allUrls
-    .map(
-      (u) => `  <url>
-    <loc>${u.loc}</loc>
-    <priority>${u.priority}</priority>
-    <changefreq>${u.changefreq}</changefreq>${u.lastmod ? "\n    <lastmod>" + u.lastmod + "</lastmod>" : ""}
-  </url>`,
-    )
+	  const urlEntries = allUrls
+	    .map(
+	      (u) => `  <url>
+	    <loc>${escapeHtml(u.loc)}</loc>
+	    <priority>${u.priority}</priority>
+	    <changefreq>${u.changefreq}</changefreq>${u.lastmod ? "\n    <lastmod>" + escapeHtml(u.lastmod) + "</lastmod>" : ""}
+	  </url>`,
+	    )
     .join("\n");
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3484,9 +4104,10 @@ function render404() {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Page Not Found | Building Seattle</title>
-    <meta name="description" content="The page you are looking for does not exist. Browse Seattle construction permits and contractors.">
-    <meta name="robots" content="noindex">
-    <link rel="canonical" href="${BASE_URL}/">
+	    <meta name="description" content="The page you are looking for does not exist. Browse Seattle construction permits and contractors.">
+	    <meta name="robots" content="noindex">
+	    <link rel="canonical" href="${BASE_URL}/">
+	    <link rel="icon" href="/favicon.ico" type="image/png">
     <style>
         :root { --primary: #0f172a; --accent: #3b82f6; --bg: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
