@@ -138,6 +138,26 @@ def extract_value(cost_str):
         return 0
 
 
+def extract_int(raw):
+    """Extract an optional integer, returning None when absent or unparseable."""
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(float(str(raw).replace(",", "").strip()))
+    except (ValueError, TypeError):
+        return None
+
+
+def clean_str(raw):
+    """Normalize an optional string field, treating placeholders as empty."""
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if text.lower() in ("n/a", "none", "null"):
+        return ""
+    return text
+
+
 def map_status(status):
     """Map permit status to simplified categories."""
     if not status:
@@ -210,7 +230,11 @@ async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
         "contractorcompanyname", "link",
         "latitude", "longitude",
         "applieddate", "issueddate", "expiresdate", "completeddate",
-        "estprojectcost", "readytoissuedate", "planreviewcompletedate"
+        "estprojectcost", "readytoissuedate", "planreviewcompletedate",
+        "zoning", "housingcategory", "dwellingunittype",
+        "parentpermitnum", "relatedmup",
+        "numberreviewcycles", "totaldaysplanreview", "daysoutcorrections",
+        "housingunitsadded", "housingunitsremoved",
     ])
 
     headers = {
@@ -307,6 +331,16 @@ async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
                 "issued_date": extract_date(item.get("issueddate")),
                 "completed_date": extract_date(item.get("completeddate")),
                 "housing_units": item.get("housingunits", 0),
+                "housing_units_added": extract_int(item.get("housingunitsadded")),
+                "housing_units_removed": extract_int(item.get("housingunitsremoved")),
+                "housing_category": clean_str(item.get("housingcategory")),
+                "dwelling_unit_type": clean_str(item.get("dwellingunittype")),
+                "zoning": clean_str(item.get("zoning")),
+                "parent_permit_number": clean_str(item.get("parentpermitnum")),
+                "related_mup": clean_str(item.get("relatedmup")),
+                "number_review_cycles": extract_int(item.get("numberreviewcycles")),
+                "total_days_plan_review": extract_int(item.get("totaldaysplanreview")),
+                "days_out_corrections": extract_int(item.get("daysoutcorrections")),
                 "permit_class": item.get("permitclass", ""),
                 "permit_type_detail": item.get("permittypemapped", ""),
                 "zip_code": item.get("originalzip", ""),

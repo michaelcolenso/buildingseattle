@@ -270,6 +270,17 @@ function intOrNull(value) {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
 }
 
+function cleanFeedText(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value).trim();
+  if (!text || ["n/a", "none", "null"].includes(text.toLowerCase())) {
+    return null;
+  }
+  return text;
+}
+
 function dateOrNull(value) {
   if (!value) {
     return null;
@@ -1677,9 +1688,17 @@ async function renderPermitDetail(permitNumber, env, request) {
   const enrichmentFields = [
     ["Work performed by", permit.work_performed_by],
     ["Contractor license", permit.contractor_license],
+    ["Zoning", permit.zoning],
+    ["Housing category", permit.housing_category],
+    ["Dwelling type", permit.dwelling_unit_type],
     ["Review level", permit.review_level],
     ["Primary use", permit.primary_property_use],
     ["Parcel", permit.parcel_number],
+    ["Parent permit", permit.parent_permit_number],
+    ["Related land-use permit", permit.related_mup],
+    ["Review cycles", permit.number_review_cycles],
+    ["Plan review days", permit.total_days_plan_review],
+    ["Days in corrections", permit.days_out_corrections],
     ["Expires", permit.expires_date ? new Date(permit.expires_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : null],
     ["Existing units", permit.housing_units_existing],
     ["Units added", permit.housing_units_added],
@@ -2719,6 +2738,16 @@ async function fetchSdciPermits(total = SCHEDULED_INGEST_LIMIT, pageSize = SCHED
     "estprojectcost",
     "readytoissuedate",
     "planreviewcompletedate",
+    "zoning",
+    "housingcategory",
+    "dwellingunittype",
+    "parentpermitnum",
+    "relatedmup",
+    "numberreviewcycles",
+    "totaldaysplanreview",
+    "daysoutcorrections",
+    "housingunitsadded",
+    "housingunitsremoved",
   ].join(",");
   const records = [];
 
@@ -2795,6 +2824,16 @@ function normalizeSdciPermits(rawPermits) {
       status: mapPermitStatus(item.statuscurrent),
       description: item.description || "No description",
       housing_units: parseInt(item.housingunits || "0", 10) || 0,
+      housing_units_added: intOrNull(item.housingunitsadded),
+      housing_units_removed: intOrNull(item.housingunitsremoved),
+      housing_category: cleanFeedText(item.housingcategory),
+      dwelling_unit_type: cleanFeedText(item.dwellingunittype),
+      zoning: cleanFeedText(item.zoning),
+      parent_permit_number: cleanFeedText(item.parentpermitnum),
+      related_mup: cleanFeedText(item.relatedmup),
+      number_review_cycles: intOrNull(item.numberreviewcycles),
+      total_days_plan_review: intOrNull(item.totaldaysplanreview),
+      days_out_corrections: intOrNull(item.daysoutcorrections),
       applied_date: extractDate(item.applieddate),
       issued_date: extractDate(item.issueddate),
       completed_date: extractDate(item.completeddate),
@@ -2857,8 +2896,11 @@ async function upsertScheduledPermits(env, permits) {
         INSERT OR REPLACE INTO permits (
           permit_number, contractor_id, applicant_name, address, neighborhood,
           type, value, status, description, housing_units,
-          applied_date, issued_date, completed_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          applied_date, issued_date, completed_date,
+          housing_units_added, housing_units_removed, housing_category,
+          dwelling_unit_type, zoning, parent_permit_number, related_mup,
+          number_review_cycles, total_days_plan_review, days_out_corrections
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         permit.permit_number,
         contractorId,
@@ -2873,6 +2915,16 @@ async function upsertScheduledPermits(env, permits) {
         permit.applied_date || null,
         permit.issued_date || null,
         permit.completed_date || null,
+        intOrNull(permit.housing_units_added),
+        intOrNull(permit.housing_units_removed),
+        permit.housing_category || null,
+        permit.dwelling_unit_type || null,
+        permit.zoning || null,
+        permit.parent_permit_number || null,
+        permit.related_mup || null,
+        intOrNull(permit.number_review_cycles),
+        intOrNull(permit.total_days_plan_review),
+        intOrNull(permit.days_out_corrections),
       );
     });
 
@@ -3047,8 +3099,8 @@ async function ingestPermit(request, env) {
   }
 
   const stmt = env.DB.prepare(`
-        INSERT OR REPLACE INTO permits (permit_number, contractor_id, applicant_name, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO permits (permit_number, contractor_id, applicant_name, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date, housing_units_added, housing_units_removed, housing_category, dwelling_unit_type, zoning, parent_permit_number, related_mup, number_review_cycles, total_days_plan_review, days_out_corrections)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
   await stmt
@@ -3066,6 +3118,16 @@ async function ingestPermit(request, env) {
       data.applied_date || null,
       data.issued_date || null,
       data.completed_date || null,
+      intOrNull(data.housing_units_added),
+      intOrNull(data.housing_units_removed),
+      data.housing_category || null,
+      data.dwelling_unit_type || null,
+      data.zoning || null,
+      data.parent_permit_number || null,
+      data.related_mup || null,
+      intOrNull(data.number_review_cycles),
+      intOrNull(data.total_days_plan_review),
+      intOrNull(data.days_out_corrections),
     )
     .run();
 
@@ -3154,8 +3216,11 @@ async function ingestPermitBatch(request, env) {
           INSERT OR REPLACE INTO permits (
             permit_number, contractor_id, applicant_name, address, neighborhood,
             type, value, status, description, housing_units,
-            applied_date, issued_date, completed_date
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            applied_date, issued_date, completed_date,
+            housing_units_added, housing_units_removed, housing_category,
+            dwelling_unit_type, zoning, parent_permit_number, related_mup,
+            number_review_cycles, total_days_plan_review, days_out_corrections
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           item.permit_number,
           contractorId,
@@ -3170,6 +3235,16 @@ async function ingestPermitBatch(request, env) {
           item.applied_date || null,
           item.issued_date || null,
           item.completed_date || null,
+          intOrNull(item.housing_units_added),
+          intOrNull(item.housing_units_removed),
+          item.housing_category || null,
+          item.dwelling_unit_type || null,
+          item.zoning || null,
+          item.parent_permit_number || null,
+          item.related_mup || null,
+          intOrNull(item.number_review_cycles),
+          intOrNull(item.total_days_plan_review),
+          intOrNull(item.days_out_corrections),
         )
       );
     }
