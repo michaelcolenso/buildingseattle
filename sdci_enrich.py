@@ -62,9 +62,11 @@ def flatten_enrichment(result):
         "contractor_insurance_amount": lookup.get("insuranceamt"),
         "contractor_insurance_expires_date": lookup.get("expirationdate"),
         "parcel_number": result.get("parcel"),
+        # housing_units_added / housing_units_removed now come from the base
+        # SDCI open-data feed (sdci_scraper.py), so they are no longer scraped
+        # from detail pages here. Existing units and sleeping rooms are not in
+        # the base feed, so they remain detail-sourced.
         "housing_units_existing": other_info.get("Number of Existing Units"),
-        "housing_units_removed": other_info.get("Number of Removed Units"),
-        "housing_units_added": other_info.get("Number of Added Units"),
         "sleeping_rooms": other_info.get("Number of Sleeping Rooms"),
         "has_required_inspections": result.get("has_required_inspections", False),
         "has_completed_inspections": result.get("has_completed_inspections", False),

@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS permits (
     parcel_number TEXT,
     detailed_description TEXT,
     record_status_detail TEXT,
+    zoning TEXT,
+    housing_category TEXT,
+    dwelling_unit_type TEXT,
+    parent_permit_number TEXT,
+    related_mup TEXT,
+    number_review_cycles INTEGER,
+    total_days_plan_review INTEGER,
+    days_out_corrections INTEGER,
     has_required_inspections INTEGER DEFAULT 0,
     has_completed_inspections INTEGER DEFAULT 0,
     last_enriched_at DATETIME,
@@ -87,6 +95,8 @@ CREATE INDEX IF NOT EXISTS idx_contractors_slug ON contractors(slug);
 CREATE INDEX IF NOT EXISTS idx_contractors_specialty ON contractors(specialty);
 CREATE INDEX IF NOT EXISTS idx_contractors_license_number ON contractors(license_number);
 CREATE INDEX IF NOT EXISTS idx_permits_neighborhood ON permits(neighborhood);
+CREATE INDEX IF NOT EXISTS idx_permits_zoning ON permits(zoning);
+CREATE INDEX IF NOT EXISTS idx_permits_parent_permit_number ON permits(parent_permit_number);
 CREATE INDEX IF NOT EXISTS idx_permits_status ON permits(status);
 CREATE INDEX IF NOT EXISTS idx_permits_contractor_license ON permits(contractor_license);
 CREATE INDEX IF NOT EXISTS idx_permits_last_enriched_at ON permits(last_enriched_at);
