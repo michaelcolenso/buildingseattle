@@ -281,6 +281,46 @@ function cleanFeedText(value) {
   return text;
 }
 
+// Upserts permits by permit_number while preserving enrichment-only columns
+// (parcel_number, contractor_license, review_level, inspections, owner_name,
+// last_enriched_at, etc.). Only base-feed columns are overwritten; contractor_id
+// and applicant_name use COALESCE so a null from the feed does not clear an
+// enrichment-supplied value.
+const PERMIT_UPSERT_SQL = `
+  INSERT INTO permits (
+    permit_number, contractor_id, applicant_name, address, neighborhood,
+    type, value, status, description, housing_units,
+    applied_date, issued_date, completed_date,
+    housing_units_added, housing_units_removed, housing_category,
+    dwelling_unit_type, zoning, parent_permit_number, related_mup,
+    number_review_cycles, total_days_plan_review, days_out_corrections
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(permit_number) DO UPDATE SET
+    contractor_id = COALESCE(excluded.contractor_id, permits.contractor_id),
+    applicant_name = COALESCE(excluded.applicant_name, permits.applicant_name),
+    address = excluded.address,
+    neighborhood = excluded.neighborhood,
+    type = excluded.type,
+    value = excluded.value,
+    status = excluded.status,
+    description = excluded.description,
+    housing_units = excluded.housing_units,
+    applied_date = excluded.applied_date,
+    issued_date = excluded.issued_date,
+    completed_date = excluded.completed_date,
+    housing_units_added = excluded.housing_units_added,
+    housing_units_removed = excluded.housing_units_removed,
+    housing_category = excluded.housing_category,
+    dwelling_unit_type = excluded.dwelling_unit_type,
+    zoning = excluded.zoning,
+    parent_permit_number = excluded.parent_permit_number,
+    related_mup = excluded.related_mup,
+    number_review_cycles = excluded.number_review_cycles,
+    total_days_plan_review = excluded.total_days_plan_review,
+    days_out_corrections = excluded.days_out_corrections,
+    updated_at = CURRENT_TIMESTAMP
+`;
+
 function dateOrNull(value) {
   if (!value) {
     return null;
@@ -2892,16 +2932,7 @@ async function upsertScheduledPermits(env, permits) {
         ? contractorMap.get(permit.contractor_name.toLowerCase()) || null
         : null;
 
-      return env.DB.prepare(`
-        INSERT OR REPLACE INTO permits (
-          permit_number, contractor_id, applicant_name, address, neighborhood,
-          type, value, status, description, housing_units,
-          applied_date, issued_date, completed_date,
-          housing_units_added, housing_units_removed, housing_category,
-          dwelling_unit_type, zoning, parent_permit_number, related_mup,
-          number_review_cycles, total_days_plan_review, days_out_corrections
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(
+      return env.DB.prepare(PERMIT_UPSERT_SQL).bind(
         permit.permit_number,
         contractorId,
         permit.applicant_name || null,
@@ -3098,10 +3129,7 @@ async function ingestPermit(request, env) {
     }
   }
 
-  const stmt = env.DB.prepare(`
-        INSERT OR REPLACE INTO permits (permit_number, contractor_id, applicant_name, address, neighborhood, type, value, status, description, housing_units, applied_date, issued_date, completed_date, housing_units_added, housing_units_removed, housing_category, dwelling_unit_type, zoning, parent_permit_number, related_mup, number_review_cycles, total_days_plan_review, days_out_corrections)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+  const stmt = env.DB.prepare(PERMIT_UPSERT_SQL);
 
   await stmt
     .bind(
@@ -3212,16 +3240,7 @@ async function ingestPermitBatch(request, env) {
       }
 
       statements.push(
-        env.DB.prepare(`
-          INSERT OR REPLACE INTO permits (
-            permit_number, contractor_id, applicant_name, address, neighborhood,
-            type, value, status, description, housing_units,
-            applied_date, issued_date, completed_date,
-            housing_units_added, housing_units_removed, housing_category,
-            dwelling_unit_type, zoning, parent_permit_number, related_mup,
-            number_review_cycles, total_days_plan_review, days_out_corrections
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
+        env.DB.prepare(PERMIT_UPSERT_SQL).bind(
           item.permit_number,
           contractorId,
           item.applicant_name || null,
