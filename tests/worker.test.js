@@ -280,13 +280,9 @@ function createEnv() {
               return { success: true };
             }
 
-            if (sql.includes("INSERT OR REPLACE INTO permits")) {
+            if (sql.includes("INSERT INTO permits") && sql.includes("ON CONFLICT(permit_number)")) {
               const existingIndex = permits.findIndex((permit) => permit.permit_number === params[0]);
-              const permit = {
-                id: existingIndex >= 0 ? permits[existingIndex].id : permits.length + 1,
-                permit_number: params[0],
-                contractor_id: params[1],
-                applicant_name: params[2],
+              const baseFields = {
                 address: params[3],
                 neighborhood: params[4],
                 type: params[5],
@@ -297,11 +293,34 @@ function createEnv() {
                 applied_date: params[10],
                 issued_date: params[11],
                 completed_date: params[12],
+                housing_units_added: params[13],
+                housing_units_removed: params[14],
+                housing_category: params[15],
+                dwelling_unit_type: params[16],
+                zoning: params[17],
+                parent_permit_number: params[18],
+                related_mup: params[19],
+                number_review_cycles: params[20],
+                total_days_plan_review: params[21],
+                days_out_corrections: params[22],
               };
               if (existingIndex >= 0) {
-                permits[existingIndex] = permit;
+                const existing = permits[existingIndex];
+                permits[existingIndex] = {
+                  ...existing,
+                  ...baseFields,
+                  contractor_id: params[1] ?? existing.contractor_id,
+                  applicant_name: params[2] ?? existing.applicant_name,
+                  updated_at: "2026-05-16 12:00:00",
+                };
               } else {
-                permits.push(permit);
+                permits.push({
+                  id: permits.length + 1,
+                  permit_number: params[0],
+                  contractor_id: params[1],
+                  applicant_name: params[2],
+                  ...baseFields,
+                });
               }
               return { success: true };
             }
@@ -611,6 +630,45 @@ test("POST /ingest/permit/batch records status changes for existing permits", as
   const change = env._state.statusChanges.find((item) => item.permit_number === "PERM456");
   assert.equal(change.previous_status, "pending");
   assert.equal(change.new_status, "active");
+});
+
+test("POST /ingest/permit preserves enrichment-only columns on re-ingest", async () => {
+  const env = createEnv();
+  const seeded = env._state.permits.find((permit) => permit.permit_number === "PERM456");
+  seeded.parcel_number = "DV1200889";
+  seeded.contractor_license = "GREENBN861QE";
+  seeded.review_level = "Field";
+  seeded.has_required_inspections = 1;
+  seeded.last_enriched_at = "2026-05-10 09:00:00";
+
+  const response = await worker.fetch(
+    new Request("http://example.com/ingest/permit", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Ingest-Token": "test-ingest-token",
+      },
+      body: JSON.stringify({
+        permit_number: "PERM456",
+        address: "5100 Ballard Ave NW, Seattle, WA",
+        value: 2200000,
+        status: "active",
+      }),
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 200);
+  const permit = env._state.permits.find((item) => item.permit_number === "PERM456");
+  assert.equal(permit.value, 2200000, "base column should update");
+  assert.equal(permit.status, "active", "base column should update");
+  assert.equal(permit.parcel_number, "DV1200889", "enrichment column must survive base re-ingest");
+  assert.equal(permit.contractor_license, "GREENBN861QE", "enrichment column must survive base re-ingest");
+  assert.equal(permit.review_level, "Field", "enrichment column must survive base re-ingest");
+  assert.equal(permit.has_required_inspections, 1, "enrichment column must survive base re-ingest");
+  assert.equal(permit.last_enriched_at, "2026-05-10 09:00:00", "enrichment column must survive base re-ingest");
+  assert.equal(permit.contractor_id, 10, "existing contractor_id should not be cleared when payload omits contractor_name");
 });
 
 test("POST /ingest/permit/enrichment/batch links permits from contractor license enrichment", async () => {
