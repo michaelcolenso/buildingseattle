@@ -363,12 +363,12 @@ function renderPagination(url, page, totalPages, total, shown, offset) {
   const start = total === 0 ? 0 : offset + 1;
   const end = offset + shown;
   let html = `<div class="pagination" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:1.5rem 0;border-top:1px solid var(--border);flex-wrap:wrap;">`;
-  html += `<div style="font-size:0.875rem;color:var(--muted);">Showing ${start}-${end} of ${total}</div>`;
+  html += `<div style="font-size:0.875rem;color:var(--text-muted);">Showing ${start}-${end} of ${total}</div>`;
   html += `<div style="display:flex;gap:0.5rem;align-items:center;">`;
   if (page > 1) {
     html += `<a href="${makeLink(page - 1)}" style="padding:0.5rem 1rem;border-radius:0.5rem;border:1px solid var(--border);color:var(--text);text-decoration:none;font-size:0.875rem;font-weight:600;background:var(--surface);">&larr; Prev</a>`;
   }
-  html += `<span style="font-size:0.875rem;color:var(--muted);padding:0 0.5rem;">Page ${page} of ${totalPages}</span>`;
+  html += `<span style="font-size:0.875rem;color:var(--text-muted);padding:0 0.5rem;">Page ${page} of ${totalPages}</span>`;
   if (page < totalPages) {
     html += `<a href="${makeLink(page + 1)}" style="padding:0.5rem 1rem;border-radius:0.5rem;border:1px solid var(--border);color:var(--text);text-decoration:none;font-size:0.875rem;font-weight:600;background:var(--surface);">Next &rarr;</a>`;
   }
@@ -430,6 +430,93 @@ async function requireIngestAuth(request, env) {
   return null;
 }
 
+function renderDesignTokens() {
+  return `<style>
+      :root {
+        --primary: #0f172a;
+        --accent: #3b82f6;
+        --accent-hover: #2563eb;
+        --bg: #ffffff;
+        --bg-alt: #f8fafc;
+        --surface: #ffffff;
+        --text: #1e293b;
+        --text-muted: #64748b;
+        --text-subtle: #94a3b8;
+        --border: #e2e8f0;
+        --success: #10b981;
+        --warn: #f59e0b;
+        --danger: #ef4444;
+        --steel: #475569;
+        --radius-sm: 0.5rem;
+        --radius-md: 0.75rem;
+        --radius-lg: 1rem;
+        --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+        --shadow-md: 0 14px 45px rgba(15,23,42,0.06);
+        --shadow-lg: 0 22px 60px rgba(15,23,42,0.14);
+        --container-max: 1200px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --primary: #f8fafc;
+          --bg: #0f172a;
+          --bg-alt: #1e293b;
+          --surface: #1e293b;
+          --text: #e2e8f0;
+          --text-muted: #94a3b8;
+          --border: #334155;
+        }
+      }
+      .global-nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 50; }
+      @media (prefers-color-scheme: dark) { .global-nav { background: rgba(15,23,42,0.9); } }
+      .global-nav-row { height: 4rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+      .global-nav .logo { font-weight: 800; font-size: 1.25rem; color: var(--primary); text-decoration: none; display: flex; align-items: center; gap: 0.5rem; }
+      .global-nav .logo-icon { width: 2rem; height: 2rem; background: linear-gradient(135deg, var(--accent), var(--accent-hover)); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 1rem; }
+      .global-nav-links { display: none; gap: 1.75rem; align-items: center; }
+      .global-nav-links a { color: var(--text-muted); text-decoration: none; font-weight: 500; font-size: 0.875rem; }
+      .global-nav-links a:hover, .global-nav-links a.active { color: var(--accent); }
+      .global-nav-hamburger { display: block; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--primary); padding: 0.25rem; }
+      @media (min-width: 768px) {
+        .global-nav-links { display: flex; }
+        .global-nav-hamburger { display: none; }
+      }
+      @media (max-width: 767px) {
+        .global-nav-links.open { display: flex; position: absolute; top: 4rem; right: 1rem; background: rgba(255,255,255,0.95); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.5rem 1rem; flex-direction: column; min-width: 180px; box-shadow: var(--shadow-sm); backdrop-filter: blur(12px); }
+        @media (prefers-color-scheme: dark) { .global-nav-links.open { background: rgba(15,23,42,0.95); } }
+      }
+      .global-nav-spacer { height: 4rem; }
+      .global-footer { background: var(--bg-alt); border-top: 1px solid var(--border); padding: 3rem 0; color: var(--text-muted); font-size: 0.875rem; margin-top: 4rem; }
+      .global-footer-row { display: flex; flex-direction: column; gap: 1rem; align-items: center; text-align: center; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+      @media (min-width: 768px) { .global-footer-row { flex-direction: row; justify-content: space-between; text-align: left; } }
+      .global-footer a { color: var(--text-muted); text-decoration: none; }
+      .global-footer a:hover { color: var(--accent); }
+    </style>`;
+}
+
+function renderNav(activePage) {
+  const link = (href, label, key) =>
+    `<a href="${href}"${key === activePage ? ' class="active"' : ''}>${label}</a>`;
+  return `<nav class="global-nav" id="global-nav">
+      <div class="container global-nav-row">
+        <a href="/" class="logo"><span class="logo-icon">B</span>Building Seattle</a>
+        <button class="global-nav-hamburger" onclick="document.querySelector('#global-nav .global-nav-links').classList.toggle('open')" aria-label="Menu">&#9776;</button>
+        <div class="global-nav-links">
+          ${link("/", "Home", "home")}
+          ${link("/permits", "Browse Permits", "permits")}
+          ${link("/api/permits", "API", "api")}
+        </div>
+      </div>
+    </nav>`;
+}
+
+function renderFooter() {
+  return `<footer class="global-footer">
+      <div class="global-footer-row">
+        <div>Building Seattle &mdash; Seattle construction intelligence</div>
+        <div><a href="mailto:hello@buildingseattle.com">hello@buildingseattle.com</a></div>
+      </div>
+    </footer>`;
+}
+
 async function handleRoot(request, env) {
   const canonical = BASE_URL + "/";
   const lastRun = await env.DB.prepare(`SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`).first();
@@ -452,6 +539,7 @@ async function handleRoot(request, env) {
     <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
     <style>
         :root { --primary: #0f172a; --accent: #3b82f6; --bg: #ffffff; --bg-alt: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; --steel: #475569; --amber: #f59e0b; --success: #10b981; --danger: #ef4444; --shadow: 0 22px 60px rgba(15,23,42,0.14); }
         @media (prefers-color-scheme: dark) { :root { --primary: #f8fafc; --bg: #0f172a; --bg-alt: #1e293b; --text: #e2e8f0; --text-muted: #94a3b8; --border: #334155; } }
@@ -1420,16 +1508,16 @@ async function renderPermitBrowser(request, env) {
 	    <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    ${renderDesignTokens()}
 	    <style>
-        :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --surface: #ffffff; --text: #1e293b; --muted: #64748b; --border: #dbe4f0; }
         * { box-sizing: border-box; }
-        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
-        .container { max-width: 1120px; margin: 0 auto; padding: 0 1.5rem; }
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg-alt); color: var(--text); }
+        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
         nav { position: sticky; top: 0; z-index: 50; background: rgba(248,250,252,0.95); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
         .nav-row { min-height: 4.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
         .brand { font-weight: 800; color: var(--primary); text-decoration: none; font-size: 1.25rem; }
         .nav-links { display: flex; gap: 1rem; align-items: center; }
-        .nav-links a { color: var(--muted); text-decoration: none; font-weight: 600; padding: 0.5rem 0; }
+        .nav-links a { color: var(--text-muted); text-decoration: none; font-weight: 600; padding: 0.5rem 0; }
         .hamburger { display: none; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--primary); padding: 0.25rem; }
         @media (max-width: 720px) {
           .hamburger { display: block; }
@@ -1438,35 +1526,35 @@ async function renderPermitBrowser(request, env) {
         }
         .hero { padding: 3.5rem 0 2rem; }
         .hero h1 { margin: 0 0 0.75rem; font-size: clamp(2rem, 4vw, 3.25rem); line-height: 1.05; }
-        .hero p { margin: 0; max-width: 720px; color: var(--muted); font-size: 1.05rem; }
+        .hero p { margin: 0; max-width: 720px; color: var(--text-muted); font-size: 1.05rem; }
         .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
-	        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.4rem; }
+	        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 0.4rem; }
 	        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
 	        button { background: var(--accent); color: white; font-weight: 700; cursor: pointer; border-color: var(--accent); }
 	        .hamburger { width: auto; border: none; padding: 0.25rem; }
 	        .secondary-link { background: transparent; color: var(--text); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
         .results-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
-        .results-head p { margin: 0; color: var(--muted); }
+        .results-head p { margin: 0; color: var(--text-muted); }
         .status-changes { margin: 0 0 2rem; }
         .status-changes-header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1rem; }
         .status-changes-header h2 { margin: 0; }
-        .status-changes-header p { margin: 0.35rem 0 0; color: var(--muted); }
+        .status-changes-header p { margin: 0.35rem 0 0; color: var(--text-muted); }
         .change-list { display: grid; gap: 0.75rem; }
         .change-card { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; box-shadow: 0 8px 30px rgba(15, 23, 42, 0.04); }
         .change-title a { color: var(--primary); text-decoration: none; font-size: 1rem; font-weight: 800; }
-        .change-meta, .change-time { color: var(--muted); font-size: 0.85rem; }
+        .change-meta, .change-time { color: var(--text-muted); font-size: 0.85rem; }
         .change-status { display: flex; align-items: center; justify-content: flex-end; gap: 0.45rem; flex-wrap: wrap; min-width: 260px; }
-        .change-arrow { color: var(--muted); font-weight: 800; }
+        .change-arrow { color: var(--text-muted); font-weight: 800; }
         .permits { display: grid; gap: 1rem; padding-bottom: 3rem; }
         .permit-card { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem; box-shadow: 0 8px 30px rgba(15, 23, 42, 0.04); }
         .permit-card-top, .permit-footer { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
         .permit-address a { color: var(--primary); text-decoration: none; font-size: 1.1rem; font-weight: 800; }
-        .permit-meta, .permit-number, .permit-description { color: var(--muted); }
+        .permit-meta, .permit-number, .permit-description { color: var(--text-muted); }
         .permit-description { margin: 0.85rem 0 1rem; line-height: 1.6; }
         .permit-value { font-size: 1.35rem; font-weight: 800; color: var(--primary); }
         .status-pill { background: rgba(37,99,235,0.12); color: var(--accent); border-radius: 999px; padding: 0.35rem 0.7rem; text-transform: capitalize; font-size: 0.8rem; font-weight: 700; }
-        .status-pill.muted { background: rgba(100,116,139,0.12); color: var(--muted); }
-        .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 1rem; padding: 2rem; text-align: center; color: var(--muted); }
+        .status-pill.muted { background: rgba(100,116,139,0.12); color: var(--text-muted); }
+        .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 1rem; padding: 2rem; text-align: center; color: var(--text-muted); }
         @media (max-width: 720px) {
           .nav-row { flex-direction: row; align-items: center; }
           .permit-card-top, .permit-footer, .results-head, .status-changes-header, .change-card { flex-direction: column; align-items: stretch; }
@@ -1488,8 +1576,8 @@ async function renderPermitBrowser(request, env) {
         </div>
     </nav>
     <div class="container" style="padding-top:1.25rem;">
-        <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:var(--muted);">
-            <a href="/" style="color:var(--muted);text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <span style="color:var(--text);font-weight:600;">Permits</span>
+        <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:var(--text-muted);">
+            <a href="/" style="color:var(--text-muted);text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <span style="color:var(--text);font-weight:600;">Permits</span>
         </nav>
     </div>
     <main class="container">
@@ -1582,7 +1670,10 @@ async function renderPermitDetail(permitNumber, env, request) {
     .all();
 
   if (results.length === 0) {
-    return new Response("Permit not found", { status: 404 });
+    return render404({
+      heading: "Permit not found",
+      message: `No permit matches "${permitNumber}". It may have been removed from the Seattle DCI feed or the number could be mistyped.`,
+    });
   }
 
   const permit = results[0];
@@ -1797,6 +1888,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 	    <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
     <style>
         :root {
             --primary: #0f172a;
@@ -2372,41 +2464,49 @@ async function renderAdminDashboard(request, env) {
     <meta charset="UTF-8">
     <meta name="robots" content="noindex, nofollow">
     <title>Admin Dashboard | Building Seattle</title>
+    ${renderDesignTokens()}
     <style>
-        :root { --primary: #0f172a; --accent: #3b82f6; --bg: #f8fafc; --surface: #ffffff; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; }
-        body { font-family: sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2rem; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: 2rem; }
-        .card { background: var(--surface); padding: 1.5rem; border-radius: 0.75rem; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; display: block; }
+        body { margin: 0; background: var(--bg-alt); color: var(--text); }
+        main { padding: 2rem 0; }
+        h1, h2 { color: var(--primary); }
+        h1 { font-size: 1.75rem; margin: 0 0 1.5rem; }
+        h2 { font-size: 1.25rem; margin: 2rem 0 1rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .card { background: var(--surface); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+        .label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; display: block; letter-spacing: 0.04em; }
         .value { font-size: 1.5rem; font-weight: 800; color: var(--primary); }
         .badge { padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }
-        table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 0.75rem; overflow: hidden; border: 1px solid var(--border); margin-bottom: 2rem; }
-        th { text-align: left; padding: 1rem; background: #f1f5f9; font-size: 0.875rem; color: var(--text-muted); }
+        table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border); margin-bottom: 2rem; }
+        th { text-align: left; padding: 1rem; background: var(--bg-alt); font-size: 0.875rem; color: var(--text-muted); }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>System Health</h1>
-        <div class="grid">
-            <div class="card"><span class="label">Last Run</span><div class="value">${stats.last_run?.status || 'N/A'}</div></div>
-            <div class="card"><span class="label">24h Growth</span><div class="value">+${stats.growth_24h}</div></div>
-            <div class="card"><span class="label">Total Permits</span><div class="value">${stats.total_counts.permits}</div></div>
-            <div class="card"><span class="label">Success Rate</span><div class="value">${Math.round(stats.performance?.success_rate || 0)}%</div></div>
-        </div>
-        
-        <h2>Leads (${leads.results.length})</h2>
-        <table>
-            <thead><tr><th>Time</th><th>Email</th><th>Company</th><th>Interest</th><th>Neighborhoods</th><th>Source</th></tr></thead>
-            <tbody>${leadRows}</tbody>
-        </table>
-        
-        <h2>Recent Ingest Logs</h2>
-        <table>
-            <thead><tr><th>Time</th><th>Type</th><th>Status</th><th>Added</th><th>Errors</th></tr></thead>
-            <tbody>${logRows}</tbody>
-        </table>
-    </div>
+    ${renderNav()}
+    <div class="global-nav-spacer"></div>
+    <main>
+      <div class="container">
+          <h1>System Health</h1>
+          <div class="grid">
+              <div class="card"><span class="label">Last Run</span><div class="value">${stats.last_run?.status || 'N/A'}</div></div>
+              <div class="card"><span class="label">24h Growth</span><div class="value">+${stats.growth_24h}</div></div>
+              <div class="card"><span class="label">Total Permits</span><div class="value">${stats.total_counts.permits}</div></div>
+              <div class="card"><span class="label">Success Rate</span><div class="value">${Math.round(stats.performance?.success_rate || 0)}%</div></div>
+          </div>
+
+          <h2>Leads (${leads.results.length})</h2>
+          <table>
+              <thead><tr><th>Time</th><th>Email</th><th>Company</th><th>Interest</th><th>Neighborhoods</th><th>Source</th></tr></thead>
+              <tbody>${leadRows}</tbody>
+          </table>
+
+          <h2>Recent Ingest Logs</h2>
+          <table>
+              <thead><tr><th>Time</th><th>Type</th><th>Status</th><th>Added</th><th>Errors</th></tr></thead>
+              <tbody>${logRows}</tbody>
+          </table>
+      </div>
+    </main>
+    ${renderFooter()}
 </body>
 </html>`;
 
@@ -2418,7 +2518,10 @@ async function renderContractorPage(slug, env, request) {
   const contractor = await env.DB.prepare("SELECT * FROM contractors WHERE slug = ?").bind(slug).first();
 
   if (!contractor) {
-    return new Response("Contractor not found", { status: 404 });
+    return render404({
+      heading: "Contractor not found",
+      message: "We do not have a profile for that contractor yet. Browse all linked contractors via the permits feed.",
+    });
   }
 
   const [permits, metrics, marketFocus, projectTypes] = await Promise.all([
@@ -2551,37 +2654,22 @@ async function renderContractorPage(slug, env, request) {
 	    <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
     <style>
-        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:#f8fafc;color:#1e293b}
-        .container{max-width:1200px;margin:0 auto;padding:0 1.5rem}
-        .seo-hero{background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);color:white;padding:6rem 0 3rem;margin-top:4rem}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:var(--bg-alt);color:var(--text)}
+        .container{max-width:var(--container-max);margin:0 auto;padding:0 1.5rem}
+        .seo-hero{background:linear-gradient(135deg,var(--primary) 0%,#1e293b 100%);color:white;padding:6rem 0 3rem;margin-top:4rem}
         .grid{display:grid;grid-template-columns:2fr 1fr;gap:3rem}
-        .card{background:white;border-radius:1rem;padding:2rem;box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1);margin-bottom:2rem}
-        .metric{text-align:center;padding:1.5rem;background:#f8fafc;border-radius:0.5rem;border:1px solid #e2e8f0}
-        .btn{background:#3b82f6;color:white;padding:0.75rem 1.5rem;border-radius:0.5rem;text-decoration:none;display:inline-block;font-weight:600}
+        .card{background:var(--surface);border-radius:var(--radius-lg);padding:2rem;box-shadow:var(--shadow-md);margin-bottom:2rem}
+        .metric{text-align:center;padding:1.5rem;background:var(--bg-alt);border-radius:var(--radius-sm);border:1px solid var(--border)}
+        .btn{background:var(--accent);color:white;padding:0.75rem 1.5rem;border-radius:var(--radius-sm);text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:0.875rem;transition:background 0.2s}
+        .btn:hover{background:var(--accent-hover)}
         @media(max-width:768px){.grid{grid-template-columns:1fr}}
-        .hamburger{display:none;background:none;border:none;font-size:1.5rem;cursor:pointer;color:#0f172a;padding:0.25rem}
-        .mobile-nav{display:none;position:absolute;top:4rem;right:1rem;background:#fff;border:1px solid #e2e8f0;border-radius:0.75rem;padding:0.5rem 1rem;flex-direction:column;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,0.08);z-index:100}
-        .mobile-nav.open{display:flex}
-        .mobile-nav a{color:#64748b;text-decoration:none;font-size:0.875rem;font-weight:500;padding:0.5rem 0}
-        .mobile-nav a:hover{color:#3b82f6}
-        @media(max-width:768px){.hamburger{display:block}.btn{display:none}}
     </style>
 	    <script type="application/ld+json">${contractorJsonLd}</script>
 </head>
 <body>
-    <nav style="position:fixed;top:0;width:100%;background:rgba(255,255,255,0.9);backdrop-filter:blur(10px);border-bottom:1px solid #e2e8f0;z-index:50">
-        <div class="container" style="height:4rem;display:flex;align-items:center;justify-content:space-between">
-            <a href="/" style="font-weight:800;font-size:1.25rem;color:#0f172a;text-decoration:none">Building Seattle</a>
-            <button class="hamburger" onclick="document.querySelector('.mobile-nav').classList.toggle('open')" aria-label="Menu">&#9776;</button>
-            <a href="/permits" class="btn">Browse Permits</a>
-            <div class="mobile-nav">
-                <a href="/">Home</a>
-                <a href="/permits">Permits</a>
-                <a href="/api/permits">API</a>
-            </div>
-        </div>
-    </nav>
+    ${renderNav()}
 
     <div class="seo-hero">
         <div class="container">
@@ -2686,6 +2774,7 @@ async function renderContractorPage(slug, env, request) {
             </div>
         </div>
     </div>
+    ${renderFooter()}
 </body>
 </html>`;
 
@@ -4249,56 +4338,52 @@ function renderOgImage() {
   });
 }
 
-function render404() {
+function render404(options) {
+  const heading = options?.heading || "Page not found";
+  const message = options?.message || "The page you are looking for does not exist or has been moved. Try browsing live permits or return to the homepage.";
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Page Not Found | Building Seattle</title>
-	    <meta name="description" content="The page you are looking for does not exist. Browse Seattle construction permits and contractors.">
-	    <meta name="robots" content="noindex">
-	    <link rel="canonical" href="${BASE_URL}/">
-	    <link rel="icon" href="/favicon.ico" type="image/png">
+    <title>${escapeHtml(heading)} | Building Seattle</title>
+    <meta name="description" content="${escapeHtml(message)}">
+    <meta name="robots" content="noindex">
+    <link rel="canonical" href="${BASE_URL}/">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
     <style>
-        :root { --primary: #0f172a; --accent: #3b82f6; --bg: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
-        nav { position: fixed; top: 0; width: 100%; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 50; }
-        .nav-container { height: 4rem; display: flex; align-items: center; justify-content: space-between; }
-        .logo { font-weight: 800; font-size: 1.5rem; color: var(--primary); text-decoration: none; display: flex; align-items: center; gap: 0.5rem; }
-        .logo-icon { width: 2rem; height: 2rem; background: linear-gradient(135deg, var(--accent), #1d4ed8); border-radius: 0.5rem; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; }
-        .error-section { padding-top: 10rem; padding-bottom: 6rem; text-align: center; }
-        .error-section h1 { font-size: 6rem; font-weight: 800; color: var(--accent); margin-bottom: 1rem; }
-        .error-section h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; min-height: 100vh; }
+        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        main { flex: 1; }
+        .error-section { padding-top: 8rem; padding-bottom: 6rem; text-align: center; }
+        .error-section h1 { font-size: 6rem; font-weight: 800; color: var(--accent); margin-bottom: 1rem; line-height: 1; }
+        .error-section h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; color: var(--primary); }
         .error-section p { color: var(--text-muted); margin-bottom: 2rem; max-width: 500px; margin-left: auto; margin-right: auto; }
-        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; font-size: 0.875rem; background: var(--accent); color: white; }
-        .btn:hover { background: #2563eb; }
-        .btn-secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); margin-left: 0.5rem; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; border-radius: var(--radius-sm); font-weight: 600; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; font-size: 0.875rem; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); margin-left: 0.5rem; }
         .btn-secondary:hover { background: var(--border); }
     </style>
 </head>
 <body>
-    <nav>
-        <div class="container nav-container">
-            <a href="/" class="logo">
-                <div class="logo-icon">B</div>
-                Building Seattle
-            </a>
-        </div>
-    </nav>
-    <section class="error-section">
-        <div class="container">
-            <h1>404</h1>
-            <h2>Page not found</h2>
-            <p>The page you are looking for does not exist or has been moved. Try browsing live permits or return to the homepage.</p>
-            <div>
-                <a href="/" class="btn">Return Home</a>
-                <a href="/permits" class="btn btn-secondary">Browse Permits</a>
-            </div>
-        </div>
-    </section>
+    ${renderNav()}
+    <main>
+      <section class="error-section">
+          <div class="container">
+              <h1>404</h1>
+              <h2>${escapeHtml(heading)}</h2>
+              <p>${escapeHtml(message)}</p>
+              <div>
+                  <a href="/" class="btn btn-primary">Return Home</a>
+                  <a href="/permits" class="btn btn-secondary">Browse Permits</a>
+              </div>
+          </div>
+      </section>
+    </main>
+    ${renderFooter()}
 </body>
 </html>`;
 
