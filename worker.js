@@ -2425,18 +2425,29 @@ async function renderContractorPage(slug, env, request) {
     env.DB.prepare("SELECT * FROM permits WHERE contractor_id = ? ORDER BY issued_date DESC LIMIT 10")
       .bind(contractor.id).all(),
     env.DB.prepare(`
-      SELECT 
+      SELECT
         AVG(JulianDay(issued_date) - JulianDay(applied_date)) as avg_permit_days,
         AVG(JulianDay(completed_date) - JulianDay(issued_date)) as avg_build_days,
+        AVG(number_review_cycles) as avg_review_cycles,
+        AVG(total_days_plan_review) as avg_plan_review_days,
+        AVG(days_out_corrections) as avg_corrections_days,
+        SUM(COALESCE(housing_units_added, 0)) as units_added,
+        SUM(COALESCE(housing_units_removed, 0)) as units_removed,
         COUNT(*) as total_count,
         SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_count,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count
-      FROM permits 
+      FROM permits
       WHERE contractor_id = ?
     `).bind(contractor.id).first().catch(() => ({
       avg_permit_days: null,
       avg_build_days: null,
+      avg_review_cycles: null,
+      avg_plan_review_days: null,
+      avg_corrections_days: null,
+      units_added: 0,
+      units_removed: 0,
       total_count: 0,
+      active_count: 0,
       completed_count: 0,
     })),
     env.DB.prepare(`
@@ -2460,6 +2471,36 @@ async function renderContractorPage(slug, env, request) {
 	  const buildDays = metrics.avg_build_days ? Math.round(metrics.avg_build_days) : "—";
 	  const activeProjects = metrics.active_count || 0;
 	  const completionRate = metrics.total_count ? Math.round((metrics.completed_count / metrics.total_count) * 100) : 0;
+	  const reviewCycles = metrics.avg_review_cycles != null ? metrics.avg_review_cycles.toFixed(1) : "—";
+	  const planReviewDays = metrics.avg_plan_review_days != null ? Math.round(metrics.avg_plan_review_days) : "—";
+	  const correctionsDays = metrics.avg_corrections_days != null ? Math.round(metrics.avg_corrections_days) : "—";
+	  const netHousingUnits = (metrics.units_added || 0) - (metrics.units_removed || 0);
+	  const licenseStatusRaw = contractor.license_status ? String(contractor.license_status).trim() : "";
+	  const licenseStatusUpper = licenseStatusRaw.toUpperCase();
+	  const licenseBadgeColor = licenseStatusUpper === "ACTIVE"
+	    ? "#10b981"
+	    : licenseStatusUpper === "EXPIRED"
+	      ? "#ef4444"
+	      : "#64748b";
+	  const insuranceFormatted = Number.isFinite(Number(contractor.insurance_amount)) && Number(contractor.insurance_amount) > 0
+	    ? `$${Number(contractor.insurance_amount).toLocaleString()}`
+	    : null;
+	  const insuranceExpiry = contractor.insurance_expires_date
+	    ? new Date(contractor.insurance_expires_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+	    : null;
+	  const hasCredentials = Boolean(contractor.license_number || contractor.ubi || insuranceFormatted);
+	  const credentialsCard = hasCredentials
+	    ? `<div class="card">
+	          <h3 style="margin-top:0">WA L&amp;I Credentials</h3>
+	          ${licenseStatusRaw
+	            ? `<div style="display:inline-block;padding:0.25rem 0.75rem;border-radius:999px;background:${licenseBadgeColor};color:#fff;font-size:0.75rem;font-weight:700;letter-spacing:0.05em;margin-bottom:1rem">${escapeHtml(licenseStatusUpper)}</div>`
+	            : ""}
+	          ${contractor.license_number ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">License</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.license_number)}</span></p>` : ""}
+	          ${contractor.ubi ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">UBI</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.ubi)}</span></p>` : ""}
+	          ${insuranceFormatted ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">Insurance</span> <span style="font-weight:600">${escapeHtml(insuranceFormatted)}</span>${insuranceExpiry ? ` <span style="color:#94a3b8;font-size:0.8125rem">(through ${escapeHtml(insuranceExpiry)})</span>` : ""}</p>` : ""}
+	          <p style="margin:1rem 0 0;font-size:0.75rem;color:#94a3b8">Verified via WA Labor &amp; Industries</p>
+	        </div>`
+	    : "";
 	  const safeContractorName = escapeHtml(contractor.name);
 	  const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
 	  const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
@@ -2585,6 +2626,7 @@ async function renderContractorPage(slug, env, request) {
                 </div>
             </div>
             <div>
+                ${credentialsCard}
                 <div class="card">
                     <h3>Market Specialization</h3>
                     <div style="margin-top:1.5rem">
@@ -2617,8 +2659,24 @@ async function renderContractorPage(slug, env, request) {
                             <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${activeProjects}</div>
                             <div style="font-size:0.75rem;color:#64748b">Active Projects</div>
                         </div>
+                        <div class="metric">
+                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${reviewCycles}</div>
+                            <div style="font-size:0.75rem;color:#64748b">Avg Review Cycles</div>
+                        </div>
+                        <div class="metric">
+                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${planReviewDays}</div>
+                            <div style="font-size:0.75rem;color:#64748b">Plan-Review Days</div>
+                        </div>
+                        <div class="metric">
+                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${correctionsDays}</div>
+                            <div style="font-size:0.75rem;color:#64748b">Days in Corrections</div>
+                        </div>
+                        <div class="metric">
+                            <div style="font-size:1.5rem;font-weight:800;color:${netHousingUnits > 0 ? '#10b981' : netHousingUnits < 0 ? '#ef4444' : '#3b82f6'}">${netHousingUnits > 0 ? '+' : ''}${netHousingUnits}</div>
+                            <div style="font-size:0.75rem;color:#64748b">Net Housing Units</div>
+                        </div>
                     </div>
-                    
+
                     <div style="padding-top:1rem; border-top:1px solid #e2e8f0">
 	                        ${contractor.phone ? `<p style="margin:0.5rem 0">Phone <span style="font-weight:500">${escapeHtml(contractor.phone)}</span></p>` : ""}
 	                        ${contractor.email ? `<p style="margin:0.5rem 0">Email <span style="font-weight:500">${escapeHtml(contractor.email)}</span></p>` : ""}
