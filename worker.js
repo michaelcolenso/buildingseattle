@@ -455,19 +455,7 @@ function renderDesignTokens() {
         --shadow-lg: 0 22px 60px rgba(15,23,42,0.14);
         --container-max: 1200px;
       }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --primary: #f8fafc;
-          --bg: #0f172a;
-          --bg-alt: #1e293b;
-          --surface: #1e293b;
-          --text: #e2e8f0;
-          --text-muted: #94a3b8;
-          --border: #334155;
-        }
-      }
       .global-nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 50; }
-      @media (prefers-color-scheme: dark) { .global-nav { background: rgba(15,23,42,0.9); } }
       .global-nav-row { height: 4rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
       .global-nav .logo { font-weight: 800; font-size: 1.25rem; color: var(--primary); text-decoration: none; display: flex; align-items: center; gap: 0.5rem; }
       .global-nav .logo-icon { width: 2rem; height: 2rem; background: linear-gradient(135deg, var(--accent), var(--accent-hover)); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 1rem; }
@@ -481,7 +469,6 @@ function renderDesignTokens() {
       }
       @media (max-width: 767px) {
         .global-nav-links.open { display: flex; position: absolute; top: 4rem; right: 1rem; background: rgba(255,255,255,0.95); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.5rem 1rem; flex-direction: column; min-width: 180px; box-shadow: var(--shadow-sm); backdrop-filter: blur(12px); }
-        @media (prefers-color-scheme: dark) { .global-nav-links.open { background: rgba(15,23,42,0.95); } }
       }
       .global-nav-spacer { height: 4rem; }
       .global-footer { background: var(--bg-alt); border-top: 1px solid var(--border); padding: 3rem 0; color: var(--text-muted); font-size: 0.875rem; margin-top: 4rem; }
