@@ -96,9 +96,11 @@ export default {
         const authError = requireAdminAuth(request, env);
         if (authError) return secure(authError);
         const stats = await getAdminStats(env);
-        return secure(new Response(JSON.stringify(stats), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }));
+        return secure(
+          new Response(JSON.stringify(stats), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }),
+        );
       }
 
       if (path === "/api/admin/analytics") {
@@ -111,13 +113,23 @@ export default {
 
         const [{ results: totals }, { results: pages }, { results: daily }] = await Promise.all([
           env.DB.prepare(`SELECT COUNT(*) as total FROM page_views WHERE created_at >= ?`).bind(sinceStr).all(),
-          env.DB.prepare(`SELECT path, COUNT(*) as views FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY views DESC LIMIT 10`).bind(sinceStr).all(),
-          env.DB.prepare(`SELECT date(created_at) as day, COUNT(*) as views FROM page_views WHERE created_at >= ? GROUP BY day ORDER BY day DESC`).bind(sinceStr).all(),
+          env.DB.prepare(
+            `SELECT path, COUNT(*) as views FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY views DESC LIMIT 10`,
+          )
+            .bind(sinceStr)
+            .all(),
+          env.DB.prepare(
+            `SELECT date(created_at) as day, COUNT(*) as views FROM page_views WHERE created_at >= ? GROUP BY day ORDER BY day DESC`,
+          )
+            .bind(sinceStr)
+            .all(),
         ]);
 
-        return secure(new Response(JSON.stringify({ days, total: totals[0]?.total || 0, top_pages: pages, daily: daily }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }));
+        return secure(
+          new Response(JSON.stringify({ days, total: totals[0]?.total || 0, top_pages: pages, daily: daily }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }),
+        );
       }
 
       if (path.startsWith("/contractor/")) {
@@ -190,19 +202,47 @@ export default {
         return secure(await renderSitemapXml(env, request));
       }
 
+      if (path === "/409508639a064e738971e5aa92be599e.txt") {
+        return new Response("409508639a064e738971e5aa92be599e", {
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+
+      if (path === "/.well-known/api-catalog") {
+        return secure(renderApiCatalog());
+      }
+
+      if (path === "/openapi.json") {
+        return secure(renderOpenApiSpec());
+      }
+
+      if (path === "/api-docs") {
+        return secure(renderApiDocs());
+      }
+
+      if (path === "/.well-known/mcp/server-card.json") {
+        return secure(renderMcpServerCard());
+      }
+
+      if (path === "/.well-known/agent-skills/index.json") {
+        return secure(await renderAgentSkillsIndex());
+      }
+
       return secure(render404());
     } catch (error) {
       console.error("Worker error:", error);
-      return secure(new Response(
-        JSON.stringify({
-          error: "Internal Server Error",
-          details: error.message,
-        }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        },
-      ));
+      return secure(
+        new Response(
+          JSON.stringify({
+            error: "Internal Server Error",
+            details: error.message,
+          }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
+        ),
+      );
     }
   },
 
@@ -211,11 +251,20 @@ export default {
   },
 };
 
+const DISCOVERY_LINKS = [
+  `<${BASE_URL}/.well-known/api-catalog>; rel="api-catalog"`,
+  `<${BASE_URL}/openapi.json>; rel="service-desc"; type="application/json"`,
+  `<${BASE_URL}/api-docs>; rel="service-doc"; type="text/html"`,
+  `<${BASE_URL}/sitemap.xml>; rel="sitemap"; type="application/xml"`,
+].join(", ");
+
 function withSecurityHeaders(response) {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(name, value);
   }
+  // Advertise agent-discovery resources on every response (RFC 8288).
+  headers.append("Link", DISCOVERY_LINKS);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -480,8 +529,7 @@ function renderDesignTokens() {
 }
 
 function renderNav(activePage) {
-  const link = (href, label, key) =>
-    `<a href="${href}"${key === activePage ? ' class="active"' : ''}>${label}</a>`;
+  const link = (href, label, key) => `<a href="${href}"${key === activePage ? ' class="active"' : ""}>${label}</a>`;
   return `<nav class="global-nav" id="global-nav">
       <div class="container global-nav-row">
         <a href="/" class="logo"><span class="logo-icon">B</span>Building Seattle</a>
@@ -506,8 +554,15 @@ function renderFooter() {
 
 async function handleRoot(request, env) {
   const canonical = BASE_URL + "/";
-  const lastRun = await env.DB.prepare(`SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`).first();
+  const lastRun = await env.DB.prepare(
+    `SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`,
+  ).first();
   const lastUpdated = lastRun?.end_time ? timeAgo(new Date(lastRun.end_time)) : "Recently";
+
+  if (wantsMarkdown(request)) {
+    return markdownResponse(request, homeMarkdown(lastUpdated));
+  }
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1189,6 +1244,7 @@ async function handleRoot(request, env) {
             }
         }
     </script>
+    ${renderWebMcpScript()}
 </body>
 </html>`;
 
@@ -1283,7 +1339,8 @@ async function getPermits(request, env) {
   }
   if (q) {
     const like = "%" + q + "%";
-    where += " AND (p.address LIKE ? OR p.description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
+    where +=
+      " AND (p.address LIKE ? OR p.description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
     params.push(like, like, like, like, like);
   }
 
@@ -1291,8 +1348,12 @@ async function getPermits(request, env) {
   const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where}`;
 
   const [{ results }, { total }] = await Promise.all([
-    env.DB.prepare(listQuery).bind(...params).all(),
-    env.DB.prepare(countQuery).bind(...params).first(),
+    env.DB.prepare(listQuery)
+      .bind(...params)
+      .all(),
+    env.DB.prepare(countQuery)
+      .bind(...params)
+      .first(),
   ]);
 
   return new Response(JSON.stringify({ total, page, per_page: perPage, results: (results || []).slice(0, perPage) }), {
@@ -1303,7 +1364,8 @@ async function getPermits(request, env) {
 async function getRecentStatusChanges(env, limit = 20) {
   const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   try {
-    const { results } = await env.DB.prepare(`
+    const { results } = await env.DB.prepare(
+      `
       SELECT
         sc.id,
         sc.permit_number,
@@ -1322,7 +1384,8 @@ async function getRecentStatusChanges(env, limit = 20) {
       LEFT JOIN contractors c ON p.contractor_id = c.id
       ORDER BY sc.changed_at DESC, sc.id DESC
       LIMIT ${safeLimit}
-    `).all();
+    `,
+    ).all();
 
     return results || [];
   } catch (error) {
@@ -1399,7 +1462,8 @@ async function renderPermitBrowser(request, env) {
   }
   if (q) {
     const like = "%" + q + "%";
-    where += " AND (p.address LIKE ? OR p.description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
+    where +=
+      " AND (p.address LIKE ? OR p.description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
     params.push(like, like, like, like, like);
   }
 
@@ -1415,17 +1479,32 @@ async function renderPermitBrowser(request, env) {
     lastRun,
     recentStatusChanges,
   ] = await Promise.all([
-    env.DB.prepare(listQuery).bind(...params).all(),
-    env.DB.prepare(`SELECT DISTINCT neighborhood FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != '' ORDER BY neighborhood ASC`).all(),
+    env.DB.prepare(listQuery)
+      .bind(...params)
+      .all(),
+    env.DB.prepare(
+      `SELECT DISTINCT neighborhood FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != '' ORDER BY neighborhood ASC`,
+    ).all(),
     env.DB.prepare(`SELECT DISTINCT type FROM permits WHERE type IS NOT NULL AND type != '' ORDER BY type ASC`).all(),
-    env.DB.prepare(`SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`).all(),
-    env.DB.prepare(countQuery).bind(...params).first(),
+    env.DB.prepare(
+      `SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`,
+    ).all(),
+    env.DB.prepare(countQuery)
+      .bind(...params)
+      .first(),
     env.DB.prepare(`SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`).first(),
     getRecentStatusChanges(env, 8),
   ]);
   const total = totalRaw || 0;
   const totalPages = Math.ceil(total / perPage);
   const lastUpdated = lastRun?.end_time ? timeAgo(new Date(lastRun.end_time)) : "Recently";
+
+  if (wantsMarkdown(request)) {
+    return markdownResponse(
+      request,
+      permitBrowserMarkdown({ permits, total, page, totalPages, neighborhood, type, status, q }),
+    );
+  }
 
   const neighborhoodOptions = neighborhoods
     .map(
@@ -1434,12 +1513,19 @@ async function renderPermitBrowser(request, env) {
     )
     .join("");
   const typeOptions = types
-    .map((item) => `<option value="${escapeHtml(item.type)}"${item.type === type ? " selected" : ""}>${escapeHtml(item.type)}</option>`)
+    .map(
+      (item) =>
+        `<option value="${escapeHtml(item.type)}"${item.type === type ? " selected" : ""}>${escapeHtml(item.type)}</option>`,
+    )
     .join("");
   const statusOptions = statuses
-    .map((item) => `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}</option>`)
+    .map(
+      (item) =>
+        `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}</option>`,
+    )
     .join("");
-  const activeFilterDesc = [q ? `search: "${q}"` : null, neighborhood, type, status].filter(Boolean).join(", ") || "All permits";
+  const activeFilterDesc =
+    [q ? `search: "${q}"` : null, neighborhood, type, status].filter(Boolean).join(", ") || "All permits";
   const recentChangeCards = renderStatusChangeCards(recentStatusChanges);
   const cards = permits
     .map((permit) => {
@@ -1766,17 +1852,17 @@ async function renderPermitDetail(permitNumber, env, request) {
     ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
     : "N/A";
 
-	  const statusColors = {
-	    active: "#10b981",
-	    pending: "#f59e0b",
-	    completed: "#3b82f6",
-	    new: "#8b5cf6",
-	  };
-	  const statusColor = statusColors[permit.status] || "#64748b";
-	  const officialDetailUrl = safeHttpUrl(permit.permit_detail_url);
-	  const peopleCards = [
+  const statusColors = {
+    active: "#10b981",
+    pending: "#f59e0b",
+    completed: "#3b82f6",
+    new: "#8b5cf6",
+  };
+  const statusColor = statusColors[permit.status] || "#64748b";
+  const officialDetailUrl = safeHttpUrl(permit.permit_detail_url);
+  const peopleCards = [
     permit.owner_name
-	      ? `
+      ? `
 	                <div class="card">
 	                    <div class="card-label">Property Owner</div>
 	                    <div class="card-value">${escapeHtml(permit.owner_name)}</div>
@@ -1817,7 +1903,12 @@ async function renderPermitDetail(permitNumber, env, request) {
     ["Review cycles", permit.number_review_cycles],
     ["Plan review days", permit.total_days_plan_review],
     ["Days in corrections", permit.days_out_corrections],
-    ["Expires", permit.expires_date ? new Date(permit.expires_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : null],
+    [
+      "Expires",
+      permit.expires_date
+        ? new Date(permit.expires_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+        : null,
+    ],
     ["Existing units", permit.housing_units_existing],
     ["Units added", permit.housing_units_added],
     ["Units removed", permit.housing_units_removed],
@@ -1845,7 +1936,9 @@ async function renderPermitDetail(permitNumber, env, request) {
   const primaryLeadLabel = permit.contractor_name ? "Request Project Updates" : "Request Permit Updates";
   const leadSource = `permit_detail:${permit.permit_number}`;
 
-  const permitType = typeMap[(permit.type || "").toLowerCase()] || (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
+  const permitType =
+    typeMap[(permit.type || "").toLowerCase()] ||
+    (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
   const metaDesc = `${permit.address || "Seattle location"}: ${permitType} permit (${permit.status || "new"}) in ${neighborhood}. Project value: ${valueFormatted}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
@@ -1855,8 +1948,18 @@ async function renderPermitDetail(permitNumber, env, request) {
   const safeStatus = escapeHtml(permit.status || "Unknown");
   const safeMetaDesc = escapeHtml(metaDesc);
   const safeTitleAddress = escapeHtml(permit.address || "Seattle");
-  const safeDescription = escapeHtml(permit.detailed_description || permit.description || "No description available for this permit.");
+  const safeDescription = escapeHtml(
+    permit.detailed_description || permit.description || "No description available for this permit.",
+  );
   const mapsQuery = encodeURIComponent(permit.address || "Seattle, WA");
+
+  if (wantsMarkdown(request)) {
+    return markdownResponse(
+      request,
+      permitDetailMarkdown(permit, { neighborhood, permitType, valueFormatted, issuedDate, canonical }),
+    );
+  }
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2231,8 +2334,8 @@ async function renderPermitDetail(permitNumber, env, request) {
                 <button class="btn btn-primary" onclick="openModal()">${primaryLeadLabel}</button>
                 ${
                   permit.contractor_slug
-	                    ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="btn btn-secondary">View Contractor</a>`
-	                    : `<a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" class="btn btn-secondary">Open Map</a>`
+                    ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="btn btn-secondary">View Contractor</a>`
+                    : `<a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" class="btn btn-secondary">Open Map</a>`
                 }
             </div>
             </div>
@@ -2351,14 +2454,16 @@ async function getStats(env) {
     env.DB.prepare("SELECT COUNT(*) as count FROM leads").first(),
     env.DB.prepare("SELECT COUNT(*) as count FROM permits").first(),
     env.DB.prepare("SELECT COUNT(*) as count FROM contractors").first(),
-    env.DB.prepare(`
+    env.DB.prepare(
+      `
       SELECT 
         COUNT(*) as total,
         SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
         SUM(value) as total_value,
         AVG(value) as avg_value
       FROM permits
-    `).first(),
+    `,
+    ).first(),
   ]);
 
   return new Response(
@@ -2380,26 +2485,34 @@ async function getStats(env) {
 async function getAdminStats(env) {
   const [lastRun, growth24h, neighborhoods, performance, counts] = await Promise.all([
     env.DB.prepare("SELECT * FROM ingest_logs ORDER BY start_time DESC LIMIT 1").first(),
-    env.DB.prepare("SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day')").first(),
-    env.DB.prepare(`
+    env.DB.prepare(
+      "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day')",
+    ).first(),
+    env.DB.prepare(
+      `
       SELECT neighborhood, COUNT(*) as count 
       FROM permits 
       WHERE created_at > datetime('now', '-7 days')
       GROUP BY neighborhood 
       ORDER BY count DESC LIMIT 5
-    `).all(),
-    env.DB.prepare(`
+    `,
+    ).all(),
+    env.DB.prepare(
+      `
       SELECT 
         AVG(strftime('%s', end_time) - strftime('%s', start_time)) as avg_duration,
         COUNT(CASE WHEN status = 'success' THEN 1 END) * 100.0 / COUNT(*) as success_rate
       FROM ingest_logs
-    `).first(),
-    env.DB.prepare(`
+    `,
+    ).first(),
+    env.DB.prepare(
+      `
       SELECT 
         (SELECT COUNT(*) FROM permits) as permits,
         (SELECT COUNT(*) FROM contractors) as contractors,
         (SELECT COUNT(*) FROM leads) as leads
-    `).first(),
+    `,
+    ).first(),
   ]);
 
   return {
@@ -2418,32 +2531,41 @@ async function renderAdminDashboard(request, env) {
     env.DB.prepare("SELECT * FROM leads ORDER BY created_at DESC LIMIT 50").all(),
   ]);
 
-	  const logRows = logs.results.map(log => `
+  const logRows = logs.results
+    .map(
+      (log) => `
 	    <tr style="border-bottom: 1px solid var(--border);">
 	      <td style="padding: 0.75rem;">${escapeHtml(log.start_time)}</td>
 	      <td style="padding: 0.75rem; font-weight: 600;">${escapeHtml(log.run_type)}</td>
 	      <td style="padding: 0.75rem;">
-	        <span class="badge" style="background: ${log.status === 'success' ? '#10b98120; color: #10b981' : '#ef444420; color: #ef4444'}">
+	        <span class="badge" style="background: ${log.status === "success" ? "#10b98120; color: #10b981" : "#ef444420; color: #ef4444"}">
 	          ${escapeHtml(log.status)}
 	        </span>
 	      </td>
 	      <td style="padding: 0.75rem;">+${Number(log.records_added || 0).toLocaleString()}</td>
-	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(log.error_message || 'None')}</td>
+	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(log.error_message || "None")}</td>
 	    </tr>
-	  `).join('');
+	  `,
+    )
+    .join("");
 
-  const leadRows = leads.results.length === 0
-    ? '<tr><td colspan="6" style="padding: 2rem; text-align: center; color: var(--text-muted);">No leads captured yet.</td></tr>'
-    : leads.results.map(lead => `
+  const leadRows =
+    leads.results.length === 0
+      ? '<tr><td colspan="6" style="padding: 2rem; text-align: center; color: var(--text-muted);">No leads captured yet.</td></tr>'
+      : leads.results
+          .map(
+            (lead) => `
 	    <tr style="border-bottom: 1px solid var(--border);">
 	      <td style="padding: 0.75rem;">${escapeHtml(lead.created_at)}</td>
 	      <td style="padding: 0.75rem; font-weight: 600;">${escapeHtml(lead.email)}</td>
 	      <td style="padding: 0.75rem;">${escapeHtml(lead.company)}</td>
 	      <td style="padding: 0.75rem;"><span class="badge" style="background: #eff6ff; color: #3b82f6;">${escapeHtml(lead.interest)}</span></td>
-	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(lead.neighborhoods || '-')}</td>
+	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(lead.neighborhoods || "-")}</td>
 	      <td style="padding: 0.75rem; font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(lead.source)}</td>
 	    </tr>
-	  `).join('');
+	  `,
+          )
+          .join("");
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -2474,7 +2596,7 @@ async function renderAdminDashboard(request, env) {
       <div class="container">
           <h1>System Health</h1>
           <div class="grid">
-              <div class="card"><span class="label">Last Run</span><div class="value">${stats.last_run?.status || 'N/A'}</div></div>
+              <div class="card"><span class="label">Last Run</span><div class="value">${stats.last_run?.status || "N/A"}</div></div>
               <div class="card"><span class="label">24h Growth</span><div class="value">+${stats.growth_24h}</div></div>
               <div class="card"><span class="label">Total Permits</span><div class="value">${stats.total_counts.permits}</div></div>
               <div class="card"><span class="label">Success Rate</span><div class="value">${Math.round(stats.performance?.success_rate || 0)}%</div></div>
@@ -2513,8 +2635,10 @@ async function renderContractorPage(slug, env, request) {
 
   const [permits, metrics, marketFocus, projectTypes] = await Promise.all([
     env.DB.prepare("SELECT * FROM permits WHERE contractor_id = ? ORDER BY issued_date DESC LIMIT 10")
-      .bind(contractor.id).all(),
-    env.DB.prepare(`
+      .bind(contractor.id)
+      .all(),
+    env.DB.prepare(
+      `
       SELECT
         AVG(JulianDay(issued_date) - JulianDay(applied_date)) as avg_permit_days,
         AVG(JulianDay(completed_date) - JulianDay(issued_date)) as avg_build_days,
@@ -2528,102 +2652,133 @@ async function renderContractorPage(slug, env, request) {
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count
       FROM permits
       WHERE contractor_id = ?
-    `).bind(contractor.id).first().catch(() => ({
-      avg_permit_days: null,
-      avg_build_days: null,
-      avg_review_cycles: null,
-      avg_plan_review_days: null,
-      avg_corrections_days: null,
-      units_added: 0,
-      units_removed: 0,
-      total_count: 0,
-      active_count: 0,
-      completed_count: 0,
-    })),
-    env.DB.prepare(`
+    `,
+    )
+      .bind(contractor.id)
+      .first()
+      .catch(() => ({
+        avg_permit_days: null,
+        avg_build_days: null,
+        avg_review_cycles: null,
+        avg_plan_review_days: null,
+        avg_corrections_days: null,
+        units_added: 0,
+        units_removed: 0,
+        total_count: 0,
+        active_count: 0,
+        completed_count: 0,
+      })),
+    env.DB.prepare(
+      `
       SELECT neighborhood, COUNT(*) as count, SUM(value) as total_value
       FROM permits 
       WHERE contractor_id = ? AND neighborhood IS NOT NULL
       GROUP BY neighborhood 
       ORDER BY count DESC 
       LIMIT 3
-    `).bind(contractor.id).all(),
-    env.DB.prepare(`
+    `,
+    )
+      .bind(contractor.id)
+      .all(),
+    env.DB.prepare(
+      `
       SELECT type, COUNT(*) as count
       FROM permits 
       WHERE contractor_id = ? AND type IS NOT NULL
       GROUP BY type 
       ORDER BY count DESC
-    `).bind(contractor.id).all(),
+    `,
+    )
+      .bind(contractor.id)
+      .all(),
   ]);
 
-	  const permitDays = metrics.avg_permit_days ? Math.round(metrics.avg_permit_days) : "—";
-	  const buildDays = metrics.avg_build_days ? Math.round(metrics.avg_build_days) : "—";
-	  const activeProjects = metrics.active_count || 0;
-	  const completionRate = metrics.total_count ? Math.round((metrics.completed_count / metrics.total_count) * 100) : 0;
-	  const reviewCycles = metrics.avg_review_cycles != null ? metrics.avg_review_cycles.toFixed(1) : "—";
-	  const planReviewDays = metrics.avg_plan_review_days != null ? Math.round(metrics.avg_plan_review_days) : "—";
-	  const correctionsDays = metrics.avg_corrections_days != null ? Math.round(metrics.avg_corrections_days) : "—";
-	  const netHousingUnits = (metrics.units_added || 0) - (metrics.units_removed || 0);
-	  const licenseStatusRaw = contractor.license_status ? String(contractor.license_status).trim() : "";
-	  const licenseStatusUpper = licenseStatusRaw.toUpperCase();
-	  const licenseBadgeColor = licenseStatusUpper === "ACTIVE"
-	    ? "#10b981"
-	    : licenseStatusUpper === "EXPIRED"
-	      ? "#ef4444"
-	      : "#64748b";
-	  const insuranceFormatted = Number.isFinite(Number(contractor.insurance_amount)) && Number(contractor.insurance_amount) > 0
-	    ? `$${Number(contractor.insurance_amount).toLocaleString()}`
-	    : null;
-	  const insuranceExpiry = contractor.insurance_expires_date
-	    ? new Date(contractor.insurance_expires_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
-	    : null;
-	  const hasCredentials = Boolean(contractor.license_number || contractor.ubi || insuranceFormatted);
-	  const credentialsCard = hasCredentials
-	    ? `<div class="card">
+  const permitDays = metrics.avg_permit_days ? Math.round(metrics.avg_permit_days) : "—";
+  const buildDays = metrics.avg_build_days ? Math.round(metrics.avg_build_days) : "—";
+  const activeProjects = metrics.active_count || 0;
+  const completionRate = metrics.total_count ? Math.round((metrics.completed_count / metrics.total_count) * 100) : 0;
+  const reviewCycles = metrics.avg_review_cycles != null ? metrics.avg_review_cycles.toFixed(1) : "—";
+  const planReviewDays = metrics.avg_plan_review_days != null ? Math.round(metrics.avg_plan_review_days) : "—";
+  const correctionsDays = metrics.avg_corrections_days != null ? Math.round(metrics.avg_corrections_days) : "—";
+  const netHousingUnits = (metrics.units_added || 0) - (metrics.units_removed || 0);
+
+  if (wantsMarkdown(request)) {
+    return markdownResponse(
+      request,
+      contractorMarkdown(contractor, { permits: permits.results || [], activeProjects, completionRate, canonical }),
+    );
+  }
+
+  const licenseStatusRaw = contractor.license_status ? String(contractor.license_status).trim() : "";
+  const licenseStatusUpper = licenseStatusRaw.toUpperCase();
+  const licenseBadgeColor =
+    licenseStatusUpper === "ACTIVE" ? "#10b981" : licenseStatusUpper === "EXPIRED" ? "#ef4444" : "#64748b";
+  const insuranceFormatted =
+    Number.isFinite(Number(contractor.insurance_amount)) && Number(contractor.insurance_amount) > 0
+      ? `$${Number(contractor.insurance_amount).toLocaleString()}`
+      : null;
+  const insuranceExpiry = contractor.insurance_expires_date
+    ? new Date(contractor.insurance_expires_date).toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
+  const hasCredentials = Boolean(contractor.license_number || contractor.ubi || insuranceFormatted);
+  const credentialsCard = hasCredentials
+    ? `<div class="card">
 	          <h3 style="margin-top:0">WA L&amp;I Credentials</h3>
-	          ${licenseStatusRaw
-	            ? `<div style="display:inline-block;padding:0.25rem 0.75rem;border-radius:999px;background:${licenseBadgeColor};color:#fff;font-size:0.75rem;font-weight:700;letter-spacing:0.05em;margin-bottom:1rem">${escapeHtml(licenseStatusUpper)}</div>`
-	            : ""}
+	          ${
+              licenseStatusRaw
+                ? `<div style="display:inline-block;padding:0.25rem 0.75rem;border-radius:999px;background:${licenseBadgeColor};color:#fff;font-size:0.75rem;font-weight:700;letter-spacing:0.05em;margin-bottom:1rem">${escapeHtml(licenseStatusUpper)}</div>`
+                : ""
+            }
 	          ${contractor.license_number ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">License</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.license_number)}</span></p>` : ""}
 	          ${contractor.ubi ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">UBI</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.ubi)}</span></p>` : ""}
 	          ${insuranceFormatted ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">Insurance</span> <span style="font-weight:600">${escapeHtml(insuranceFormatted)}</span>${insuranceExpiry ? ` <span style="color:#94a3b8;font-size:0.8125rem">(through ${escapeHtml(insuranceExpiry)})</span>` : ""}</p>` : ""}
 	          <p style="margin:1rem 0 0;font-size:0.75rem;color:#94a3b8">Verified via WA Labor &amp; Industries</p>
 	        </div>`
-	    : "";
-	  const safeContractorName = escapeHtml(contractor.name);
-	  const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
-	  const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
-	  const safeContractorMetaDescription = escapeHtml(`${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.`);
-	  const contractorWebsite = safeHttpUrl(contractor.website);
-	  const contractorJsonLd = JSON.stringify({
-	    "@context": "https://schema.org",
-	    "@graph": [
-	      {
-	        "@type": "LocalBusiness",
-	        name: contractor.name,
-	        description: contractor.specialty || "Construction contractor in Seattle",
-	        url: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
-	        address: {
-	          "@type": "PostalAddress",
-	          addressLocality: "Seattle",
-	          addressRegion: "WA",
-	          addressCountry: "US",
-	        },
-	        knowsAbout: contractor.specialty || "Construction",
-	      },
-	      {
-	        "@type": "BreadcrumbList",
-	        itemListElement: [
-	          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-	          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
-	          { "@type": "ListItem", position: 3, name: contractor.name, item: `${BASE_URL}/contractor/${encodeURIComponent(slug)}` },
-	        ],
-	      },
-	    ],
-	  }).replace(/</g, "\\u003c");
+    : "";
+  const safeContractorName = escapeHtml(contractor.name);
+  const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
+  const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
+  const safeContractorMetaDescription = escapeHtml(
+    `${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.`,
+  );
+  const contractorWebsite = safeHttpUrl(contractor.website);
+  const contractorJsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "LocalBusiness",
+        name: contractor.name,
+        description: contractor.specialty || "Construction contractor in Seattle",
+        url: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
+        address: {
+          "@type": "PostalAddress",
+          addressLocality: "Seattle",
+          addressRegion: "WA",
+          addressCountry: "US",
+        },
+        knowsAbout: contractor.specialty || "Construction",
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+          {
+            "@type": "ListItem",
+            position: 3,
+            name: contractor.name,
+            item: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
+          },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
 
-	  const html = `<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2706,19 +2861,27 @@ async function renderContractorPage(slug, env, request) {
                     <h3>Market Specialization</h3>
                     <div style="margin-top:1.5rem">
                         <div style="font-size:0.875rem; color:#64748b; margin-bottom:0.75rem">Top Neighborhoods</div>
-                        ${marketFocus.results.map(f => `
+                        ${marketFocus.results
+                          .map(
+                            (f) => `
                             <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.9375rem">
 	                                <span style="font-weight:600">${escapeHtml(f.neighborhood)}</span>
                                 <span style="color:#64748b">${f.count} projects</span>
                             </div>
-                        `).join('')}
+                        `,
+                          )
+                          .join("")}
                     </div>
                     <div style="margin-top:1.5rem; padding-top:1.5rem; border-top:1px solid #e2e8f0">
                         <div style="font-size:0.875rem; color:#64748b; margin-bottom:0.75rem">Project Composition</div>
                         <div style="display:flex; flex-wrap:wrap; gap:0.5rem">
-                            ${projectTypes.results.map(t => `
+                            ${projectTypes.results
+                              .map(
+                                (t) => `
 	                                <span style="background:#eff6ff; color:#3b82f6; padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
-                            `).join('')}
+                            `,
+                              )
+                              .join("")}
                         </div>
                     </div>
                 </div>
@@ -2747,7 +2910,7 @@ async function renderContractorPage(slug, env, request) {
                             <div style="font-size:0.75rem;color:#64748b">Days in Corrections</div>
                         </div>
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:${netHousingUnits > 0 ? '#10b981' : netHousingUnits < 0 ? '#ef4444' : '#3b82f6'}">${netHousingUnits > 0 ? '+' : ''}${netHousingUnits}</div>
+                            <div style="font-size:1.5rem;font-weight:800;color:${netHousingUnits > 0 ? "#10b981" : netHousingUnits < 0 ? "#ef4444" : "#3b82f6"}">${netHousingUnits > 0 ? "+" : ""}${netHousingUnits}</div>
                             <div style="font-size:0.75rem;color:#64748b">Net Housing Units</div>
                         </div>
                     </div>
@@ -2755,7 +2918,7 @@ async function renderContractorPage(slug, env, request) {
                     <div style="padding-top:1rem; border-top:1px solid #e2e8f0">
 	                        ${contractor.phone ? `<p style="margin:0.5rem 0">Phone <span style="font-weight:500">${escapeHtml(contractor.phone)}</span></p>` : ""}
 	                        ${contractor.email ? `<p style="margin:0.5rem 0">Email <span style="font-weight:500">${escapeHtml(contractor.email)}</span></p>` : ""}
-	                        ${contractorWebsite ? `<p style="margin:0.5rem 0">Web <a href="${escapeHtml(contractorWebsite)}" target="_blank" rel="noopener" style="color:#3b82f6; text-decoration:none">${escapeHtml(contractorWebsite.replace('https://','').replace('http://',''))}</a></p>` : ""}
+	                        ${contractorWebsite ? `<p style="margin:0.5rem 0">Web <a href="${escapeHtml(contractorWebsite)}" target="_blank" rel="noopener" style="color:#3b82f6; text-decoration:none">${escapeHtml(contractorWebsite.replace("https://", "").replace("http://", ""))}</a></p>` : ""}
                     </div>
                 </div>
             </div>
@@ -2768,22 +2931,27 @@ async function renderContractorPage(slug, env, request) {
   return new Response(html, { headers: { "Content-Type": "text/html" } });
 }
 
-async function logIngest(env, { run_type, source, status, records_added = 0, records_updated = 0, error_message = null, start_time, end_time }) {
+async function logIngest(
+  env,
+  { run_type, source, status, records_added = 0, records_updated = 0, error_message = null, start_time, end_time },
+) {
   const stmt = env.DB.prepare(`
     INSERT INTO ingest_logs (run_type, source, status, records_added, records_updated, error_message, start_time, end_time)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  await stmt.bind(
-    run_type,
-    source,
-    status,
-    records_added,
-    records_updated,
-    error_message,
-    start_time.toISOString().replace('T', ' ').split('.')[0],
-    end_time.toISOString().replace('T', ' ').split('.')[0]
-  ).run();
+  await stmt
+    .bind(
+      run_type,
+      source,
+      status,
+      records_added,
+      records_updated,
+      error_message,
+      start_time.toISOString().replace("T", " ").split(".")[0],
+      end_time.toISOString().replace("T", " ").split(".")[0],
+    )
+    .run();
 }
 
 const SDCI_PERMIT_URL = "https://data.seattle.gov/resource/k44w-2dcq.json";
@@ -2791,64 +2959,64 @@ const SCHEDULED_INGEST_LIMIT = 5000;
 const SCHEDULED_INGEST_PAGE_SIZE = 1000;
 
 const NEIGHBORHOOD_BOUNDS = [
-  ["Ballard", 47.668, 47.692, -122.410, -122.370],
-  ["Crown Hill", 47.692, 47.710, -122.390, -122.370],
-  ["Fremont", 47.650, 47.668, -122.370, -122.340],
-  ["Phinney Ridge", 47.668, 47.692, -122.370, -122.350],
-  ["Greenwood", 47.692, 47.710, -122.370, -122.340],
-  ["Broadview", 47.710, 47.735, -122.370, -122.340],
-  ["Bitter Lake", 47.710, 47.735, -122.360, -122.335],
-  ["Magnolia", 47.630, 47.670, -122.420, -122.385],
-  ["Interbay", 47.640, 47.660, -122.385, -122.365],
-  ["Green Lake", 47.668, 47.692, -122.360, -122.325],
-  ["Wallingford", 47.650, 47.668, -122.340, -122.315],
-  ["Roosevelt", 47.668, 47.685, -122.325, -122.310],
-  ["Maple Leaf", 47.685, 47.710, -122.325, -122.300],
-  ["Northgate", 47.700, 47.720, -122.340, -122.310],
-  ["Licton Springs", 47.692, 47.710, -122.345, -122.325],
-  ["Haller Lake", 47.715, 47.735, -122.345, -122.320],
-  ["Pinehurst", 47.720, 47.740, -122.320, -122.295],
-  ["University District", 47.650, 47.668, -122.315, -122.290],
-  ["Ravenna", 47.668, 47.688, -122.310, -122.280],
-  ["Wedgwood", 47.685, 47.700, -122.300, -122.280],
-  ["View Ridge", 47.680, 47.695, -122.280, -122.260],
-  ["Sand Point", 47.680, 47.695, -122.270, -122.250],
-  ["Laurelhurst", 47.660, 47.680, -122.285, -122.265],
-  ["Bryant", 47.668, 47.685, -122.290, -122.270],
-  ["Meadowbrook", 47.700, 47.715, -122.300, -122.280],
-  ["Lake City", 47.710, 47.735, -122.300, -122.270],
-  ["Olympic Hills", 47.720, 47.740, -122.300, -122.275],
-  ["Queen Anne", 47.625, 47.650, -122.370, -122.345],
-  ["South Lake Union", 47.620, 47.635, -122.345, -122.325],
-  ["Eastlake", 47.635, 47.650, -122.335, -122.320],
-  ["Capitol Hill", 47.610, 47.640, -122.325, -122.300],
-  ["First Hill", 47.600, 47.615, -122.330, -122.315],
-  ["Central District", 47.600, 47.620, -122.310, -122.290],
-  ["Madrona", 47.608, 47.625, -122.295, -122.280],
-  ["Leschi", 47.596, 47.608, -122.295, -122.280],
-  ["Madison Park", 47.630, 47.645, -122.290, -122.270],
-  ["Madison Valley", 47.625, 47.640, -122.300, -122.285],
-  ["Montlake", 47.640, 47.655, -122.310, -122.290],
-  ["Downtown", 47.600, 47.620, -122.345, -122.325],
-  ["Belltown", 47.612, 47.622, -122.355, -122.340],
-  ["Pioneer Square", 47.598, 47.605, -122.340, -122.325],
-  ["International District", 47.593, 47.602, -122.330, -122.315],
-  ["SoDo", 47.565, 47.595, -122.345, -122.320],
-  ["Georgetown", 47.540, 47.565, -122.340, -122.310],
-  ["Beacon Hill", 47.555, 47.600, -122.315, -122.295],
-  ["North Beacon Hill", 47.575, 47.600, -122.315, -122.295],
-  ["Mt Baker", 47.570, 47.590, -122.295, -122.280],
+  ["Ballard", 47.668, 47.692, -122.41, -122.37],
+  ["Crown Hill", 47.692, 47.71, -122.39, -122.37],
+  ["Fremont", 47.65, 47.668, -122.37, -122.34],
+  ["Phinney Ridge", 47.668, 47.692, -122.37, -122.35],
+  ["Greenwood", 47.692, 47.71, -122.37, -122.34],
+  ["Broadview", 47.71, 47.735, -122.37, -122.34],
+  ["Bitter Lake", 47.71, 47.735, -122.36, -122.335],
+  ["Magnolia", 47.63, 47.67, -122.42, -122.385],
+  ["Interbay", 47.64, 47.66, -122.385, -122.365],
+  ["Green Lake", 47.668, 47.692, -122.36, -122.325],
+  ["Wallingford", 47.65, 47.668, -122.34, -122.315],
+  ["Roosevelt", 47.668, 47.685, -122.325, -122.31],
+  ["Maple Leaf", 47.685, 47.71, -122.325, -122.3],
+  ["Northgate", 47.7, 47.72, -122.34, -122.31],
+  ["Licton Springs", 47.692, 47.71, -122.345, -122.325],
+  ["Haller Lake", 47.715, 47.735, -122.345, -122.32],
+  ["Pinehurst", 47.72, 47.74, -122.32, -122.295],
+  ["University District", 47.65, 47.668, -122.315, -122.29],
+  ["Ravenna", 47.668, 47.688, -122.31, -122.28],
+  ["Wedgwood", 47.685, 47.7, -122.3, -122.28],
+  ["View Ridge", 47.68, 47.695, -122.28, -122.26],
+  ["Sand Point", 47.68, 47.695, -122.27, -122.25],
+  ["Laurelhurst", 47.66, 47.68, -122.285, -122.265],
+  ["Bryant", 47.668, 47.685, -122.29, -122.27],
+  ["Meadowbrook", 47.7, 47.715, -122.3, -122.28],
+  ["Lake City", 47.71, 47.735, -122.3, -122.27],
+  ["Olympic Hills", 47.72, 47.74, -122.3, -122.275],
+  ["Queen Anne", 47.625, 47.65, -122.37, -122.345],
+  ["South Lake Union", 47.62, 47.635, -122.345, -122.325],
+  ["Eastlake", 47.635, 47.65, -122.335, -122.32],
+  ["Capitol Hill", 47.61, 47.64, -122.325, -122.3],
+  ["First Hill", 47.6, 47.615, -122.33, -122.315],
+  ["Central District", 47.6, 47.62, -122.31, -122.29],
+  ["Madrona", 47.608, 47.625, -122.295, -122.28],
+  ["Leschi", 47.596, 47.608, -122.295, -122.28],
+  ["Madison Park", 47.63, 47.645, -122.29, -122.27],
+  ["Madison Valley", 47.625, 47.64, -122.3, -122.285],
+  ["Montlake", 47.64, 47.655, -122.31, -122.29],
+  ["Downtown", 47.6, 47.62, -122.345, -122.325],
+  ["Belltown", 47.612, 47.622, -122.355, -122.34],
+  ["Pioneer Square", 47.598, 47.605, -122.34, -122.325],
+  ["International District", 47.593, 47.602, -122.33, -122.315],
+  ["SoDo", 47.565, 47.595, -122.345, -122.32],
+  ["Georgetown", 47.54, 47.565, -122.34, -122.31],
+  ["Beacon Hill", 47.555, 47.6, -122.315, -122.295],
+  ["North Beacon Hill", 47.575, 47.6, -122.315, -122.295],
+  ["Mt Baker", 47.57, 47.59, -122.295, -122.28],
   ["Columbia City", 47.555, 47.575, -122.295, -122.275],
   ["Hillman City", 47.545, 47.558, -122.295, -122.275],
   ["Rainier Beach", 47.505, 47.535, -122.275, -122.245],
-  ["Seward Park", 47.530, 47.560, -122.270, -122.250],
-  ["Rainier Valley", 47.520, 47.555, -122.300, -122.270],
-  ["South Park", 47.520, 47.540, -122.340, -122.315],
-  ["Dunlap", 47.530, 47.545, -122.280, -122.260],
-  ["West Seattle", 47.530, 47.600, -122.420, -122.345],
-  ["Admiral", 47.570, 47.585, -122.410, -122.380],
-  ["Alki", 47.576, 47.592, -122.420, -122.400],
-  ["White Center", 47.505, 47.530, -122.380, -122.345],
+  ["Seward Park", 47.53, 47.56, -122.27, -122.25],
+  ["Rainier Valley", 47.52, 47.555, -122.3, -122.27],
+  ["South Park", 47.52, 47.54, -122.34, -122.315],
+  ["Dunlap", 47.53, 47.545, -122.28, -122.26],
+  ["West Seattle", 47.53, 47.6, -122.42, -122.345],
+  ["Admiral", 47.57, 47.585, -122.41, -122.38],
+  ["Alki", 47.576, 47.592, -122.42, -122.4],
+  ["White Center", 47.505, 47.53, -122.38, -122.345],
 ];
 
 async function runScheduledIngest(env) {
@@ -2936,7 +3104,7 @@ async function fetchSdciPermits(total = SCHEDULED_INGEST_LIMIT, pageSize = SCHED
 
     const response = await fetch(url.toString(), {
       headers: {
-        "Accept": "application/json",
+        Accept: "application/json",
         "User-Agent": "BuildingSeattle-Worker/1.0",
       },
     });
@@ -2981,11 +3149,9 @@ function normalizeSdciPermits(rawPermits) {
       }
     }
 
-    const address = [
-      item.originaladdress1 || "",
-      item.originalcity || "Seattle",
-      item.originalstate || "WA",
-    ].filter(Boolean).join(", ");
+    const address = [item.originaladdress1 || "", item.originalcity || "Seattle", item.originalstate || "WA"]
+      .filter(Boolean)
+      .join(", ");
 
     permits.push({
       permit_number: permitNumber,
@@ -3019,14 +3185,18 @@ function normalizeSdciPermits(rawPermits) {
 
 async function upsertScheduledContractors(env, contractors) {
   for (let i = 0; i < contractors.length; i += 100) {
-    const batch = contractors.slice(i, i + 100).map((contractor) => env.DB.prepare(`
+    const batch = contractors.slice(i, i + 100).map((contractor) =>
+      env.DB.prepare(
+        `
       INSERT INTO contractors (name, slug, specialty)
       VALUES (?, ?, ?)
       ON CONFLICT(slug) DO UPDATE SET
         name = excluded.name,
         specialty = COALESCE(excluded.specialty, contractors.specialty),
         updated_at = CURRENT_TIMESTAMP
-    `).bind(contractor.name, contractor.slug, contractor.specialty || null));
+    `,
+      ).bind(contractor.name, contractor.slug, contractor.specialty || null),
+    );
 
     if (batch.length) {
       await env.DB.batch(batch);
@@ -3038,7 +3208,9 @@ async function upsertScheduledPermits(env, permits) {
   let added = 0;
   let updated = 0;
   const { results: allContractors } = await env.DB.prepare("SELECT id, name FROM contractors").all();
-  const contractorMap = new Map((allContractors || []).map((contractor) => [contractor.name.toLowerCase(), contractor.id]));
+  const contractorMap = new Map(
+    (allContractors || []).map((contractor) => [contractor.name.toLowerCase(), contractor.id]),
+  );
 
   for (let i = 0; i < permits.length; i += 100) {
     const batchPermits = permits.slice(i, i + 100);
@@ -3111,8 +3283,10 @@ async function getExistingPermitStatuses(env, permitNumbers) {
 
   const placeholders = permitNumbers.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`
-  ).bind(...permitNumbers).all();
+    `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`,
+  )
+    .bind(...permitNumbers)
+    .all();
 
   for (const row of results || []) {
     existingStatuses.set(row.permit_number, row.status);
@@ -3123,14 +3297,12 @@ async function getExistingPermitStatuses(env, permitNumbers) {
 
 function buildStatusChangeStatements(env, statusChanges) {
   return statusChanges.map((change) =>
-    env.DB.prepare(`
+    env.DB.prepare(
+      `
       INSERT INTO permit_status_changes (permit_number, previous_status, new_status)
       VALUES (?, ?, ?)
-    `).bind(
-      change.permit_number,
-      change.previous_status || null,
-      change.new_status || "new",
-    ),
+    `,
+    ).bind(change.permit_number, change.previous_status || null, change.new_status || "new"),
   );
 }
 
@@ -3296,10 +3468,14 @@ async function ingestPermit(request, env) {
   if (existingPermit) {
     const previousStatus = normalizeStoredStatus(existingPermit.status);
     if (previousStatus !== incomingStatus) {
-      await env.DB.prepare(`
+      await env.DB.prepare(
+        `
         INSERT INTO permit_status_changes (permit_number, previous_status, new_status)
         VALUES (?, ?, ?)
-      `).bind(data.permit_number, previousStatus, incomingStatus).run();
+      `,
+      )
+        .bind(data.permit_number, previousStatus, incomingStatus)
+        .run();
     }
   }
 
@@ -3327,9 +3503,7 @@ async function ingestPermitBatch(request, env) {
 
   try {
     // 1. Pre-load contractors for fast in-memory lookup
-    const { results: allContractors } = await env.DB.prepare(
-      "SELECT id, name FROM contractors"
-    ).all();
+    const { results: allContractors } = await env.DB.prepare("SELECT id, name FROM contractors").all();
     const contractorMap = new Map();
     for (const c of allContractors) {
       contractorMap.set(c.name.toLowerCase(), c.id);
@@ -3344,8 +3518,10 @@ async function ingestPermitBatch(request, env) {
         const chunk = permitNumbers.slice(i, i + chunkSize);
         const placeholders = chunk.map(() => "?").join(",");
         const { results } = await env.DB.prepare(
-          `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`
-        ).bind(...chunk).all();
+          `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`,
+        )
+          .bind(...chunk)
+          .all();
         for (const r of results) existingStatuses.set(r.permit_number, r.status);
       }
     }
@@ -3354,9 +3530,7 @@ async function ingestPermitBatch(request, env) {
     const statements = [];
     const statusChanges = [];
     for (const item of items) {
-      const contractorId = item.contractor_name
-        ? (contractorMap.get(item.contractor_name.toLowerCase()) || null)
-        : null;
+      const contractorId = item.contractor_name ? contractorMap.get(item.contractor_name.toLowerCase()) || null : null;
       const incomingStatus = normalizeStoredStatus(item.status);
 
       if (existingStatuses.has(item.permit_number)) {
@@ -3398,7 +3572,7 @@ async function ingestPermitBatch(request, env) {
           intOrNull(item.number_review_cycles),
           intOrNull(item.total_days_plan_review),
           intOrNull(item.days_out_corrections),
-        )
+        ),
       );
     }
 
@@ -3437,7 +3611,8 @@ function normalizeEnrichmentItem(item) {
   const contractorDisclosure = item.contractor_disclosure || {};
   const applicationInfo = item.application_info || {};
   const otherInfo = item.other_info || {};
-  const contractorLicense = item.contractor_license || contractorDisclosure.contractor_license || licenseLookup.contractorlicensenumber || "";
+  const contractorLicense =
+    item.contractor_license || contractorDisclosure.contractor_license || licenseLookup.contractorlicensenumber || "";
   const contractorName = item.contractor_name || licenseLookup.businessname || "";
 
   return {
@@ -3447,9 +3622,15 @@ function normalizeEnrichmentItem(item) {
     contractor_license_status: item.contractor_license_status || licenseLookup.licensestatusdesc || "",
     contractor_ubi: item.contractor_ubi || licenseLookup.ubi || "",
     contractor_insurance_amount: intOrNull(item.contractor_insurance_amount || licenseLookup.insuranceamt),
-    contractor_insurance_expires_date: dateOrNull(item.contractor_insurance_expires_date || licenseLookup.expirationdate),
+    contractor_insurance_expires_date: dateOrNull(
+      item.contractor_insurance_expires_date || licenseLookup.expirationdate,
+    ),
     permit_detail_url: item.permit_detail_url || item.detail_url || null,
-    work_performed_by: item.work_performed_by || contractorDisclosure.performing_work || applicationInfo["Who will be performing all the work?"] || null,
+    work_performed_by:
+      item.work_performed_by ||
+      contractorDisclosure.performing_work ||
+      applicationInfo["Who will be performing all the work?"] ||
+      null,
     review_level: item.review_level || applicationInfo["Review Level"] || null,
     primary_property_use: item.primary_property_use || applicationInfo["Choose the Primary Property Use"] || null,
     parcel_number: item.parcel_number || item.parcel || null,
@@ -3512,7 +3693,8 @@ async function ingestPermitEnrichmentBatch(request, env) {
     }
 
     const contractorStatements = [...contractorCandidates.values()].map((contractor) =>
-      env.DB.prepare(`
+      env.DB.prepare(
+        `
         INSERT INTO contractors (name, slug, specialty, license_number, license_status, ubi, insurance_amount, insurance_expires_date)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
@@ -3524,7 +3706,8 @@ async function ingestPermitEnrichmentBatch(request, env) {
           insurance_amount = COALESCE(excluded.insurance_amount, contractors.insurance_amount),
           insurance_expires_date = COALESCE(excluded.insurance_expires_date, contractors.insurance_expires_date),
           updated_at = CURRENT_TIMESTAMP
-      `).bind(
+      `,
+      ).bind(
         contractor.name,
         contractor.slug,
         "General Contractor",
@@ -3546,9 +3729,9 @@ async function ingestPermitEnrichmentBatch(request, env) {
     for (let i = 0; i < contractorSlugs.length; i += 100) {
       const chunk = contractorSlugs.slice(i, i + 100);
       const placeholders = chunk.map(() => "?").join(",");
-      const { results } = await env.DB.prepare(
-        `SELECT id, slug FROM contractors WHERE slug IN (${placeholders})`,
-      ).bind(...chunk).all();
+      const { results } = await env.DB.prepare(`SELECT id, slug FROM contractors WHERE slug IN (${placeholders})`)
+        .bind(...chunk)
+        .all();
       for (const row of results || []) {
         contractorBySlug.set(row.slug, row.id);
       }
@@ -3560,7 +3743,8 @@ async function ingestPermitEnrichmentBatch(request, env) {
         contractorsLinked++;
       }
       permitsUpdated++;
-      return env.DB.prepare(`
+      return env.DB.prepare(
+        `
         UPDATE permits SET
           contractor_id = COALESCE(?, contractor_id),
           permit_detail_url = COALESCE(?, permit_detail_url),
@@ -3581,7 +3765,8 @@ async function ingestPermitEnrichmentBatch(request, env) {
           has_completed_inspections = ?,
           last_enriched_at = CURRENT_TIMESTAMP
         WHERE permit_number = ?
-      `).bind(
+      `,
+      ).bind(
         contractorId,
         item.permit_detail_url,
         item.contractor_license || null,
@@ -3617,14 +3802,17 @@ async function ingestPermitEnrichmentBatch(request, env) {
       end_time: new Date(),
     });
 
-    return new Response(JSON.stringify({
-      processed: normalizedItems.length,
-      permits_updated: permitsUpdated,
-      contractors_upserted: contractorsUpserted,
-      contractors_linked: contractorsLinked,
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        processed: normalizedItems.length,
+        permits_updated: permitsUpdated,
+        contractors_upserted: contractorsUpserted,
+        contractors_linked: contractorsLinked,
+      }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
+    );
   } catch (error) {
     await logIngest(env, {
       run_type: "permit_enrichment",
@@ -3674,13 +3862,16 @@ async function replaceIngestData(request, env) {
       end_time: new Date(),
     });
 
-    return new Response(JSON.stringify({
-      success: true,
-      permits_deleted: permitsDeleted,
-      contractors_deleted: contractorsDeleted,
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        success: true,
+        permits_deleted: permitsDeleted,
+        contractors_deleted: contractorsDeleted,
+      }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
+    );
   } catch (error) {
     await logIngest(env, {
       run_type: "full_refresh",
@@ -3741,7 +3932,8 @@ async function ingestContractorBatch(request, env) {
   const statements = [];
   for (const item of items) {
     statements.push(
-      env.DB.prepare(`
+      env.DB.prepare(
+        `
         INSERT INTO contractors (name, slug, specialty, license_number, years_active)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
@@ -3750,13 +3942,8 @@ async function ingestContractorBatch(request, env) {
           license_number = COALESCE(excluded.license_number, contractors.license_number),
           years_active = COALESCE(excluded.years_active, contractors.years_active),
           updated_at = CURRENT_TIMESTAMP
-      `).bind(
-        item.name,
-        item.slug,
-        item.specialty || null,
-        item.license_number || null,
-        item.years_active || null,
-      )
+      `,
+      ).bind(item.name, item.slug, item.specialty || null, item.license_number || null, item.years_active || null),
     );
   }
 
@@ -3788,9 +3975,469 @@ async function checkAuth(request, env) {
   );
 }
 
+// --- Agent discovery -------------------------------------------------------
+
+const API_BASE = `${BASE_URL}/api`;
+
+function jsonResponse(obj, contentType = "application/json") {
+  return new Response(JSON.stringify(obj, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": contentType, "Cache-Control": "public, max-age=3600" },
+  });
+}
+
+// True when the client explicitly asks for markdown (Markdown for Agents).
+function wantsMarkdown(request) {
+  const accept = request?.headers?.get("Accept") || "";
+  return /text\/markdown/i.test(accept);
+}
+
+// Build a text/markdown response with content-negotiation hints for agents.
+function markdownResponse(request, markdown) {
+  const headers = {
+    ...corsHeaders,
+    "Content-Type": "text/markdown; charset=utf-8",
+    Vary: "Accept",
+    "x-markdown-tokens": String(Math.ceil(markdown.length / 4)),
+  };
+  if (request?.url) {
+    headers.Link = `<${request.url}>; rel="alternate"; type="text/markdown"`;
+  }
+  return new Response(markdown, { headers });
+}
+
+// RFC 9727 / RFC 9264 — machine-readable API catalog (application/linkset+json).
+function renderApiCatalogObject() {
+  return {
+    linkset: [
+      {
+        anchor: API_BASE,
+        "service-desc": [{ href: `${BASE_URL}/openapi.json`, type: "application/json" }],
+        "service-doc": [{ href: `${BASE_URL}/api-docs`, type: "text/html" }],
+        status: [{ href: `${BASE_URL}/api/stats`, type: "application/json" }],
+      },
+    ],
+  };
+}
+
+function renderApiCatalog() {
+  return jsonResponse(renderApiCatalogObject(), "application/linkset+json");
+}
+
+// OpenAPI 3.1 description of the public read endpoints (service-desc target).
+function renderApiSpecObject() {
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "Building Seattle API",
+      version: "1.0.0",
+      description:
+        "Read-only access to aggregated Seattle construction permit and contractor data. No authentication required.",
+    },
+    servers: [{ url: BASE_URL }],
+    paths: {
+      "/api/permits": {
+        get: {
+          operationId: "searchPermits",
+          summary: "Query permits with optional filters and pagination.",
+          parameters: [
+            { name: "neighborhood", in: "query", schema: { type: "string" }, description: "Filter by neighborhood." },
+            { name: "type", in: "query", schema: { type: "string" }, description: "Filter by permit type." },
+            { name: "status", in: "query", schema: { type: "string" }, description: "Filter by permit status." },
+            {
+              name: "q",
+              in: "query",
+              schema: { type: "string" },
+              description:
+                "Free-text search across address, description, permit number, neighborhood, and contractor name.",
+            },
+            { name: "page", in: "query", schema: { type: "integer", minimum: 1, default: 1 } },
+            { name: "per_page", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 50 } },
+          ],
+          responses: {
+            200: {
+              description: "Matching permits.",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      total: { type: "integer" },
+                      page: { type: "integer" },
+                      per_page: { type: "integer" },
+                      results: { type: "array", items: { type: "object" } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/api/contractors": {
+        get: {
+          operationId: "listContractors",
+          summary: "List contractors ranked by active project count (top 20).",
+          responses: {
+            200: {
+              description: "Contractor records, each including an active_projects count.",
+              content: { "application/json": { schema: { type: "array", items: { type: "object" } } } },
+            },
+          },
+        },
+      },
+      "/api/stats": {
+        get: {
+          operationId: "getStats",
+          summary: "Aggregate counts and permit value totals for the dashboard.",
+          responses: {
+            200: {
+              description: "Aggregate statistics.",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      leads: { type: "integer" },
+                      permits: { type: "integer" },
+                      contractors: { type: "integer" },
+                      active_permits: { type: "integer" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function renderOpenApiSpec() {
+  return jsonResponse(renderApiSpecObject());
+}
+
+// Human-readable API documentation (service-doc target).
+function renderApiDocs() {
+  const endpoint = (method, path, desc, params) => `
+      <div class="endpoint">
+        <h3><span class="method">${method}</span> <code>${escapeHtml(path)}</code></h3>
+        <p>${escapeHtml(desc)}</p>
+        ${params ? `<table><thead><tr><th>Parameter</th><th>Description</th></tr></thead><tbody>${params}</tbody></table>` : ""}
+      </div>`;
+  const param = (name, desc) => `<tr><td><code>${escapeHtml(name)}</code></td><td>${escapeHtml(desc)}</td></tr>`;
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Documentation | Building Seattle</title>
+    <meta name="description" content="Public read-only API for Seattle construction permit and contractor data.">
+    <link rel="canonical" href="${BASE_URL}/api-docs">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; min-height: 100vh; }
+        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        main { flex: 1; padding-top: 6rem; padding-bottom: 4rem; }
+        h1 { font-size: 2.25rem; font-weight: 800; color: var(--primary); margin-bottom: 0.5rem; }
+        .lede { color: var(--text-muted); margin-bottom: 2rem; max-width: 640px; }
+        .endpoint { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+        .endpoint h3 { font-size: 1.05rem; margin-bottom: 0.5rem; color: var(--primary); }
+        .method { display: inline-block; background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 0.35rem; vertical-align: middle; }
+        code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.875rem; }
+        table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.875rem; }
+        th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+        th { color: var(--text-muted); font-weight: 600; }
+        .resources { margin-top: 2rem; font-size: 0.9rem; }
+        .resources a { color: var(--accent); }
+    </style>
+</head>
+<body>
+    ${renderNav("api")}
+    <main>
+      <div class="container">
+        <h1>API Documentation</h1>
+        <p class="lede">Read-only JSON access to aggregated Seattle construction permit and contractor data. No authentication required. Base URL <code>${BASE_URL}</code>.</p>
+        ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1)."), param("per_page", "Results per page (1-100, default 50).")].join(""))}
+        ${endpoint("GET", "/api/contractors", "List the top 20 contractors ranked by active project count. Each record includes an active_projects count.", "")}
+        ${endpoint("GET", "/api/stats", "Aggregate counts and permit value totals for the dashboard.", "")}
+        <div class="resources">
+          Machine-readable: <a href="/openapi.json">OpenAPI spec</a> &middot; <a href="/.well-known/api-catalog">API catalog</a>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+</body>
+</html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html" } });
+}
+
+// SEP-1649 MCP Server Card. There is no live MCP transport; the card maps the
+// available read tools to the public REST API and points to the docs.
+function renderMcpServerCard() {
+  return jsonResponse({
+    serverInfo: { name: "building-seattle", version: "1.0.0" },
+    description: "Read-only access to aggregated Seattle construction permit and contractor data.",
+    transport: { type: "rest", endpoint: API_BASE },
+    documentation: `${BASE_URL}/api-docs`,
+    capabilities: { tools: { listChanged: false } },
+    tools: [
+      {
+        name: "search_permits",
+        description: "Query Seattle construction permits with optional filters and pagination.",
+        endpoint: `${API_BASE}/permits`,
+        method: "GET",
+        inputSchema: {
+          type: "object",
+          properties: {
+            neighborhood: { type: "string" },
+            type: { type: "string" },
+            status: { type: "string" },
+            q: { type: "string" },
+            page: { type: "integer", minimum: 1 },
+            per_page: { type: "integer", minimum: 1, maximum: 100 },
+          },
+        },
+      },
+      {
+        name: "list_contractors",
+        description: "List the top contractors ranked by active project count.",
+        endpoint: `${API_BASE}/contractors`,
+        method: "GET",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "get_stats",
+        description: "Get aggregate permit, contractor, and value statistics.",
+        endpoint: `${API_BASE}/stats`,
+        method: "GET",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ],
+  });
+}
+
+// Agent Skills Discovery RFC v0.2.0 — index of discoverable machine-readable resources.
+async function renderAgentSkillsIndex() {
+  const sha256 = async (text) => {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  };
+  const openapiBody = JSON.stringify(renderApiSpecObject(), null, 2);
+  const catalogBody = JSON.stringify(renderApiCatalogObject(), null, 2);
+  return jsonResponse({
+    $schema: "https://agentskills.io/schema/v0.2.0/index.json",
+    skills: [
+      {
+        name: "building-seattle-api",
+        type: "openapi",
+        description: "OpenAPI description of the Building Seattle public read API.",
+        url: `${BASE_URL}/openapi.json`,
+        sha256: await sha256(openapiBody),
+      },
+      {
+        name: "building-seattle-catalog",
+        type: "api-catalog",
+        description: "RFC 9727 API catalog linking the Building Seattle API resources.",
+        url: `${BASE_URL}/.well-known/api-catalog`,
+        sha256: await sha256(catalogBody),
+      },
+    ],
+  });
+}
+
+// --- Markdown renderings (Markdown for Agents) -----------------------------
+
+// Escape characters that would break a markdown table cell.
+function mdCell(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value).replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
+}
+
+function homeMarkdown(lastUpdated) {
+  return `# Building Seattle
+
+Construction intelligence for Seattle: live permit data and contractor profiles
+aggregated from public Seattle DCI records.
+
+_Data last updated: ${lastUpdated}_
+
+## Explore
+
+- [Browse permits](${BASE_URL}/permits)
+- [API documentation](${BASE_URL}/api-docs)
+
+## Public API (no authentication)
+
+- \`GET ${BASE_URL}/api/permits\` — query permits (filters: \`neighborhood\`, \`type\`, \`status\`, \`q\`, \`page\`, \`per_page\`)
+- \`GET ${BASE_URL}/api/contractors\` — top contractors by active project count
+- \`GET ${BASE_URL}/api/stats\` — aggregate statistics
+
+Machine-readable discovery: [OpenAPI spec](${BASE_URL}/openapi.json) ·
+[API catalog](${BASE_URL}/.well-known/api-catalog)
+`;
+}
+
+function permitBrowserMarkdown({ permits, total, page, totalPages, neighborhood, type, status, q }) {
+  const filters = [
+    neighborhood ? `neighborhood=${neighborhood}` : null,
+    type ? `type=${type}` : null,
+    status ? `status=${status}` : null,
+    q ? `q=${q}` : null,
+  ].filter(Boolean);
+  const rows = (permits || [])
+    .map((p) => {
+      const value = p.value ? `$${parseInt(p.value).toLocaleString()}` : "—";
+      const link = `${BASE_URL}/permits/${encodeURIComponent(p.permit_number)}`;
+      return `| [${mdCell(p.permit_number)}](${link}) | ${mdCell(p.address)} | ${mdCell(p.neighborhood)} | ${mdCell(p.type)} | ${mdCell(p.status)} | ${value} | ${mdCell(p.contractor_name)} |`;
+    })
+    .join("\n");
+  return `# Seattle Permits
+
+${total.toLocaleString()} permits match${filters.length ? ` (filters: ${filters.join(", ")})` : ""}. Page ${page} of ${totalPages || 1}.
+
+| Permit | Address | Neighborhood | Type | Status | Value | Contractor |
+|---|---|---|---|---|---|---|
+${rows || "| _No permits found_ | | | | | | |"}
+
+JSON: \`GET ${BASE_URL}/api/permits\`
+`;
+}
+
+function permitDetailMarkdown(permit, { neighborhood, permitType, valueFormatted, issuedDate, canonical }) {
+  const field = (label, value) =>
+    `- **${label}:** ${value === null || value === undefined || value === "" ? "—" : value}`;
+  const lines = [
+    field("Permit number", permit.permit_number),
+    field("Address", permit.address),
+    field("Neighborhood", neighborhood),
+    field("Type", permitType),
+    field("Status", permit.status),
+    field("Project value", valueFormatted),
+    field("Issued", issuedDate),
+    permit.contractor_name
+      ? field(
+          "Contractor",
+          `[${permit.contractor_name}](${BASE_URL}/contractor/${encodeURIComponent(permit.contractor_slug || "")})`,
+        )
+      : null,
+    field("Property owner", permit.owner_name),
+    field("Applicant", permit.applicant_name),
+  ].filter(Boolean);
+  const description = permit.detailed_description || permit.description;
+  return `# Permit ${permit.permit_number}
+
+${permit.address || "Seattle"}
+
+${lines.join("\n")}
+${description ? `\n## Description\n\n${description}\n` : ""}
+[View on Building Seattle](${canonical})
+`;
+}
+
+function contractorMarkdown(contractor, { permits, activeProjects, completionRate, canonical }) {
+  const rows = (permits || [])
+    .map((p) => {
+      const value = p.value ? `$${parseInt(p.value).toLocaleString()}` : "—";
+      const link = `${BASE_URL}/permits/${encodeURIComponent(p.permit_number)}`;
+      return `| [${mdCell(p.permit_number)}](${link}) | ${mdCell(p.address)} | ${mdCell(p.status)} | ${value} |`;
+    })
+    .join("\n");
+  const detail = (label, value) => (value ? `- **${label}:** ${value}` : null);
+  const meta = [
+    detail("Specialty", contractor.specialty),
+    detail("Phone", contractor.phone),
+    detail("Email", contractor.email),
+    detail("Website", contractor.website),
+    detail("License status", contractor.license_status),
+    `- **Active projects:** ${activeProjects}`,
+    `- **Completion rate:** ${completionRate}%`,
+  ].filter(Boolean);
+  return `# ${contractor.name}
+
+${meta.join("\n")}
+
+## Recent permits
+
+| Permit | Address | Status | Value |
+|---|---|---|---|
+${rows || "| _No permits on record_ | | | |"}
+
+[View on Building Seattle](${canonical})
+`;
+}
+
+// WebMCP: expose read-only site tools to AI agents running in the browser.
+function renderWebMcpScript() {
+  return `<script>
+    (function () {
+      if (!navigator.modelContext || typeof navigator.modelContext.provideContext !== "function") return;
+      var json = function (res) { return res.json(); };
+      var qs = function (args) {
+        var p = new URLSearchParams();
+        Object.keys(args || {}).forEach(function (k) {
+          if (args[k] !== undefined && args[k] !== null && args[k] !== "") p.set(k, args[k]);
+        });
+        var s = p.toString();
+        return s ? "?" + s : "";
+      };
+      try {
+        navigator.modelContext.provideContext({
+          tools: [
+            {
+              name: "search_permits",
+              description: "Search Seattle construction permits with optional filters and pagination.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  neighborhood: { type: "string" },
+                  type: { type: "string" },
+                  status: { type: "string" },
+                  q: { type: "string", description: "Free-text search" },
+                  page: { type: "integer", minimum: 1 },
+                  per_page: { type: "integer", minimum: 1, maximum: 100 }
+                }
+              },
+              execute: function (args) {
+                return fetch("/api/permits" + qs(args), { headers: { Accept: "application/json" } })
+                  .then(json)
+                  .then(function (d) { return { content: [{ type: "text", text: JSON.stringify(d) }] }; });
+              }
+            },
+            {
+              name: "list_contractors",
+              description: "List the top Seattle contractors ranked by active project count.",
+              inputSchema: { type: "object", properties: {} },
+              execute: function () {
+                return fetch("/api/contractors", { headers: { Accept: "application/json" } })
+                  .then(json)
+                  .then(function (d) { return { content: [{ type: "text", text: JSON.stringify(d) }] }; });
+              }
+            },
+            {
+              name: "get_stats",
+              description: "Get aggregate Seattle permit, contractor, and value statistics.",
+              inputSchema: { type: "object", properties: {} },
+              execute: function () {
+                return fetch("/api/stats", { headers: { Accept: "application/json" } })
+                  .then(json)
+                  .then(function (d) { return { content: [{ type: "text", text: JSON.stringify(d) }] }; });
+              }
+            }
+          ]
+        });
+      } catch (e) { /* WebMCP unavailable; ignore */ }
+    })();
+  </script>`;
+}
 
 function renderRobotsTxt() {
   const body = `User-agent: *
+Content-Signal: search=yes, ai-train=yes, ai-input=yes
 Allow: /
 Disallow: /admin
 Disallow: /api/admin/
@@ -3832,14 +4479,14 @@ async function renderSitemapXml(env, request) {
 
   const allUrls = [...staticUrls, ...permitUrls, ...contractorUrls];
 
-	  const urlEntries = allUrls
-	    .map(
-	      (u) => `  <url>
+  const urlEntries = allUrls
+    .map(
+      (u) => `  <url>
 	    <loc>${escapeHtml(u.loc)}</loc>
 	    <priority>${u.priority}</priority>
 	    <changefreq>${u.changefreq}</changefreq>${u.lastmod ? "\n    <lastmod>" + escapeHtml(u.lastmod) + "</lastmod>" : ""}
 	  </url>`,
-	    )
+    )
     .join("\n");
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3852,9 +4499,9 @@ ${urlEntries}
   });
 }
 
-
 function renderOgImage() {
-  const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAABLAAAAJ2EAYAAAAf0KcfAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRP//////" +
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAABLAAAAJ2EAYAAAAf0KcfAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRP//////" +
     "/wlY99wAAAAHdElNRQfqBBMXHBu5XO2xAACAAElEQVR42uzddZiV1f434M/Q3S1gUWKjoGCLhd3d3R3H7q5jd3cXit2iohgIioiAAkpId877B8zLiZ9H2TTc" +
     "93V5bZnZa+21v896nr1n9mfWKqpevX791q2LiwMAAAAAAAAAAMBcKaUEAAAAAAAAAAAAhRHAAgAAAAAAAAAAKJAAFgAAAAAAAAAAQIEEsAAAAAAAAAAAAAok" +
     "gAUAAAAAAAAAAFAgASwAAAAAAAAAAIACCWABAAAAAAAAAAAUSAALAAAAAAAAAACgQAJYAAAAAAAAAAAABRLAAgAAAAAAAAAAKJAAFgAAAAAAAAAAQIEEsAAA" +
@@ -4316,7 +4963,7 @@ function renderOgImage() {
     "AAoSwAIAAAAAAAAAAChIAAsAAAAAAAAAAKCg/wfJ9TftjT24QwAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNC0xOVQyMzoyNzozNyswMDowMGDkx7sAAAAl" +
     "dEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDQtMTlUMjM6Mjc6MzcrMDA6MDARuX8HAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA0LTE5VDIzOjI4OjI3KzAw" +
     "OjAwew0FywAAAABJRU5ErkJggg==";
-  const binary = Uint8Array.from(atob(pngBase64), c => c.charCodeAt(0));
+  const binary = Uint8Array.from(atob(pngBase64), (c) => c.charCodeAt(0));
   return new Response(binary.buffer, {
     headers: {
       "Content-Type": "image/png",
@@ -4327,7 +4974,9 @@ function renderOgImage() {
 
 function render404(options) {
   const heading = options?.heading || "Page not found";
-  const message = options?.message || "The page you are looking for does not exist or has been moved. Try browsing live permits or return to the homepage.";
+  const message =
+    options?.message ||
+    "The page you are looking for does not exist or has been moved. Try browsing live permits or return to the homepage.";
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
