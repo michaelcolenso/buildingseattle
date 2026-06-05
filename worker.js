@@ -1,5 +1,13 @@
 // Cloudflare Worker - Fixed Version
 
+import {
+  buildEntityGraph,
+  parseAddress,
+  makeSlug,
+  guessOrgType,
+  normalizeOrgName,
+} from "./entity_graph.js";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -133,9 +141,41 @@ export default {
       }
 
       if (path.startsWith("/contractor/")) {
-        const slug = path.split("/contractor/")[1];
+        const slug = decodeURIComponent(path.split("/contractor/")[1] || "");
         ctx.waitUntil(logPageView(request, env, "/contractor/:slug"));
         return secure(await renderContractorPage(slug, env, request));
+      }
+
+      if (path.startsWith("/address/")) {
+        const slug = decodeURIComponent(path.split("/address/")[1] || "");
+        ctx.waitUntil(logPageView(request, env, "/address/:slug"));
+        return secure(await renderAddressPage(slug, env, request));
+      }
+
+      if (path.startsWith("/project/")) {
+        const slug = decodeURIComponent(path.split("/project/")[1] || "");
+        ctx.waitUntil(logPageView(request, env, "/project/:slug"));
+        return secure(await renderProjectPage(slug, env, request));
+      }
+
+      if (path.startsWith("/neighborhood/")) {
+        const slug = decodeURIComponent(path.split("/neighborhood/")[1] || "");
+        ctx.waitUntil(logPageView(request, env, "/neighborhood/:slug"));
+        return secure(await renderNeighborhoodPage(slug, env, request));
+      }
+
+      if (path === "/admin/build-graph" && request.method === "POST") {
+        const authError = requireAdminAuth(request, env);
+        if (authError) return secure(authError);
+        const result = await rebuildEntityGraph(env);
+        return secure(jsonResponse(result));
+      }
+
+      if (path === "/admin/entity-report") {
+        const authError = requireAdminAuth(request, env);
+        if (authError) return secure(authError);
+        const report = await entityGraphReport(env);
+        return secure(jsonResponse(report));
       }
 
       if (path === "/ingest/permit" && request.method === "POST") {
@@ -552,6 +592,85 @@ function renderFooter() {
     </footer>`;
 }
 
+// Server-rendered homepage modules backed by the entity graph: top addresses,
+// top contractors, neighborhoods, and latest activity. Renders nothing until
+// the graph has been built at least once.
+function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighborhoods, latestActivity }) {
+  const hasData =
+    (topAddresses && topAddresses.length) ||
+    (topGraphContractors && topGraphContractors.length) ||
+    (latestActivity && latestActivity.length);
+  if (!hasData) return "";
+
+  const money = (n) => {
+    const v = Number(n);
+    return Number.isFinite(v) && v > 0 ? `$${Math.round(v).toLocaleString()}` : "—";
+  };
+  const dateShort = (d) => {
+    if (!d) return "";
+    const dt = new Date(d);
+    return Number.isNaN(dt.getTime()) ? "" : dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+
+  const addrItems = (topAddresses || [])
+    .map(
+      (a) => `<li class="list-item" onclick="location.href='/address/${encodeURIComponent(a.slug)}'">
+        <div><div class="list-item-title">${escapeHtml(a.display_address)}</div><div class="list-item-meta">${money(a.total_value)} total value</div></div>
+        <span class="badge badge-blue">${a.permits}</span></li>`,
+    )
+    .join("");
+
+  const contractorItems = (topGraphContractors || [])
+    .map(
+      (c) => `<li class="list-item" onclick="location.href='/contractor/${encodeURIComponent(c.slug)}'">
+        <div><div class="list-item-title">${escapeHtml(c.name)}</div><div class="list-item-meta">${c.permits} permits</div></div>
+        <span class="badge badge-green">View</span></li>`,
+    )
+    .join("");
+
+  const activityItems = (latestActivity || [])
+    .map((p) => {
+      const href = p.addr_slug ? `/address/${encodeURIComponent(p.addr_slug)}` : `/permits/${encodeURIComponent(p.permit_number)}`;
+      return `<li class="list-item" onclick="location.href='${href}'">
+        <div><div class="list-item-title">${escapeHtml(p.display_address || p.permit_number)}</div><div class="list-item-meta">${escapeHtml(p.type || "permit")} · ${money(p.value)} · ${escapeHtml(dateShort(p.issued_date || p.applied_date))}</div></div>
+        <span class="badge badge-blue">${escapeHtml(p.status || "new")}</span></li>`;
+    })
+    .join("");
+
+  const neighborhoodChips = (topNeighborhoods || [])
+    .map(
+      (n) => `<a href="/neighborhood/${encodeURIComponent(n.slug)}" style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.4rem 0.85rem;border-radius:999px;border:1px solid var(--border);background:var(--bg);color:var(--text);text-decoration:none;font-size:0.85rem;font-weight:600;">${escapeHtml(n.name)} <span style="color:var(--text-muted);font-weight:500;">${n.addresses}</span></a>`,
+    )
+    .join("");
+
+  return `<section class="live-data" id="graph" style="background:var(--bg-alt);">
+        <div class="container">
+            <div class="section-header">
+                <h2>Explore the construction graph</h2>
+                <p>Permits rolled up into properties, projects, contractors, and neighborhoods.</p>
+            </div>
+            <div class="data-grid">
+                <div class="data-panel">
+                    <div class="panel-header"><h3>Top Addresses</h3></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${addrItems || '<li class="loading">No data yet</li>'}</ul></div>
+                </div>
+                <div class="data-panel">
+                    <div class="panel-header"><h3>Top Contractors</h3></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${contractorItems || '<li class="loading">No data yet</li>'}</ul></div>
+                </div>
+                <div class="data-panel">
+                    <div class="panel-header"><h3>Latest Activity</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${activityItems || '<li class="loading">No data yet</li>'}</ul></div>
+                </div>
+                <div class="data-panel">
+                    <div class="panel-header"><h3>Neighborhoods</h3></div>
+                    <div class="panel-content"><div style="display:flex;flex-wrap:wrap;gap:0.5rem;">${neighborhoodChips || '<span class="loading">No data yet</span>'}</div></div>
+                </div>
+            </div>
+        </div>
+    </section>`;
+}
+
 async function handleRoot(request, env) {
   const canonical = BASE_URL + "/";
   const lastRun = await env.DB.prepare(
@@ -562,6 +681,37 @@ async function handleRoot(request, env) {
   if (wantsMarkdown(request)) {
     return markdownResponse(request, homeMarkdown(lastUpdated));
   }
+
+  // Entity-graph modules for the homepage (gracefully empty before first build).
+  const [topAddresses, topGraphContractors, topNeighborhoods, latestActivity] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+       FROM addresses a JOIN permits p ON p.address_id = a.id
+       GROUP BY a.id ORDER BY permits DESC, total_value DESC LIMIT 8`,
+    ),
+    safeAll(
+      env,
+      `SELECT o.name, o.slug, COUNT(*) AS permits FROM people_orgs o
+       JOIN permit_participants pp ON pp.people_org_id = o.id AND pp.role = 'contractor'
+       GROUP BY o.id ORDER BY permits DESC LIMIT 8`,
+    ),
+    safeAll(
+      env,
+      `SELECT n.name, n.slug, COUNT(DISTINCT an.address_id) AS addresses
+       FROM neighborhoods n JOIN address_neighborhoods an ON an.neighborhood_id = n.id
+       GROUP BY n.id ORDER BY addresses DESC LIMIT 12`,
+    ),
+    safeAll(
+      env,
+      `SELECT p.permit_number, p.type, p.value, p.status, p.issued_date, p.applied_date,
+              a.slug AS addr_slug, a.display_address
+       FROM permits p LEFT JOIN addresses a ON a.id = p.address_id
+       ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 8`,
+    ),
+  ]);
+
+  const graphSection = renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighborhoods, latestActivity });
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -741,6 +891,8 @@ async function handleRoot(request, env) {
             </div>
         </div>
     </section>
+
+    ${graphSection}
 
     <section class="cta">
         <div class="container">
@@ -1667,11 +1819,39 @@ async function renderPermitBrowser(request, env) {
 
 async function renderPermitDetail(permitNumber, env, request) {
   const canonical = BASE_URL + "/permits/" + encodeURIComponent(permitNumber);
-  const { results } = await env.DB.prepare(
-    `
-    SELECT p.*, 
-           c.name as contractor_name, 
-           c.slug as contractor_slug, 
+  // Prefer the entity-graph-enriched query; fall back gracefully if the graph
+  // tables have not been migrated yet so permit pages never break.
+  let results;
+  try {
+    ({ results } = await env.DB.prepare(
+      `
+    SELECT p.*,
+           c.name as contractor_name,
+           c.slug as contractor_slug,
+           c.specialty as contractor_specialty,
+           c.phone as contractor_phone,
+           c.email as contractor_email,
+           c.website as contractor_website,
+           c.address as contractor_address,
+           a.slug as address_slug,
+           a.display_address as address_display,
+           pr.slug as project_slug,
+           pr.name as project_name
+    FROM permits p
+    LEFT JOIN contractors c ON p.contractor_id = c.id
+    LEFT JOIN addresses a ON a.id = p.address_id
+    LEFT JOIN projects pr ON pr.id = p.project_id
+    WHERE p.permit_number = ?
+  `,
+    )
+      .bind(permitNumber)
+      .all());
+  } catch {
+    ({ results } = await env.DB.prepare(
+      `
+    SELECT p.*,
+           c.name as contractor_name,
+           c.slug as contractor_slug,
            c.specialty as contractor_specialty,
            c.phone as contractor_phone,
            c.email as contractor_email,
@@ -1681,9 +1861,10 @@ async function renderPermitDetail(permitNumber, env, request) {
     LEFT JOIN contractors c ON p.contractor_id = c.id
     WHERE p.permit_number = ?
   `,
-  )
-    .bind(permitNumber)
-    .all();
+    )
+      .bind(permitNumber)
+      .all());
+  }
 
   if (results.length === 0) {
     return render404({
@@ -1895,6 +2076,31 @@ async function renderPermitDetail(permitNumber, env, request) {
     permit.detailed_description || permit.description || "No description available for this permit.",
   );
   const mapsQuery = encodeURIComponent(permit.address || "Seattle, WA");
+
+  // Links up into the entity graph (address / project / contractor / neighborhood).
+  const neighborhoodSlug = permit.neighborhood ? makeSlug(permit.neighborhood) : makeSlug(neighborhood);
+  const entityLinks = [
+    permit.address_slug
+      ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.address_display || permit.address)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Property</span>`
+      : "",
+    permit.project_slug
+      ? `<a href="/project/${encodeURIComponent(permit.project_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.project_name)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Project</span>`
+      : "",
+    permit.contractor_slug
+      ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Contractor</span>`
+      : "",
+    neighborhoodSlug
+      ? `<a href="/neighborhood/${encodeURIComponent(neighborhoodSlug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${safeNeighborhood}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Neighborhood</span>`
+      : "",
+  ].filter(Boolean);
+  const entityLinksCard = entityLinks.length
+    ? `<div class="card card-full">
+                    <div class="card-label">Explore This Record</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:1.5rem;margin-top:0.5rem;">
+                        ${entityLinks.map((l) => `<div>${l}</div>`).join("")}
+                    </div>
+                </div>`
+    : "";
 
   if (wantsMarkdown(request)) {
     return markdownResponse(
@@ -2155,6 +2361,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </span>
             </div>
             <div class="detail-grid">
+                ${entityLinksCard}
                 <div class="card">
                     <div class="card-label">Project Details</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem;">
@@ -2492,10 +2699,9 @@ async function renderContractorPage(slug, env, request) {
   const contractor = await env.DB.prepare("SELECT * FROM contractors WHERE slug = ?").bind(slug).first();
 
   if (!contractor) {
-    return render404({
-      heading: "Contractor not found",
-      message: "We do not have a profile for that contractor yet. Browse all linked contractors via the permits feed.",
-    });
+    // Fall back to the people_orgs-backed page so /contractor/:slug resolves the
+    // whole entity graph (owners, applicants, architects, and feed contractors).
+    return renderOrgContractorPage(slug, env, request);
   }
 
   const [permits, metrics, marketFocus, projectTypes] = await Promise.all([
@@ -2556,6 +2762,24 @@ async function renderContractorPage(slug, env, request) {
     )
       .bind(contractor.id)
       .all(),
+  ]);
+
+  // Entity-graph rollups (gracefully empty if the graph has not been built yet).
+  const [graphAddresses, graphProjects] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+       FROM permits p JOIN addresses a ON a.id = p.address_id
+       WHERE p.contractor_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 12`,
+      [contractor.id],
+    ),
+    safeAll(
+      env,
+      `SELECT DISTINCT pr.slug, pr.name, pr.latest_activity_date, pr.total_estimated_value
+       FROM permits p JOIN projects pr ON pr.id = p.project_id
+       WHERE p.contractor_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 12`,
+      [contractor.id],
+    ),
   ]);
 
   const permitDays = metrics.avg_permit_days ? Math.round(metrics.avg_permit_days) : "—";
@@ -2719,6 +2943,41 @@ async function renderContractorPage(slug, env, request) {
                       )
                       .join("")}
                 </div>
+                ${
+                  graphAddresses.length || graphProjects.length
+                    ? `<div class="card">
+                    <h3 style="margin-top:0">Addresses &amp; Projects</h3>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-top:1rem;">
+                      <div>
+                        <div style="font-size:0.8rem;color:#64748b;margin-bottom:0.5rem;font-weight:600;">Addresses worked on</div>
+                        ${
+                          graphAddresses.length
+                            ? graphAddresses
+                                .map(
+                                  (a) =>
+                                    `<div style="margin-bottom:0.4rem;font-size:0.9rem;"><a href="/address/${encodeURIComponent(a.slug)}" style="color:#3b82f6;text-decoration:none;">${escapeHtml(a.display_address)}</a> <span style="color:#94a3b8;font-size:0.8rem;">· ${a.permits}</span></div>`,
+                                )
+                                .join("")
+                            : '<div style="color:#94a3b8;font-size:0.85rem;">—</div>'
+                        }
+                      </div>
+                      <div>
+                        <div style="font-size:0.8rem;color:#64748b;margin-bottom:0.5rem;font-weight:600;">Inferred projects</div>
+                        ${
+                          graphProjects.length
+                            ? graphProjects
+                                .map(
+                                  (pr) =>
+                                    `<div style="margin-bottom:0.4rem;font-size:0.9rem;"><a href="/project/${encodeURIComponent(pr.slug)}" style="color:#3b82f6;text-decoration:none;">${escapeHtml(pr.name)}</a></div>`,
+                                )
+                                .join("")
+                            : '<div style="color:#94a3b8;font-size:0.85rem;">—</div>'
+                        }
+                      </div>
+                    </div>
+                </div>`
+                    : ""
+                }
             </div>
             <div>
                 ${credentialsCard}
@@ -2794,6 +3053,945 @@ async function renderContractorPage(slug, env, request) {
 </html>`;
 
   return new Response(html, { headers: { "Content-Type": "text/html" } });
+}
+
+// ===========================================================================
+// Entity graph: persistence + reporting
+// ===========================================================================
+
+const ENTITY_PERMIT_SELECT = `
+  SELECT p.id, p.permit_number, p.address, p.neighborhood, p.type, p.value,
+         p.status, p.description, p.detailed_description, p.applied_date,
+         p.issued_date, p.completed_date, p.owner_name, p.applicant_name,
+         p.architect_name, p.lat, p.lng, p.zip,
+         c.name AS contractor_name
+  FROM permits p
+  LEFT JOIN contractors c ON p.contractor_id = c.id
+  ORDER BY p.id
+`;
+
+async function runEntityBatch(env, statements) {
+  const CHUNK = 50;
+  for (let i = 0; i < statements.length; i += CHUNK) {
+    await env.DB.batch(statements.slice(i, i + CHUNK));
+  }
+}
+
+// Full rebuild of the derived entity graph from the permits table. Idempotent;
+// safe to call after imports or on a schedule. Returns summary counts.
+async function rebuildEntityGraph(env) {
+  const { results: permits } = await env.DB.prepare(ENTITY_PERMIT_SELECT).all();
+  const P = (sql) => env.DB.prepare(sql);
+
+  // Preserve already-minted address/org slugs (keyed by their stable normalized
+  // form) so existing entity URLs never change across rebuilds.
+  const prevAddrRows = await safeAll(env, "SELECT normalized_address, slug FROM addresses");
+  const prevOrgRows = await safeAll(env, "SELECT normalized_name, slug FROM people_orgs");
+  const graph = buildEntityGraph(permits || [], {
+    addressSlugByNorm: new Map(prevAddrRows.map((r) => [r.normalized_address, r.slug])),
+    orgSlugByNorm: new Map(prevOrgRows.map((r) => [r.normalized_name, r.slug])),
+  });
+
+  // Clear derived tables and reset permit links (single transaction).
+  await env.DB.batch([
+    P("DELETE FROM project_permits"),
+    P("DELETE FROM permit_participants"),
+    P("DELETE FROM project_participants"),
+    P("DELETE FROM address_neighborhoods"),
+    P("DELETE FROM projects"),
+    P("DELETE FROM neighborhoods"),
+    P("DELETE FROM addresses"),
+    P("DELETE FROM people_orgs"),
+    P("UPDATE permits SET address_id = NULL, project_id = NULL"),
+  ]);
+
+  // addresses
+  await runEntityBatch(
+    env,
+    graph.addresses.map((a) =>
+      P(
+        `INSERT INTO addresses (slug, normalized_address, display_address, city, state, zip, lat, lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(a.slug, a.normalized_address, a.display_address, a.city, a.state, a.zip, a.lat, a.lng),
+    ),
+  );
+  const addrRows = (await P("SELECT id, normalized_address FROM addresses").all()).results;
+  const addrIdByNorm = new Map(addrRows.map((r) => [r.normalized_address, r.id]));
+  const addrIdByTmp = new Map(graph.addresses.map((a) => [a.tmpId, addrIdByNorm.get(a.normalized_address)]));
+
+  // people_orgs
+  await runEntityBatch(
+    env,
+    graph.peopleOrgs.map((o) =>
+      P(`INSERT INTO people_orgs (slug, name, normalized_name, type_guess) VALUES (?, ?, ?, ?)`).bind(
+        o.slug,
+        o.name,
+        o.normalized_name,
+        o.type_guess,
+      ),
+    ),
+  );
+  const orgRows = (await P("SELECT id, normalized_name FROM people_orgs").all()).results;
+  const orgIdByNorm = new Map(orgRows.map((r) => [r.normalized_name, r.id]));
+  const orgIdByTmp = new Map(graph.peopleOrgs.map((o) => [o.tmpId, orgIdByNorm.get(o.normalized_name)]));
+
+  // projects
+  await runEntityBatch(
+    env,
+    graph.projects.map((p) =>
+      P(
+        `INSERT INTO projects (slug, address_id, name, description_summary, confidence_score, first_seen_date, latest_activity_date, total_estimated_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        p.slug,
+        addrIdByTmp.get(p.addressTmpId) ?? null,
+        p.name,
+        p.description_summary,
+        p.confidence_score,
+        p.first_seen_date,
+        p.latest_activity_date,
+        p.total_estimated_value,
+      ),
+    ),
+  );
+  const projRows = (await P("SELECT id, slug FROM projects").all()).results;
+  const projIdBySlug = new Map(projRows.map((r) => [r.slug, r.id]));
+  const projIdByTmp = new Map(graph.projects.map((p) => [p.tmpId, projIdBySlug.get(p.slug)]));
+
+  // neighborhoods
+  await runEntityBatch(
+    env,
+    graph.neighborhoods.map((n) => P(`INSERT INTO neighborhoods (slug, name) VALUES (?, ?)`).bind(n.slug, n.name)),
+  );
+  const nbRows = (await P("SELECT id, slug FROM neighborhoods").all()).results;
+  const nbIdBySlug = new Map(nbRows.map((r) => [r.slug, r.id]));
+  const nbIdByTmp = new Map(graph.neighborhoods.map((n) => [n.tmpId, nbIdBySlug.get(n.slug)]));
+
+  // join tables
+  await runEntityBatch(
+    env,
+    graph.projects.flatMap((p) =>
+      p.permitIds.map((pid) =>
+        P(`INSERT OR IGNORE INTO project_permits (project_id, permit_id) VALUES (?, ?)`).bind(
+          projIdBySlug.get(p.slug),
+          pid,
+        ),
+      ),
+    ),
+  );
+  await runEntityBatch(
+    env,
+    graph.permitParticipants.map((pp) =>
+      P(`INSERT OR IGNORE INTO permit_participants (permit_id, people_org_id, role) VALUES (?, ?, ?)`).bind(
+        pp.permit_id,
+        orgIdByTmp.get(pp.orgTmpId),
+        pp.role,
+      ),
+    ),
+  );
+  await runEntityBatch(
+    env,
+    graph.projectParticipants.map((pp) =>
+      P(`INSERT OR IGNORE INTO project_participants (project_id, people_org_id, role) VALUES (?, ?, ?)`).bind(
+        projIdByTmp.get(pp.projectTmpId),
+        orgIdByTmp.get(pp.orgTmpId),
+        pp.role,
+      ),
+    ),
+  );
+  await runEntityBatch(
+    env,
+    graph.addressNeighborhoods.map((an) =>
+      P(`INSERT OR IGNORE INTO address_neighborhoods (address_id, neighborhood_id) VALUES (?, ?)`).bind(
+        addrIdByTmp.get(an.addressTmpId),
+        nbIdByTmp.get(an.nbTmpId),
+      ),
+    ),
+  );
+
+  // link permits back to their address + project
+  const permitUpdates = [];
+  for (const [permitId, addrTmp] of graph.permitAddress) {
+    const projTmp = graph.permitProject.get(permitId);
+    permitUpdates.push(
+      P(`UPDATE permits SET address_id = ?, project_id = ? WHERE id = ?`).bind(
+        addrIdByTmp.get(addrTmp) ?? null,
+        projTmp != null ? projIdByTmp.get(projTmp) ?? null : null,
+        permitId,
+      ),
+    );
+  }
+  await runEntityBatch(env, permitUpdates);
+
+  return {
+    ok: true,
+    permits: permits.length,
+    addresses: graph.addresses.length,
+    people_orgs: graph.peopleOrgs.length,
+    projects: graph.projects.length,
+    permit_participants: graph.permitParticipants.length,
+    neighborhoods: graph.neighborhoods.length,
+  };
+}
+
+// Validation report: entity counts, orphans, and top lists. Returns plain JSON.
+async function entityGraphReport(env) {
+  const one = async (sql) => {
+    try {
+      return (await env.DB.prepare(sql).first()) || {};
+    } catch {
+      return {};
+    }
+  };
+  const many = async (sql) => {
+    try {
+      return (await env.DB.prepare(sql).all()).results || [];
+    } catch {
+      return [];
+    }
+  };
+
+  const [
+    addresses,
+    peopleOrgs,
+    projects,
+    permits,
+    assigned,
+    orphans,
+    neighborhoods,
+    topAddresses,
+    topContractors,
+    pagesByType,
+  ] = await Promise.all([
+    one(`SELECT COUNT(*) AS n FROM addresses`),
+    one(`SELECT COUNT(*) AS n FROM people_orgs`),
+    one(`SELECT COUNT(*) AS n FROM projects`),
+    one(`SELECT COUNT(*) AS n FROM permits`),
+    one(`SELECT COUNT(*) AS n FROM permits WHERE project_id IS NOT NULL`),
+    one(`SELECT COUNT(*) AS n FROM permits WHERE project_id IS NULL`),
+    one(`SELECT COUNT(*) AS n FROM neighborhoods`),
+    many(
+      `SELECT a.display_address, a.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+       FROM addresses a JOIN permits p ON p.address_id = a.id
+       GROUP BY a.id ORDER BY permits DESC, total_value DESC LIMIT 20`,
+    ),
+    many(
+      `SELECT o.name, o.slug, COUNT(pp.permit_id) AS permits
+       FROM people_orgs o JOIN permit_participants pp ON pp.people_org_id = o.id AND pp.role = 'contractor'
+       GROUP BY o.id ORDER BY permits DESC LIMIT 20`,
+    ),
+    one(`SELECT (SELECT COUNT(*) FROM addresses) AS address_pages,
+                (SELECT COUNT(*) FROM projects) AS project_pages,
+                (SELECT COUNT(*) FROM people_orgs) AS contractor_pages,
+                (SELECT COUNT(*) FROM neighborhoods) AS neighborhood_pages,
+                (SELECT COUNT(*) FROM permits) AS permit_pages`),
+  ]);
+
+  const sitemapUrlCount =
+    2 +
+    (Number(permits.n) || 0) +
+    (Number(addresses.n) || 0) +
+    (Number(projects.n) || 0) +
+    (Number(peopleOrgs.n) || 0) +
+    (Number(neighborhoods.n) || 0);
+
+  return {
+    generated_at: new Date().toISOString(),
+    counts: {
+      addresses: Number(addresses.n) || 0,
+      people_orgs: Number(peopleOrgs.n) || 0,
+      projects: Number(projects.n) || 0,
+      permits: Number(permits.n) || 0,
+      permits_assigned_to_projects: Number(assigned.n) || 0,
+      orphan_permits: Number(orphans.n) || 0,
+      neighborhoods: Number(neighborhoods.n) || 0,
+    },
+    pages_by_type: pagesByType,
+    sitemap_url_count: sitemapUrlCount,
+    top_addresses_by_permit_count: topAddresses,
+    top_contractors_by_permit_count: topContractors,
+  };
+}
+
+// ===========================================================================
+// Entity pages: addresses, projects, neighborhoods, people/orgs
+// ===========================================================================
+
+function entMoney(n) {
+  const v = Number(n);
+  return Number.isFinite(v) && v > 0 ? `$${Math.round(v).toLocaleString()}` : "N/A";
+}
+
+function entDate(d) {
+  if (!d) return "N/A";
+  const dt = new Date(d);
+  return Number.isNaN(dt.getTime())
+    ? String(d)
+    : dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function entStreet(displayAddress) {
+  return String(displayAddress || "").split(",")[0].trim() || String(displayAddress || "");
+}
+
+function entStyles() {
+  return `<style>
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:var(--bg-alt);color:var(--text);line-height:1.6}
+    .container{max-width:var(--container-max);margin:0 auto;padding:0 1.5rem}
+    .ent-grid{display:grid;grid-template-columns:2fr 1fr;gap:2.5rem;align-items:start}
+    @media(max-width:860px){.ent-grid{grid-template-columns:1fr}}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.75rem;box-shadow:var(--shadow-sm);margin-bottom:1.75rem}
+    .card h2{font-size:1.25rem;margin:0 0 1rem}
+    .card h3{font-size:1rem;margin:0 0 0.75rem}
+    .metric{text-align:center;padding:1rem;background:var(--bg-alt);border-radius:var(--radius-sm);border:1px solid var(--border)}
+    .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0.85rem;margin:1rem 0}
+    .ent-list{list-style:none;margin:0;padding:0}
+    .ent-list li{padding:0.75rem 0;border-bottom:1px solid var(--border)}
+    .ent-list li:last-child{border-bottom:none}
+    a.ent-link{color:var(--accent);text-decoration:none;font-weight:600}
+    a.ent-link:hover{text-decoration:underline}
+    table.ent{width:100%;border-collapse:collapse;font-size:0.875rem}
+    table.ent th{text-align:left;color:var(--text-muted);font-weight:600;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border)}
+    table.ent td{padding:0.6rem 0.75rem;border-bottom:1px solid var(--border);vertical-align:top}
+    .pill{display:inline-block;padding:0.15rem 0.6rem;border-radius:999px;font-size:0.7rem;font-weight:700;background:#eff6ff;color:#3b82f6;text-transform:capitalize}
+    .ent-hero{margin-bottom:1.5rem}
+    .ent-hero h1{font-size:2rem;font-weight:800;margin:0 0 0.5rem;color:var(--primary)}
+    .ent-kicker{color:var(--text-muted);font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:0.4rem}
+  </style>`;
+}
+
+function entBreadcrumb(items) {
+  const parts = items
+    .map((it) =>
+      it.href
+        ? `<a href="${escapeHtml(it.href)}" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(it.label)}</a>`
+        : `<span style="color:var(--text);font-weight:600;">${escapeHtml(it.label)}</span>`,
+    )
+    .join(' <span style="margin:0 0.4rem;color:var(--text-subtle);">/</span> ');
+  return `<nav aria-label="breadcrumb" style="font-size:0.8125rem;margin-bottom:1.5rem;">${parts}</nav>`;
+}
+
+function entStat(label, value) {
+  return `<div class="metric"><div style="font-size:1.4rem;font-weight:800;color:var(--primary);">${value}</div><div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(label)}</div></div>`;
+}
+
+function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType = "website", body, activeNav = "permits" }) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}">
+    ${noindex ? '<meta name="robots" content="noindex,follow">' : ""}
+    <link rel="canonical" href="${escapeHtml(canonical)}">
+    <meta property="og:title" content="${escapeHtml(title)}">
+    <meta property="og:description" content="${escapeHtml(description)}">
+    <meta property="og:type" content="${ogType}">
+    <meta property="og:url" content="${escapeHtml(canonical)}">
+    <meta name="twitter:card" content="summary">
+    <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
+    ${entStyles()}
+    ${jsonLd ? `<script type="application/ld+json">${jsonLd}</script>` : ""}
+</head>
+<body>
+    ${renderNav(activeNav)}
+    <div class="global-nav-spacer"></div>
+    <main class="container" style="padding:2rem 1.5rem 4rem;">
+        ${body}
+    </main>
+    ${renderFooter()}
+</body>
+</html>`;
+}
+
+// Render a linked table of permit evidence rows.
+function entPermitRows(permits) {
+  if (!permits || permits.length === 0) {
+    return `<p style="color:var(--text-muted);">No permits on record.</p>`;
+  }
+  const rows = permits
+    .map(
+      (p) => `<tr>
+        <td><a class="ent-link" href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(p.permit_number)}</a></td>
+        <td>${escapeHtml(p.type || "—")}</td>
+        <td>${entMoney(p.value)}</td>
+        <td><span class="pill">${escapeHtml(p.status || "—")}</span></td>
+        <td>${entDate(p.issued_date || p.applied_date)}</td>
+      </tr>`,
+    )
+    .join("");
+  return `<table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function safeAll(env, sql, binds = []) {
+  try {
+    return (await env.DB.prepare(sql).bind(...binds).all()).results || [];
+  } catch {
+    return [];
+  }
+}
+async function safeFirst(env, sql, binds = []) {
+  try {
+    return (await env.DB.prepare(sql).bind(...binds).first()) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function renderAddressPage(slug, env, request) {
+  const canonical = `${BASE_URL}/address/${encodeURIComponent(slug)}`;
+  const address = await safeFirst(env, "SELECT * FROM addresses WHERE slug = ?", [slug]);
+  if (!address) {
+    return render404({
+      heading: "Address not found",
+      message: "We do not have an aggregated property page for that address yet.",
+    });
+  }
+
+  const [permits, projects, participants, neighborhood, related] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT p.*, c.name AS contractor_name, c.slug AS contractor_slug
+       FROM permits p LEFT JOIN contractors c ON c.id = p.contractor_id
+       WHERE p.address_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC`,
+      [address.id],
+    ),
+    safeAll(
+      env,
+      "SELECT * FROM projects WHERE address_id = ? ORDER BY latest_activity_date DESC",
+      [address.id],
+    ),
+    safeAll(
+      env,
+      `SELECT o.name, o.slug, o.type_guess, pp.role, COUNT(*) AS cnt
+       FROM permit_participants pp
+       JOIN permits p ON p.id = pp.permit_id
+       JOIN people_orgs o ON o.id = pp.people_org_id
+       WHERE p.address_id = ? GROUP BY o.id, pp.role ORDER BY cnt DESC`,
+      [address.id],
+    ),
+    safeFirst(
+      env,
+      `SELECT n.* FROM neighborhoods n JOIN address_neighborhoods an ON an.neighborhood_id = n.id WHERE an.address_id = ? LIMIT 1`,
+      [address.id],
+    ),
+    safeAll(
+      env,
+      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits
+       FROM address_neighborhoods an
+       JOIN addresses a ON a.id = an.address_id
+       JOIN permits p ON p.address_id = a.id
+       WHERE an.neighborhood_id = (SELECT neighborhood_id FROM address_neighborhoods WHERE address_id = ? LIMIT 1)
+         AND a.id != ?
+       GROUP BY a.id ORDER BY permits DESC LIMIT 6`,
+      [address.id, address.id],
+    ),
+  ]);
+
+  const permitCount = permits.length;
+  const totalValue = permits.reduce((s, p) => s + (Number(p.value) || 0), 0);
+  const dates = permits.map((p) => p.issued_date || p.applied_date).filter(Boolean).sort();
+  const firstDate = dates[0];
+  const lastDate = dates[dates.length - 1];
+  const activePermits = permits.filter((p) => ["active", "pending", "new"].includes(p.status));
+  const display = address.display_address;
+  const noindex = permitCount === 0;
+
+  const title = `${display} Seattle Construction Permits & Project Activity`;
+  const description = `View construction permits, contractors, project history, estimated values, and recent activity for ${display} in Seattle.`;
+
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Place",
+        name: display,
+        address: {
+          "@type": "PostalAddress",
+          streetAddress: entStreet(display),
+          addressLocality: address.city || "Seattle",
+          addressRegion: address.state || "WA",
+          postalCode: address.zip || undefined,
+          addressCountry: "US",
+        },
+        ...(address.lat && address.lng
+          ? { geo: { "@type": "GeoCoordinates", latitude: address.lat, longitude: address.lng } }
+          : {}),
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+          { "@type": "ListItem", position: 3, name: display, item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+
+  const projectsHtml = projects.length
+    ? `<ul class="ent-list">${projects
+        .map(
+          (pr) => `<li>
+            <a class="ent-link" href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a>
+            <div style="font-size:0.8rem;color:var(--text-muted);">${entMoney(pr.total_estimated_value)} · ${entDate(pr.first_seen_date)} – ${entDate(pr.latest_activity_date)} · confidence ${pr.confidence_score}</div>
+          </li>`,
+        )
+        .join("")}</ul>`
+    : `<p style="color:var(--text-muted);">No inferred projects yet.</p>`;
+
+  const participantsHtml = participants.length
+    ? `<ul class="ent-list">${participants
+        .map(
+          (o) => `<li>
+            <a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(o.name)}</a>
+            <span class="pill" style="margin-left:0.4rem;">${escapeHtml(o.role)}</span>
+            <span style="font-size:0.8rem;color:var(--text-muted);"> · ${o.cnt} permit${o.cnt > 1 ? "s" : ""}</span>
+          </li>`,
+        )
+        .join("")}</ul>`
+    : `<p style="color:var(--text-muted);">No participants on record.</p>`;
+
+  const relatedHtml = related.length
+    ? `<ul class="ent-list">${related
+        .map(
+          (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
+        )
+        .join("")}</ul>`
+    : "";
+
+  const body = `
+    ${entBreadcrumb([
+      { label: "Home", href: "/" },
+      ...(neighborhood ? [{ label: neighborhood.name, href: `/neighborhood/${encodeURIComponent(neighborhood.slug)}` }] : [{ label: "Permits", href: "/permits" }]),
+      { label: display },
+    ])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Property / Address</div>
+      <h1>${escapeHtml(display)}</h1>
+      ${neighborhood ? `<a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
+    </div>
+    <div class="ent-grid">
+      <div>
+        <div class="card">
+          <h2>Summary</h2>
+          <div class="stat-row">
+            ${entStat("Permits", permitCount)}
+            ${entStat("Total value", entMoney(totalValue))}
+            ${entStat("Active / recent", activePermits.length)}
+            ${entStat("Projects", projects.length)}
+          </div>
+          <div style="font-size:0.85rem;color:var(--text-muted);">First permit ${entDate(firstDate)} · Latest permit ${entDate(lastDate)}</div>
+        </div>
+        <div class="card">
+          <h2>Permit records (${permitCount})</h2>
+          ${entPermitRows(permits)}
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Inferred projects</h3>
+          ${projectsHtml}
+        </div>
+        <div class="card">
+          <h3>Contractors &amp; participants</h3>
+          ${participantsHtml}
+        </div>
+        ${relatedHtml ? `<div class="card"><h3>Nearby &amp; related addresses</h3>${relatedHtml}</div>` : ""}
+      </div>
+    </div>`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType: "place", body }),
+    { headers: { "Content-Type": "text/html" } },
+  );
+}
+
+async function renderProjectPage(slug, env, request) {
+  const canonical = `${BASE_URL}/project/${encodeURIComponent(slug)}`;
+  const project = await safeFirst(
+    env,
+    `SELECT pr.*, a.display_address, a.slug AS address_slug, a.city, a.state
+     FROM projects pr LEFT JOIN addresses a ON a.id = pr.address_id WHERE pr.slug = ?`,
+    [slug],
+  );
+  if (!project) {
+    return render404({ heading: "Project not found", message: "We have not clustered a project under that name yet." });
+  }
+
+  const [permits, participants, neighborhood] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT p.*, c.name AS contractor_name, c.slug AS contractor_slug
+       FROM project_permits jp JOIN permits p ON p.id = jp.permit_id
+       LEFT JOIN contractors c ON c.id = p.contractor_id
+       WHERE jp.project_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC`,
+      [project.id],
+    ),
+    safeAll(
+      env,
+      `SELECT o.name, o.slug, o.type_guess, pp.role FROM project_participants pp
+       JOIN people_orgs o ON o.id = pp.people_org_id WHERE pp.project_id = ? ORDER BY pp.role`,
+      [project.id],
+    ),
+    safeFirst(
+      env,
+      `SELECT n.* FROM neighborhoods n JOIN address_neighborhoods an ON an.neighborhood_id = n.id WHERE an.address_id = ? LIMIT 1`,
+      [project.address_id],
+    ),
+  ]);
+
+  const noindex = permits.length === 0;
+  const title = `${project.name} | Seattle Construction Activity`;
+  const description = `Track permits, contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
+
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "CreativeWork",
+        name: project.name,
+        abstract: project.description_summary || undefined,
+        url: canonical,
+        dateCreated: project.first_seen_date || undefined,
+        dateModified: project.latest_activity_date || undefined,
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          ...(project.address_slug
+            ? [{ "@type": "ListItem", position: 2, name: project.display_address, item: `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}` }]
+            : []),
+          { "@type": "ListItem", position: project.address_slug ? 3 : 2, name: project.name, item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+
+  const participantsHtml = participants.length
+    ? `<ul class="ent-list">${participants
+        .map(
+          (o) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(o.name)}</a> <span class="pill" style="margin-left:0.4rem;">${escapeHtml(o.role)}</span></li>`,
+        )
+        .join("")}</ul>`
+    : `<p style="color:var(--text-muted);">No participants on record.</p>`;
+
+  const body = `
+    ${entBreadcrumb([
+      { label: "Home", href: "/" },
+      ...(project.address_slug ? [{ label: project.display_address, href: `/address/${encodeURIComponent(project.address_slug)}` }] : [{ label: "Permits", href: "/permits" }]),
+      { label: project.name },
+    ])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Inferred Project · confidence ${project.confidence_score}</div>
+      <h1>${escapeHtml(project.name)}</h1>
+      ${project.address_slug ? `<a class="ent-link" href="/address/${encodeURIComponent(project.address_slug)}">${escapeHtml(project.display_address)}</a>` : ""}
+      ${neighborhood ? ` · <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
+    </div>
+    <div class="ent-grid">
+      <div>
+        <div class="card">
+          <h2>Summary</h2>
+          <div class="stat-row">
+            ${entStat("Permits", permits.length)}
+            ${entStat("Est. value", entMoney(project.total_estimated_value))}
+            ${entStat("First activity", entDate(project.first_seen_date))}
+            ${entStat("Latest activity", entDate(project.latest_activity_date))}
+          </div>
+          ${project.description_summary ? `<p style="margin-top:0.5rem;">${escapeHtml(project.description_summary)}</p>` : ""}
+        </div>
+        <div class="card">
+          <h2>Permit records (${permits.length})</h2>
+          ${entPermitRows(permits)}
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Participants</h3>
+          ${participantsHtml}
+        </div>
+        <div class="card">
+          <h3>About this project</h3>
+          <p style="font-size:0.85rem;color:var(--text-muted);margin:0;">This project was inferred by grouping related permits at the same address. Confidence score ${project.confidence_score}/100 reflects how strongly the permits appear to belong to a single effort.</p>
+        </div>
+      </div>
+    </div>`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType: "article", body }),
+    { headers: { "Content-Type": "text/html" } },
+  );
+}
+
+async function renderNeighborhoodPage(slug, env, request) {
+  const canonical = `${BASE_URL}/neighborhood/${encodeURIComponent(slug)}`;
+  const nb = await safeFirst(env, "SELECT * FROM neighborhoods WHERE slug = ?", [slug]);
+  if (!nb) {
+    return render404({ heading: "Neighborhood not found", message: "We do not track that neighborhood yet." });
+  }
+
+  const [recentPermits, projects, topContractors, totals, topAddresses] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT p.*, a.slug AS addr_slug, a.display_address, c.name AS contractor_name, c.slug AS contractor_slug
+       FROM permits p
+       JOIN address_neighborhoods an ON an.address_id = p.address_id
+       JOIN addresses a ON a.id = p.address_id
+       LEFT JOIN contractors c ON c.id = p.contractor_id
+       WHERE an.neighborhood_id = ?
+       ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 15`,
+      [nb.id],
+    ),
+    safeAll(
+      env,
+      `SELECT pr.*, a.display_address, a.slug AS address_slug
+       FROM projects pr
+       JOIN address_neighborhoods an ON an.address_id = pr.address_id
+       LEFT JOIN addresses a ON a.id = pr.address_id
+       WHERE an.neighborhood_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 10`,
+      [nb.id],
+    ),
+    safeAll(
+      env,
+      `SELECT o.name, o.slug, COUNT(*) AS cnt FROM permit_participants pp
+       JOIN permits p ON p.id = pp.permit_id
+       JOIN address_neighborhoods an ON an.address_id = p.address_id
+       JOIN people_orgs o ON o.id = pp.people_org_id
+       WHERE an.neighborhood_id = ? AND pp.role = 'contractor'
+       GROUP BY o.id ORDER BY cnt DESC LIMIT 10`,
+      [nb.id],
+    ),
+    safeFirst(
+      env,
+      `SELECT COUNT(DISTINCT p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+       FROM permits p JOIN address_neighborhoods an ON an.address_id = p.address_id
+       WHERE an.neighborhood_id = ?`,
+      [nb.id],
+    ),
+    safeAll(
+      env,
+      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits
+       FROM addresses a JOIN address_neighborhoods an ON an.address_id = a.id
+       JOIN permits p ON p.address_id = a.id
+       WHERE an.neighborhood_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 10`,
+      [nb.id],
+    ),
+  ]);
+
+  const permitCount = Number(totals?.permits) || 0;
+  const totalValue = Number(totals?.total_value) || 0;
+  const noindex = permitCount === 0;
+  const title = `${nb.name} Seattle Construction Permits & Development Activity`;
+  const description = `Recent permits, active projects, top contractors, estimated values, and the most active addresses in ${nb.name}, Seattle.`;
+
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+      { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+      { "@type": "ListItem", position: 3, name: nb.name, item: canonical },
+    ],
+  }).replace(/</g, "\\u003c");
+
+  const listOrEmpty = (rows, fn, empty) =>
+    rows.length ? `<ul class="ent-list">${rows.map(fn).join("")}</ul>` : `<p style="color:var(--text-muted);">${empty}</p>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Permits", href: "/permits" }, { label: nb.name }])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Neighborhood</div>
+      <h1>${escapeHtml(nb.name)}</h1>
+    </div>
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Permits", permitCount)}
+        ${entStat("Total value", entMoney(totalValue))}
+        ${entStat("Active projects", projects.length)}
+        ${entStat("Top contractors", topContractors.length)}
+      </div>
+    </div>
+    <div class="ent-grid">
+      <div>
+        <div class="card">
+          <h2>Recent permits</h2>
+          ${entPermitRows(recentPermits)}
+        </div>
+        <div class="card">
+          <h2>Active projects</h2>
+          ${listOrEmpty(
+            projects,
+            (pr) =>
+              `<li><a class="ent-link" href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${entMoney(pr.total_estimated_value)} · ${entDate(pr.latest_activity_date)}</span></li>`,
+            "No active projects yet.",
+          )}
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Top contractors</h3>
+          ${listOrEmpty(
+            topContractors,
+            (c) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(c.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${c.cnt} permits</span></li>`,
+            "No contractors on record.",
+          )}
+        </div>
+        <div class="card">
+          <h3>Most active addresses</h3>
+          ${listOrEmpty(
+            topAddresses,
+            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
+            "No addresses on record.",
+          )}
+        </div>
+      </div>
+    </div>`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex, body }),
+    { headers: { "Content-Type": "text/html" } },
+  );
+}
+
+// People/org-backed contractor page (owners, applicants, architects, and any
+// contractor not present in the curated `contractors` table). Backed by
+// permit_participants so /contractor/:slug works for the whole graph.
+async function renderOrgContractorPage(slug, env, request) {
+  const canonical = `${BASE_URL}/contractor/${encodeURIComponent(slug)}`;
+  const org = await safeFirst(env, "SELECT * FROM people_orgs WHERE slug = ?", [slug]);
+  if (!org) {
+    return render404({
+      heading: "Contractor not found",
+      message: "We do not have a profile for that contractor yet.",
+    });
+  }
+
+  const [permits, addresses, projects, neighborhoods, roles] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT p.*, a.slug AS addr_slug, a.display_address
+       FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+       LEFT JOIN addresses a ON a.id = p.address_id
+       WHERE pp.people_org_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 50`,
+      [org.id],
+    ),
+    safeAll(
+      env,
+      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+       FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+       JOIN addresses a ON a.id = p.address_id
+       WHERE pp.people_org_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 12`,
+      [org.id],
+    ),
+    safeAll(
+      env,
+      `SELECT DISTINCT pr.slug, pr.name, pr.latest_activity_date, pr.total_estimated_value
+       FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+       JOIN projects pr ON pr.id = p.project_id
+       WHERE pp.people_org_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 12`,
+      [org.id],
+    ),
+    safeAll(
+      env,
+      `SELECT n.name, n.slug, COUNT(*) AS cnt FROM permit_participants pp
+       JOIN permits p ON p.id = pp.permit_id
+       JOIN address_neighborhoods an ON an.address_id = p.address_id
+       JOIN neighborhoods n ON n.id = an.neighborhood_id
+       WHERE pp.people_org_id = ? GROUP BY n.id ORDER BY cnt DESC LIMIT 5`,
+      [org.id],
+    ),
+    safeAll(env, `SELECT DISTINCT role FROM permit_participants WHERE people_org_id = ?`, [org.id]),
+  ]);
+
+  const totalValue = permits.reduce((s, p) => s + (Number(p.value) || 0), 0);
+  const activeCount = permits.filter((p) => ["active", "pending", "new"].includes(p.status)).length;
+  const roleLabels = roles.map((r) => r.role).join(", ") || "participant";
+  const noindex = permits.length === 0;
+  const isOrg = org.type_guess === "organization";
+
+  const title = `${org.name} Seattle Permit & Construction Activity`;
+  const description = `See permits, projects, addresses, estimated values, and recent construction activity associated with ${org.name} in Seattle.`;
+
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      isOrg
+        ? {
+            "@type": "Organization",
+            name: org.name,
+            url: canonical,
+            address: { "@type": "PostalAddress", addressLocality: "Seattle", addressRegion: "WA", addressCountry: "US" },
+          }
+        : { "@type": "Person", name: org.name, url: canonical },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+          { "@type": "ListItem", position: 3, name: org.name, item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+
+  const listOrEmpty = (rows, fn, empty) =>
+    rows.length ? `<ul class="ent-list">${rows.map(fn).join("")}</ul>` : `<p style="color:var(--text-muted);">${empty}</p>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Permits", href: "/permits" }, { label: org.name }])}
+    <div class="ent-hero">
+      <div class="ent-kicker">${escapeHtml(isOrg ? "Organization" : "Person")} · ${escapeHtml(roleLabels)}</div>
+      <h1>${escapeHtml(org.name)}</h1>
+    </div>
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Permits", permits.length)}
+        ${entStat("Active / recent", activeCount)}
+        ${entStat("Total value", entMoney(totalValue))}
+        ${entStat("Addresses", addresses.length)}
+      </div>
+    </div>
+    <div class="ent-grid">
+      <div>
+        <div class="card">
+          <h2>Recent activity</h2>
+          ${entPermitRows(permits.slice(0, 20))}
+        </div>
+        <div class="card">
+          <h2>Inferred projects</h2>
+          ${listOrEmpty(
+            projects,
+            (pr) => `<li><a class="ent-link" href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${entMoney(pr.total_estimated_value)} · ${entDate(pr.latest_activity_date)}</span></li>`,
+            "No inferred projects yet.",
+          )}
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Addresses worked on</h3>
+          ${listOrEmpty(
+            addresses,
+            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
+            "No addresses on record.",
+          )}
+        </div>
+        <div class="card">
+          <h3>Most common neighborhoods</h3>
+          ${listOrEmpty(
+            neighborhoods,
+            (n) => `<li><a class="ent-link" href="/neighborhood/${encodeURIComponent(n.slug)}">${escapeHtml(n.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${n.cnt} permits</span></li>`,
+            "No neighborhood data.",
+          )}
+        </div>
+      </div>
+    </div>`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType: "profile", body }),
+    { headers: { "Content-Type": "text/html" } },
+  );
 }
 
 async function logIngest(
@@ -2893,6 +4091,13 @@ async function runScheduledIngest(env) {
 
     await upsertScheduledContractors(env, contractors);
     const { added, updated } = await upsertScheduledPermits(env, permits);
+
+    // Keep the derived entity graph (addresses / projects / orgs) fresh.
+    try {
+      await rebuildEntityGraph(env);
+    } catch (graphError) {
+      console.error("Entity graph rebuild failed:", graphError);
+    }
 
     await logIngest(env, {
       run_type: "scheduled",
@@ -4318,9 +5523,18 @@ Sitemap: ${BASE_URL}/sitemap.xml
 
 async function renderSitemapXml(env, request) {
   const origin = new URL(request.url).origin;
-  const [{ results: permits }, { results: contractors }] = await Promise.all([
+  const [{ results: permits }, { results: contractors }, addresses, projects, orgs, neighborhoods] = await Promise.all([
     env.DB.prepare("SELECT permit_number, issued_date FROM permits ORDER BY issued_date DESC").all(),
     env.DB.prepare("SELECT slug, updated_at FROM contractors").all(),
+    // Only index entity pages with at least one linked permit (avoid thin pages).
+    safeAll(env, "SELECT slug, updated_at FROM addresses ORDER BY updated_at DESC"),
+    safeAll(env, "SELECT slug, updated_at FROM projects ORDER BY latest_activity_date DESC"),
+    safeAll(
+      env,
+      `SELECT o.slug, o.updated_at FROM people_orgs o
+       WHERE EXISTS (SELECT 1 FROM permit_participants pp WHERE pp.people_org_id = o.id)`,
+    ),
+    safeAll(env, "SELECT slug FROM neighborhoods"),
   ]);
 
   const staticUrls = [
@@ -4330,19 +5544,57 @@ async function renderSitemapXml(env, request) {
 
   const permitUrls = permits.map((p) => ({
     loc: origin + "/permits/" + encodeURIComponent(p.permit_number),
-    priority: "0.7",
+    priority: "0.6",
     changefreq: "weekly",
     lastmod: p.issued_date,
   }));
 
+  const addressUrls = addresses.map((a) => ({
+    loc: origin + "/address/" + encodeURIComponent(a.slug),
+    priority: "0.8",
+    changefreq: "weekly",
+    lastmod: a.updated_at ? a.updated_at.substring(0, 10) : undefined,
+  }));
+
+  const projectUrls = projects.map((p) => ({
+    loc: origin + "/project/" + encodeURIComponent(p.slug),
+    priority: "0.7",
+    changefreq: "weekly",
+    lastmod: p.updated_at ? p.updated_at.substring(0, 10) : undefined,
+  }));
+
+  const neighborhoodUrls = neighborhoods.map((n) => ({
+    loc: origin + "/neighborhood/" + encodeURIComponent(n.slug),
+    priority: "0.7",
+    changefreq: "daily",
+  }));
+
+  // Curated contractors first, then any additional people/orgs from the graph.
+  const contractorSlugs = new Set(contractors.map((c) => c.slug));
   const contractorUrls = contractors.map((c) => ({
     loc: origin + "/contractor/" + encodeURIComponent(c.slug),
     priority: "0.6",
     changefreq: "weekly",
     lastmod: c.updated_at ? c.updated_at.substring(0, 10) : undefined,
   }));
+  const orgUrls = orgs
+    .filter((o) => !contractorSlugs.has(o.slug))
+    .map((o) => ({
+      loc: origin + "/contractor/" + encodeURIComponent(o.slug),
+      priority: "0.5",
+      changefreq: "weekly",
+      lastmod: o.updated_at ? o.updated_at.substring(0, 10) : undefined,
+    }));
 
-  const allUrls = [...staticUrls, ...permitUrls, ...contractorUrls];
+  const allUrls = [
+    ...staticUrls,
+    ...addressUrls,
+    ...projectUrls,
+    ...neighborhoodUrls,
+    ...contractorUrls,
+    ...orgUrls,
+    ...permitUrls,
+  ];
 
   const urlEntries = allUrls
     .map(
