@@ -6,6 +6,7 @@ import worker, {
   percentileSorted,
   summarizeDays,
   summarizeNetHousing,
+  projectSeattle,
 } from "../worker.js";
 
 const samplePermits = [
@@ -596,6 +597,72 @@ test("GET /insights renders the insights index with all three reports", async ()
 
 test("GET /insights/pipeline and /insights/housing render", async () => {
   for (const path of ["/insights/pipeline", "/insights/housing"]) {
+    const response = await worker.fetch(new Request(`http://example.com${path}`), createEnv(), createCtx());
+    assert.equal(response.status, 200, `${path} status`);
+    const html = await response.text();
+    assert.match(html, /Insights/);
+  }
+});
+
+test("projectSeattle maps the bounding box corners into the padded canvas", () => {
+  const W = 470;
+  const H = 820;
+  const pad = 40;
+  // North-west corner (max lat, min lng) projects to top-left of the inner area.
+  const [x0, y0] = projectSeattle(47.745, -122.435, W, H, pad);
+  assert.ok(Math.abs(x0 - pad) < 0.01, "min lng -> left pad");
+  assert.ok(Math.abs(y0 - pad) < 0.01, "max lat -> top pad");
+  // South-east corner (min lat, max lng) projects to bottom-right of inner area.
+  const [x1, y1] = projectSeattle(47.5, -122.245, W, H, pad);
+  assert.ok(Math.abs(x1 - (W - pad)) < 0.01, "max lng -> right pad");
+  assert.ok(Math.abs(y1 - (H - pad)) < 0.01, "min lat -> bottom pad");
+});
+
+test("GET /api/map returns neighborhood aggregates", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/map"), createEnv(), createCtx());
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(Array.isArray(payload.neighborhoods));
+  assert.ok("total_permits" in payload);
+  assert.ok("mapped_count" in payload);
+});
+
+test("GET /api/contractor-scorecards returns ranked contractors", async () => {
+  const response = await worker.fetch(
+    new Request("http://example.com/api/contractor-scorecards"),
+    createEnv(),
+    createCtx(),
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.ok(payload.totals, "totals present");
+  assert.ok(Array.isArray(payload.top_by_permits));
+  assert.ok(Array.isArray(payload.top_by_value));
+});
+
+test("GET /api/network returns nodes and edges", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/network"), createEnv(), createCtx());
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.ok(Array.isArray(payload.contractors));
+  assert.ok(Array.isArray(payload.neighborhoods));
+  assert.ok(Array.isArray(payload.edges));
+});
+
+test("GET /insights lists all six reports", async () => {
+  const response = await worker.fetch(new Request("http://example.com/insights"), createEnv(), createCtx());
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Construction activity map/i);
+  assert.match(html, /Contractor scorecards/i);
+  assert.match(html, /Who builds where/i);
+  assert.match(html, /href="\/insights\/map"/);
+  assert.match(html, /href="\/insights\/network"/);
+});
+
+test("GET /insights/map, /insights/contractors, /insights/network render", async () => {
+  for (const path of ["/insights/map", "/insights/contractors", "/insights/network"]) {
     const response = await worker.fetch(new Request(`http://example.com${path}`), createEnv(), createCtx());
     assert.equal(response.status, 200, `${path} status`);
     const html = await response.text();

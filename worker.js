@@ -112,6 +112,18 @@ export default {
         return secure(await getHousingStats(env));
       }
 
+      if (path === "/api/map") {
+        return secure(await getMapStats(env));
+      }
+
+      if (path === "/api/contractor-scorecards") {
+        return secure(await getContractorScorecardStats(env));
+      }
+
+      if (path === "/api/network") {
+        return secure(await getNetworkStats(env));
+      }
+
       if (path === "/insights" || path === "/insights/") {
         ctx.waitUntil(logPageView(request, env, "/insights"));
         return secure(await renderInsightsIndex(env));
@@ -130,6 +142,21 @@ export default {
       if (path === "/insights/housing") {
         ctx.waitUntil(logPageView(request, env, "/insights/housing"));
         return secure(await renderHousingPage(env));
+      }
+
+      if (path === "/insights/map") {
+        ctx.waitUntil(logPageView(request, env, "/insights/map"));
+        return secure(await renderMapPage(env));
+      }
+
+      if (path === "/insights/contractors") {
+        ctx.waitUntil(logPageView(request, env, "/insights/contractors"));
+        return secure(await renderContractorsPage(env));
+      }
+
+      if (path === "/insights/network") {
+        ctx.waitUntil(logPageView(request, env, "/insights/network"));
+        return secure(await renderNetworkPage(env));
       }
 
       if (path === "/api/admin/stats") {
@@ -3637,8 +3664,11 @@ function insightsStyles() {
 function insightsTabs(active) {
   const tabs = [
     { key: "plan-review", label: "Plan Review", href: "/insights/plan-review" },
-    { key: "pipeline", label: "Permit Pipeline", href: "/insights/pipeline" },
+    { key: "pipeline", label: "Pipeline", href: "/insights/pipeline" },
     { key: "housing", label: "Housing", href: "/insights/housing" },
+    { key: "map", label: "Map", href: "/insights/map" },
+    { key: "contractors", label: "Contractors", href: "/insights/contractors" },
+    { key: "network", label: "Network", href: "/insights/network" },
   ];
   return `<div class="ins-tabs">${tabs
     .map((t) => `<a class="ins-tab${t.key === active ? " active" : ""}" href="${t.href}">${escapeHtml(t.label)}</a>`)
@@ -4095,11 +4125,536 @@ async function renderHousingPage(env) {
   );
 }
 
+// --- Shared chart helpers for map / network (server-rendered SVG) -----------
+
+// Compact money formatter for dense labels ($1.2M, $340K).
+function compactMoney(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e3) return `$${Math.round(v / 1e3)}K`;
+  return `$${Math.round(v)}`;
+}
+
+// Neighborhood centroids for the bubble map, derived (lazily + memoized) from
+// the canonical NEIGHBORHOOD_BOUNDS defined later in this file. Lazy so it reads
+// that const after module evaluation rather than in its temporal dead zone.
+let _neighborhoodCentroids = null;
+function neighborhoodCentroids() {
+  if (_neighborhoodCentroids) return _neighborhoodCentroids;
+  const m = new Map();
+  for (const [name, minLat, maxLat, minLng, maxLng] of NEIGHBORHOOD_BOUNDS) {
+    m.set(name.toLowerCase(), { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 });
+  }
+  _neighborhoodCentroids = m;
+  return m;
+}
+
+const SEATTLE_BBOX = { latMin: 47.5, latMax: 47.745, lngMin: -122.435, lngMax: -122.245 };
+
+export function projectSeattle(lat, lng, W, H, pad) {
+  const { latMin, latMax, lngMin, lngMax } = SEATTLE_BBOX;
+  const xFrac = (lng - lngMin) / (lngMax - lngMin);
+  const yFrac = (latMax - lat) / (latMax - latMin);
+  return [pad + xFrac * (W - 2 * pad), pad + yFrac * (H - 2 * pad)];
+}
+
+// --- Construction map (neighborhood bubble map) -----------------------------
+
+async function getMapData(env) {
+  const rows = await safeAll(
+    env,
+    `SELECT neighborhood AS name, COUNT(*) AS permits, COALESCE(SUM(value),0) AS total_value
+     FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != ''
+     GROUP BY neighborhood ORDER BY permits DESC`,
+  );
+  const neighborhoods = rows.map((r) => {
+    const centroid = neighborhoodCentroids().get(String(r.name).toLowerCase()) || null;
+    return {
+      name: r.name,
+      permits: Number(r.permits) || 0,
+      total_value: Number(r.total_value) || 0,
+      lat: centroid ? centroid.lat : null,
+      lng: centroid ? centroid.lng : null,
+      mapped: !!centroid,
+    };
+  });
+  const mapped = neighborhoods.filter((n) => n.mapped);
+  return {
+    neighborhoods,
+    mapped_count: mapped.length,
+    unmapped_count: neighborhoods.length - mapped.length,
+    total_permits: neighborhoods.reduce((s, n) => s + n.permits, 0),
+    total_value: neighborhoods.reduce((s, n) => s + n.total_value, 0),
+  };
+}
+
+async function getMapStats(env) {
+  const data = await getMapData(env);
+  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+// Render the bubble map as inline SVG. Labels use currentColor so they adapt to
+// light/dark themes; bubble size encodes permit count, opacity encodes value.
+function svgBubbleMap(mapped) {
+  const W = 470;
+  const H = 820;
+  const pad = 40;
+  if (!mapped.length) return "";
+  const maxPermits = Math.max(...mapped.map((n) => n.permits), 1);
+  const maxValue = Math.max(...mapped.map((n) => n.total_value), 1);
+  // Largest bubbles drawn first so smaller ones layer on top and stay clickable.
+  const ordered = [...mapped].sort((a, b) => b.permits - a.permits);
+  const labelSet = new Set(ordered.slice(0, 14).map((n) => n.name));
+
+  const bubbles = ordered
+    .map((n) => {
+      const [x, y] = projectSeattle(n.lat, n.lng, W, H, pad);
+      const r = 5 + 30 * Math.sqrt(n.permits / maxPermits);
+      const op = (0.25 + 0.6 * (n.total_value / maxValue)).toFixed(2);
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="#3b82f6" fill-opacity="${op}" stroke="#3b82f6" stroke-opacity="0.9" stroke-width="1"><title>${escapeHtml(n.name)}: ${n.permits.toLocaleString()} permits · ${compactMoney(n.total_value)}</title></circle>`;
+    })
+    .join("");
+
+  const labels = ordered
+    .filter((n) => labelSet.has(n.name))
+    .map((n) => {
+      const [x, y] = projectSeattle(n.lat, n.lng, W, H, pad);
+      return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="700" fill="currentColor" style="paint-order:stroke;stroke:var(--surface);stroke-width:2.5px;">${escapeHtml(n.name)}</text>`;
+    })
+    .join("");
+
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Map of Seattle construction permits by neighborhood" style="width:100%;height:auto;max-width:470px;display:block;margin:0 auto;color:var(--text);">
+    <text x="${pad}" y="${pad - 18}" font-size="10" fill="var(--text-muted)">N &#8593;</text>
+    ${bubbles}
+    ${labels}
+  </svg>`;
+}
+
+async function renderMapPage(env) {
+  const canonical = `${BASE_URL}/insights/map`;
+  const data = await getMapData(env);
+  const mapped = data.neighborhoods.filter((n) => n.mapped);
+  const hasData = mapped.length > 0;
+
+  const title = "Seattle Construction Activity Map — Permits by Neighborhood";
+  const description =
+    "Where Seattle is building: permit counts and total construction value mapped across the city's neighborhoods.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "Seattle Construction Activity by Neighborhood",
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "Building Seattle" },
+  }).replace(/</g, "\\u003c");
+
+  const rankRows = data.neighborhoods.slice(0, 15).map((n) => ({
+    label: n.name,
+    value: n.permits,
+    display: n.permits.toLocaleString(),
+    sub: compactMoney(n.total_value),
+  }));
+
+  const emptyState = `
+    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+      <h2 style="margin-top:0;">No mapped permits yet</h2>
+      <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">The map plots permit activity by neighborhood. Check back once permits with neighborhoods have been ingested.</p>
+    </div>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Map" }])}
+    ${insightsStyles()}
+    ${insightsTabs("map")}
+    <div class="ent-hero">
+      <div class="ent-kicker">Insights</div>
+      <h1>Where Seattle is building</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Every active permit, mapped to its neighborhood. Bubble size shows the number of permits; color depth shows total construction value.</p>
+    </div>
+    ${
+      hasData
+        ? `
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Neighborhoods", data.mapped_count.toLocaleString())}
+        ${entStat("Permits mapped", data.total_permits.toLocaleString())}
+        ${entStat("Total value", compactMoney(data.total_value))}
+      </div>
+    </div>
+    <div class="ent-grid">
+      <div class="card">
+        <h2>Construction activity map</h2>
+        ${svgBubbleMap(mapped)}
+        <p class="pr-note">Bubble size = permit count · color depth = total value. Hover a bubble for details.${data.unmapped_count ? ` ${data.unmapped_count} neighborhood${data.unmapped_count === 1 ? "" : "s"} without a known centroid are listed but not plotted.` : ""}</p>
+      </div>
+      <div class="card">
+        <h2>Most active neighborhoods</h2>
+        ${prBarChart(rankRows)}
+      </div>
+    </div>
+    <p class="pr-note">Raw numbers available as JSON at <a class="ent-link" href="/api/map">/api/map</a>.</p>
+    `
+        : emptyState
+    }`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
+// --- Contractor scorecards --------------------------------------------------
+
+async function getContractorScorecards(env) {
+  const [topByPermits, topByValue, totals] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT c.name, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value,
+              COUNT(DISTINCT p.neighborhood) AS neighborhoods,
+              AVG(p.total_days_plan_review) AS avg_review,
+              SUM(CASE WHEN p.status='active' THEN 1 ELSE 0 END) AS active
+       FROM contractors c JOIN permits p ON p.contractor_id = c.id
+       GROUP BY c.id ORDER BY permits DESC LIMIT 25`,
+    ),
+    safeAll(
+      env,
+      `SELECT c.name, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+       FROM contractors c JOIN permits p ON p.contractor_id = c.id
+       GROUP BY c.id ORDER BY total_value DESC LIMIT 12`,
+    ),
+    safeFirst(
+      env,
+      `SELECT (SELECT COUNT(*) FROM contractors) AS contractors,
+              COUNT(DISTINCT p.contractor_id) AS active_contractors,
+              COUNT(*) AS attributed_permits
+       FROM permits p WHERE p.contractor_id IS NOT NULL`,
+    ),
+  ]);
+
+  const num = (v) => Number(v) || 0;
+  return {
+    totals: {
+      contractors: num(totals?.contractors),
+      active_contractors: num(totals?.active_contractors),
+      attributed_permits: num(totals?.attributed_permits),
+    },
+    top_by_permits: topByPermits.map((r) => ({
+      name: r.name,
+      slug: r.slug,
+      permits: num(r.permits),
+      total_value: num(r.total_value),
+      neighborhoods: num(r.neighborhoods),
+      active: num(r.active),
+      avg_review: r.avg_review != null ? Math.round(Number(r.avg_review)) : null,
+    })),
+    top_by_value: topByValue.map((r) => ({
+      name: r.name,
+      slug: r.slug,
+      permits: num(r.permits),
+      total_value: num(r.total_value),
+    })),
+  };
+}
+
+async function getContractorScorecardStats(env) {
+  const data = await getContractorScorecards(env);
+  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+async function renderContractorsPage(env) {
+  const canonical = `${BASE_URL}/insights/contractors`;
+  const data = await getContractorScorecards(env);
+  const hasData = data.top_by_permits.length > 0;
+
+  const title = "Seattle's Most Active Contractors — Permit Scorecards";
+  const description =
+    "Which contractors pull the most Seattle building permits, the highest construction value, the fastest review times, and the widest neighborhood reach.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "Seattle Contractor Permit Scorecards",
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "Building Seattle" },
+  }).replace(/</g, "\\u003c");
+
+  const permitRows = data.top_by_permits.slice(0, 15).map((c) => ({
+    label: c.name,
+    value: c.permits,
+    display: c.permits.toLocaleString(),
+    sub: `${c.neighborhoods} nbhds`,
+  }));
+  const valueRows = data.top_by_value.map((c) => ({
+    label: c.name,
+    value: c.total_value,
+    display: compactMoney(c.total_value),
+    sub: `${c.permits.toLocaleString()} permits`,
+  }));
+
+  const tableRows = data.top_by_permits
+    .map(
+      (c) => `<tr>
+        <td><a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(c.name)}</a></td>
+        <td>${c.permits.toLocaleString()}</td>
+        <td>${compactMoney(c.total_value)}</td>
+        <td>${c.neighborhoods}</td>
+        <td>${c.avg_review != null ? `${c.avg_review} days` : "—"}</td>
+        <td>${c.active.toLocaleString()}</td>
+      </tr>`,
+    )
+    .join("");
+
+  const emptyState = `
+    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+      <h2 style="margin-top:0;">No contractor data yet</h2>
+      <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Scorecards rank contractors by their attributed permits. Check back once permits have been linked to contractors.</p>
+    </div>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Contractors" }])}
+    ${insightsStyles()}
+    ${insightsTabs("contractors")}
+    <div class="ent-hero">
+      <div class="ent-kicker">Insights</div>
+      <h1>Seattle's most active contractors</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Ranked by the permits attributed to them — with total construction value, neighborhood reach, and median review speed.</p>
+    </div>
+    ${
+      hasData
+        ? `
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Contractors", data.totals.contractors.toLocaleString())}
+        ${entStat("With permits", data.totals.active_contractors.toLocaleString())}
+        ${entStat("Attributed permits", data.totals.attributed_permits.toLocaleString())}
+      </div>
+    </div>
+    <div class="ent-grid">
+      <div class="card">
+        <h2>Most permits pulled</h2>
+        ${prBarChart(permitRows)}
+      </div>
+      <div class="card">
+        <h2>Highest construction value</h2>
+        ${prBarChart(valueRows, "var(--success)")}
+      </div>
+    </div>
+    <div class="card">
+      <h2>Contractor scorecards</h2>
+      <div style="overflow-x:auto;">
+        <table class="ent">
+          <thead><tr><th>Contractor</th><th>Permits</th><th>Value</th><th>Nbhds</th><th>Avg review</th><th>Active</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    </div>
+    <p class="pr-note">Raw numbers available as JSON at <a class="ent-link" href="/api/contractor-scorecards">/api/contractor-scorecards</a>.</p>
+    `
+        : emptyState
+    }`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
+// --- Contractor ↔ neighborhood network --------------------------------------
+
+async function getNetworkData(env) {
+  const topContractors = await safeAll(
+    env,
+    `SELECT c.id, c.name, c.slug, COUNT(p.id) AS permits
+     FROM contractors c JOIN permits p ON p.contractor_id = c.id
+     GROUP BY c.id ORDER BY permits DESC LIMIT 16`,
+  );
+  if (!topContractors.length) {
+    return { contractors: [], neighborhoods: [], edges: [] };
+  }
+  const ids = topContractors.map((c) => Number(c.id));
+  const placeholders = ids.map(() => "?").join(",");
+  const breakdown = await safeAll(
+    env,
+    `SELECT contractor_id AS cid, neighborhood AS nb, COUNT(*) AS cnt
+     FROM permits
+     WHERE contractor_id IN (${placeholders}) AND neighborhood IS NOT NULL AND neighborhood != ''
+     GROUP BY contractor_id, neighborhood`,
+    ids,
+  );
+
+  // Keep each contractor's top 4 neighborhoods so the bipartite graph stays legible.
+  const byContractor = new Map();
+  for (const row of breakdown) {
+    const cid = Number(row.cid);
+    if (!byContractor.has(cid)) byContractor.set(cid, []);
+    byContractor.get(cid).push({ nb: row.nb, cnt: Number(row.cnt) || 0 });
+  }
+  const edges = [];
+  const nbTotals = new Map();
+  for (const c of topContractors) {
+    const list = (byContractor.get(Number(c.id)) || []).sort((a, b) => b.cnt - a.cnt).slice(0, 4);
+    for (const { nb, cnt } of list) {
+      edges.push({ contractor: c.slug, contractor_name: c.name, neighborhood: nb, count: cnt });
+      nbTotals.set(nb, (nbTotals.get(nb) || 0) + cnt);
+    }
+  }
+  const neighborhoods = [...nbTotals.entries()]
+    .map(([name, weight]) => ({ name, weight }))
+    .sort((a, b) => b.weight - a.weight);
+
+  return {
+    contractors: topContractors.map((c) => ({ name: c.name, slug: c.slug, permits: Number(c.permits) || 0 })),
+    neighborhoods,
+    edges,
+  };
+}
+
+async function getNetworkStats(env) {
+  const data = await getNetworkData(env);
+  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+// Server-rendered bipartite SVG: contractors (left) linked to the neighborhoods
+// they're most active in (right). Edge width encodes shared permit count.
+function svgBipartiteNetwork(contractors, neighborhoods, edges) {
+  if (!contractors.length || !neighborhoods.length) return "";
+  const rowH = 34;
+  const padY = 28;
+  const W = 840;
+  const colL = 280;
+  const colR = 560;
+  const midX = (colL + colR) / 2;
+  const H = Math.max(contractors.length, neighborhoods.length) * rowH + padY * 2;
+
+  const cPos = new Map();
+  contractors.forEach((c, i) => cPos.set(c.slug, padY + i * rowH + rowH / 2));
+  const nPos = new Map();
+  neighborhoods.forEach((n, i) => nPos.set(n.name, padY + i * rowH + rowH / 2));
+
+  const maxCount = Math.max(...edges.map((e) => e.count), 1);
+  const edgePaths = edges
+    .map((e) => {
+      const y1 = cPos.get(e.contractor);
+      const y2 = nPos.get(e.neighborhood);
+      if (y1 == null || y2 == null) return "";
+      const w = (1 + 4 * Math.sqrt(e.count / maxCount)).toFixed(1);
+      return `<path d="M${colL},${y1} C${midX},${y1} ${midX},${y2} ${colR},${y2}" fill="none" stroke="currentColor" stroke-opacity="0.16" stroke-width="${w}"><title>${escapeHtml(e.contractor_name)} → ${escapeHtml(e.neighborhood)}: ${e.count} permits</title></path>`;
+    })
+    .join("");
+
+  const maxPermits = Math.max(...contractors.map((c) => c.permits), 1);
+  const cNodes = contractors
+    .map((c) => {
+      const y = cPos.get(c.slug);
+      const r = (5 + 9 * Math.sqrt(c.permits / maxPermits)).toFixed(1);
+      return `<a href="/contractor/${encodeURIComponent(c.slug)}">
+        <circle cx="${colL}" cy="${y}" r="${r}" fill="#3b82f6"><title>${escapeHtml(c.name)}: ${c.permits} permits</title></circle>
+        <text x="${colL - 14}" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="11" fill="currentColor">${escapeHtml(c.name)}</text>
+      </a>`;
+    })
+    .join("");
+
+  const maxWeight = Math.max(...neighborhoods.map((n) => n.weight), 1);
+  const nNodes = neighborhoods
+    .map((n) => {
+      const y = nPos.get(n.name);
+      const r = (5 + 9 * Math.sqrt(n.weight / maxWeight)).toFixed(1);
+      return `<g>
+        <circle cx="${colR}" cy="${y}" r="${r}" fill="#10b981"><title>${escapeHtml(n.name)}: ${n.weight} permits across these contractors</title></circle>
+        <text x="${colR + 14}" y="${y}" text-anchor="start" dominant-baseline="middle" font-size="11" fill="currentColor">${escapeHtml(n.name)}</text>
+      </g>`;
+    })
+    .join("");
+
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Network of contractors linked to the Seattle neighborhoods they build in" style="width:100%;height:auto;color:var(--text);">
+    <text x="${colL}" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-muted)">Contractors</text>
+    <text x="${colR}" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-muted)">Neighborhoods</text>
+    ${edgePaths}
+    ${cNodes}
+    ${nNodes}
+  </svg>`;
+}
+
+async function renderNetworkPage(env) {
+  const canonical = `${BASE_URL}/insights/network`;
+  const data = await getNetworkData(env);
+  const hasData = data.contractors.length > 0 && data.edges.length > 0;
+
+  const title = "Who Builds Where — Seattle Contractor & Neighborhood Network";
+  const description =
+    "A network map linking Seattle's busiest contractors to the neighborhoods where they pull the most permits.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "Seattle Contractor–Neighborhood Network",
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "Building Seattle" },
+  }).replace(/</g, "\\u003c");
+
+  // Accessible / SEO fallback: each contractor's top neighborhoods as text.
+  const adjacency = data.contractors
+    .map((c) => {
+      const nbs = data.edges
+        .filter((e) => e.contractor === c.slug)
+        .sort((a, b) => b.count - a.count)
+        .map((e) => `${escapeHtml(e.neighborhood)} (${e.count})`)
+        .join(", ");
+      return nbs
+        ? `<li><a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(c.name)}</a> <span style="color:var(--text-muted);font-size:0.82rem;">→ ${nbs}</span></li>`
+        : "";
+    })
+    .join("");
+
+  const emptyState = `
+    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+      <h2 style="margin-top:0;">No network data yet</h2>
+      <p style="color:var(--text-muted);max-width:46ch;margin:0 auto;">This network links contractors to the neighborhoods they build in. It needs permits attributed to contractors with neighborhoods — check back once that data is ingested.</p>
+    </div>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Network" }])}
+    ${insightsStyles()}
+    ${insightsTabs("network")}
+    <div class="ent-hero">
+      <div class="ent-kicker">Insights</div>
+      <h1>Who builds where</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">A network of Seattle's 16 busiest contractors and the neighborhoods where they pull the most permits. Thicker links mean more shared activity.</p>
+    </div>
+    ${
+      hasData
+        ? `
+    <div class="card">
+      <h2>Contractor &amp; neighborhood network</h2>
+      ${svgBipartiteNetwork(data.contractors, data.neighborhoods, data.edges)}
+      <p class="pr-note">Blue = contractors (sized by total permits) · green = neighborhoods (sized by permits from these contractors). Click a contractor to open their page. Each contractor is linked to its top 4 neighborhoods.</p>
+    </div>
+    <div class="card">
+      <h2>Top neighborhoods by contractor</h2>
+      <ul class="ent-list">${adjacency}</ul>
+    </div>
+    <p class="pr-note">Raw nodes and edges available as JSON at <a class="ent-link" href="/api/network">/api/network</a>.</p>
+    `
+        : emptyState
+    }`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
 // --- Insights index ---------------------------------------------------------
 
 async function renderInsightsIndex(env) {
   const canonical = `${BASE_URL}/insights`;
-  const [pr, pipe, house] = await Promise.all([
+  const [pr, pipe, house, mapAgg, contractorAgg] = await Promise.all([
     safeFirst(
       env,
       `SELECT COUNT(*) AS cnt, AVG(total_days_plan_review) AS avg_days
@@ -4116,6 +4671,16 @@ async function renderInsightsIndex(env) {
       `SELECT SUM(COALESCE(housing_units_added,0)) - SUM(COALESCE(housing_units_removed,0)) AS net
        FROM permits`,
     ),
+    safeFirst(
+      env,
+      `SELECT COUNT(DISTINCT neighborhood) AS nbhds
+       FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != ''`,
+    ),
+    safeFirst(
+      env,
+      `SELECT COUNT(DISTINCT contractor_id) AS active_contractors
+       FROM permits WHERE contractor_id IS NOT NULL`,
+    ),
   ]);
 
   const prCount = Number(pr?.cnt) || 0;
@@ -4123,10 +4688,12 @@ async function renderInsightsIndex(env) {
   const pipeTotal = Number(pipe?.total) || 0;
   const pipeIssued = Number(pipe?.issued) || 0;
   const houseNet = Number(house?.net) || 0;
+  const mapNbhds = Number(mapAgg?.nbhds) || 0;
+  const activeContractors = Number(contractorAgg?.active_contractors) || 0;
 
   const title = "Seattle Construction Insights — Permit Data Visualized";
   const description =
-    "Data-driven views of Seattle construction: plan-review times, the permit pipeline from application to completion, and net new housing units permitted.";
+    "Data-driven views of Seattle construction: plan-review times, the permit pipeline, net new housing, an activity map, contractor scorecards, and a contractor network.";
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
     "@type": "CollectionPage",
@@ -4174,6 +4741,27 @@ async function renderInsightsIndex(env) {
         "Housing units tracker",
         "Net new dwelling units permitted across Seattle and the neighborhoods adding the most homes.",
         house && house.net != null ? `${houseNet >= 0 ? "+" : ""}${houseNet.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">net units</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/map",
+        "Geography",
+        "Construction activity map",
+        "Permit counts and total construction value mapped across Seattle's neighborhoods.",
+        mapNbhds ? `${mapNbhds.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">neighborhoods</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/contractors",
+        "Players",
+        "Contractor scorecards",
+        "Which contractors pull the most permits, the highest value, and have the widest neighborhood reach.",
+        activeContractors ? `${activeContractors.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">active contractors</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/network",
+        "Connections",
+        "Who builds where",
+        "A network linking Seattle's busiest contractors to the neighborhoods they build in.",
+        activeContractors ? `<span style="font-size:1.1rem;">Explore the network &rarr;</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
     </div>`;
 
@@ -6303,6 +6891,9 @@ async function renderSitemapXml(env, request) {
     { loc: origin + "/insights/plan-review", priority: "0.7", changefreq: "daily" },
     { loc: origin + "/insights/pipeline", priority: "0.7", changefreq: "daily" },
     { loc: origin + "/insights/housing", priority: "0.7", changefreq: "daily" },
+    { loc: origin + "/insights/map", priority: "0.7", changefreq: "daily" },
+    { loc: origin + "/insights/contractors", priority: "0.7", changefreq: "daily" },
+    { loc: origin + "/insights/network", priority: "0.7", changefreq: "daily" },
   ];
 
   const permitUrls = permits.map((p) => ({
