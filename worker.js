@@ -104,9 +104,32 @@ export default {
         return secure(await getPlanReviewStats(env));
       }
 
-      if (path === "/insights/plan-review" || path === "/insights" || path === "/insights/") {
+      if (path === "/api/pipeline") {
+        return secure(await getPipelineStats(env));
+      }
+
+      if (path === "/api/housing") {
+        return secure(await getHousingStats(env));
+      }
+
+      if (path === "/insights" || path === "/insights/") {
+        ctx.waitUntil(logPageView(request, env, "/insights"));
+        return secure(await renderInsightsIndex(env));
+      }
+
+      if (path === "/insights/plan-review") {
         ctx.waitUntil(logPageView(request, env, "/insights/plan-review"));
         return secure(await renderPlanReviewPage(env));
+      }
+
+      if (path === "/insights/pipeline") {
+        ctx.waitUntil(logPageView(request, env, "/insights/pipeline"));
+        return secure(await renderPipelinePage(env));
+      }
+
+      if (path === "/insights/housing") {
+        ctx.waitUntil(logPageView(request, env, "/insights/housing"));
+        return secure(await renderHousingPage(env));
       }
 
       if (path === "/api/admin/stats") {
@@ -3484,6 +3507,34 @@ export function summarizePlanReview(values) {
   };
 }
 
+// Median/mean/p90/count over an array of day counts (drops nulls and negatives).
+export function summarizeDays(values) {
+  const sorted = values
+    .filter((v) => v != null && v !== "")
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v) && v >= 0)
+    .sort((a, b) => a - b);
+  const count = sorted.length;
+  const mean = count ? sorted.reduce((s, v) => s + v, 0) / count : 0;
+  return {
+    count,
+    mean: Math.round(mean),
+    median: Math.round(percentileSorted(sorted, 50)),
+    p90: Math.round(percentileSorted(sorted, 90)),
+  };
+}
+
+// Sum added/removed housing units across bucket rows of { added, removed }.
+export function summarizeNetHousing(rows) {
+  let added = 0;
+  let removed = 0;
+  for (const r of rows || []) {
+    added += Number(r.added) || 0;
+    removed += Number(r.removed) || 0;
+  }
+  return { added, removed, net: added - removed };
+}
+
 // Pull every input the plan-review insights need. Degrades to empty arrays via
 // safeAll/safeFirst so the page and API still render when columns are unenriched.
 async function getPlanReviewData(env) {
@@ -3558,6 +3609,40 @@ async function getPlanReviewStats(env) {
   return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
     headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
   });
+}
+
+// Shared CSS for every /insights page (CSP-safe inline styles, no external CSS).
+function insightsStyles() {
+  return `<style>
+      .pr-chart{display:flex;flex-direction:column;gap:0.55rem}
+      .pr-row{display:grid;grid-template-columns:minmax(90px,160px) 1fr auto;align-items:center;gap:0.85rem}
+      .pr-label{font-size:0.8rem;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .pr-track{background:var(--bg-alt);border:1px solid var(--border);border-radius:999px;height:0.85rem;overflow:hidden}
+      .pr-fill{height:100%;border-radius:999px;min-width:2px;transition:width .3s ease}
+      .pr-val{font-size:0.8rem;font-weight:700;color:var(--primary);white-space:nowrap}
+      .pr-sub{font-weight:500;color:var(--text-muted);font-size:0.72rem}
+      .pr-note{font-size:0.78rem;color:var(--text-muted);margin-top:1rem}
+      .ins-tabs{display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.5rem}
+      .ins-tab{padding:0.4rem 0.9rem;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--text);text-decoration:none;font-size:0.82rem;font-weight:600}
+      .ins-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+      .ins-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.25rem}
+      .ins-feature{display:block;text-decoration:none;color:inherit}
+      .ins-feature .card{height:100%;margin:0;transition:box-shadow .2s ease,transform .2s ease}
+      .ins-feature:hover .card{box-shadow:var(--shadow);transform:translateY(-2px)}
+      @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}}
+  </style>`;
+}
+
+// Pill tab bar linking the insights pages; `active` highlights the current one.
+function insightsTabs(active) {
+  const tabs = [
+    { key: "plan-review", label: "Plan Review", href: "/insights/plan-review" },
+    { key: "pipeline", label: "Permit Pipeline", href: "/insights/pipeline" },
+    { key: "housing", label: "Housing", href: "/insights/housing" },
+  ];
+  return `<div class="ins-tabs">${tabs
+    .map((t) => `<a class="ins-tab${t.key === active ? " active" : ""}" href="${t.href}">${escapeHtml(t.label)}</a>`)
+    .join("")}</div>`;
 }
 
 // Server-rendered horizontal bar chart (CSP-safe: no external JS/CDN). `rows`
@@ -3643,17 +3728,8 @@ async function renderPlanReviewPage(env) {
 
   const body = `
     ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Plan Review Times" }])}
-    <style>
-      .pr-chart{display:flex;flex-direction:column;gap:0.55rem}
-      .pr-row{display:grid;grid-template-columns:minmax(90px,150px) 1fr auto;align-items:center;gap:0.85rem}
-      .pr-label{font-size:0.8rem;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .pr-track{background:var(--bg-alt);border:1px solid var(--border);border-radius:999px;height:0.85rem;overflow:hidden}
-      .pr-fill{height:100%;border-radius:999px;min-width:2px;transition:width .3s ease}
-      .pr-val{font-size:0.8rem;font-weight:700;color:var(--primary);white-space:nowrap}
-      .pr-sub{font-weight:500;color:var(--text-muted);font-size:0.72rem}
-      .pr-note{font-size:0.78rem;color:var(--text-muted);margin-top:1rem}
-      @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}}
-    </style>
+    ${insightsStyles()}
+    ${insightsTabs("plan-review")}
     <div class="ent-hero">
       <div class="ent-kicker">Insights</div>
       <h1>How long does Seattle permit plan review take?</h1>
@@ -3707,6 +3783,402 @@ async function renderPlanReviewPage(env) {
 
   return new Response(
     renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
+// --- Permit pipeline (applied → issued → completed) -------------------------
+
+async function getPipelineData(env) {
+  const issuedFunnel =
+    "applied_date IS NOT NULL AND applied_date != '' AND issued_date IS NOT NULL AND issued_date != '' AND julianday(issued_date) >= julianday(applied_date)";
+  const completedFunnel =
+    "issued_date IS NOT NULL AND issued_date != '' AND completed_date IS NOT NULL AND completed_date != '' AND julianday(completed_date) >= julianday(issued_date)";
+
+  const [stageRow, appliedToIssued, issuedToCompleted, byTypeTiming] = await Promise.all([
+    safeFirst(
+      env,
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN applied_date IS NOT NULL AND applied_date != '' THEN 1 ELSE 0 END) AS applied,
+              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
+              SUM(CASE WHEN completed_date IS NOT NULL AND completed_date != '' THEN 1 ELSE 0 END) AS completed
+       FROM permits`,
+    ),
+    safeAll(
+      env,
+      `SELECT CAST(julianday(issued_date) - julianday(applied_date) AS REAL) AS d
+       FROM permits WHERE ${issuedFunnel}`,
+    ),
+    safeAll(
+      env,
+      `SELECT CAST(julianday(completed_date) - julianday(issued_date) AS REAL) AS d
+       FROM permits WHERE ${completedFunnel}`,
+    ),
+    safeAll(
+      env,
+      `SELECT COALESCE(NULLIF(type,''),'unknown') AS label, COUNT(*) AS cnt,
+              AVG(julianday(issued_date) - julianday(applied_date)) AS avg_days
+       FROM permits WHERE ${issuedFunnel} GROUP BY label ORDER BY cnt DESC LIMIT 8`,
+    ),
+  ]);
+
+  const total = Number(stageRow?.total) || 0;
+  const applied = Number(stageRow?.applied) || 0;
+  const issued = Number(stageRow?.issued) || 0;
+  const completed = Number(stageRow?.completed) || 0;
+
+  return {
+    stages: { total, applied, issued, completed },
+    issue_rate: applied ? Math.min(100, Math.round((issued / applied) * 100)) : 0,
+    completion_rate: issued ? Math.min(100, Math.round((completed / issued) * 100)) : 0,
+    applied_to_issued: summarizeDays(appliedToIssued.map((r) => r.d)),
+    issued_to_completed: summarizeDays(issuedToCompleted.map((r) => r.d)),
+    by_type: byTypeTiming.map((r) => ({
+      label: r.label,
+      count: Number(r.cnt) || 0,
+      avg_days: Math.round(Number(r.avg_days) || 0),
+    })),
+  };
+}
+
+async function getPipelineStats(env) {
+  const data = await getPipelineData(env);
+  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+async function renderPipelinePage(env) {
+  const canonical = `${BASE_URL}/insights/pipeline`;
+  const data = await getPipelineData(env);
+  const st = data.stages;
+  const hasData = st.applied > 0 || st.issued > 0;
+
+  const title = "Seattle Permit Pipeline — From Application to Completion";
+  const description =
+    "How Seattle building permits move from application to issuance to completion: stage counts, conversion rates, and the median days spent at each step.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "Seattle Permit Pipeline",
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "Building Seattle" },
+  }).replace(/</g, "\\u003c");
+
+  const funnelRows = [
+    { label: "Applied", value: st.applied, display: st.applied.toLocaleString() },
+    {
+      label: "Issued",
+      value: st.issued,
+      display: st.issued.toLocaleString(),
+      sub: `${data.issue_rate}% of applied`,
+    },
+    {
+      label: "Completed",
+      value: st.completed,
+      display: st.completed.toLocaleString(),
+      sub: st.issued ? `${Math.round((st.completed / st.issued) * 100)}% of issued` : "",
+    },
+  ];
+
+  const typeRows = data.by_type.map((t) => ({
+    label: t.label,
+    value: t.avg_days,
+    display: `${t.avg_days} days`,
+    sub: `${t.count.toLocaleString()} permits`,
+  }));
+
+  const emptyState = `
+    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+      <h2 style="margin-top:0;">No pipeline data yet</h2>
+      <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Pipeline timing comes from permit application, issue, and completion dates. Check back once permits have been ingested.</p>
+    </div>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Permit Pipeline" }])}
+    ${insightsStyles()}
+    ${insightsTabs("pipeline")}
+    <div class="ent-hero">
+      <div class="ent-kicker">Insights</div>
+      <h1>The Seattle permit pipeline</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Every permit travels from application to issuance to completion. Here's how many make it to each stage and how long the journey takes.</p>
+    </div>
+    ${
+      hasData
+        ? `
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Applied", st.applied.toLocaleString())}
+        ${entStat("Issued", st.issued.toLocaleString())}
+        ${entStat("Completed", st.completed.toLocaleString())}
+        ${entStat("Issue rate", `${data.issue_rate}%`)}
+        ${entStat("Median to issue", `${data.applied_to_issued.median} days`)}
+      </div>
+    </div>
+    <div class="card">
+      <h2>Pipeline funnel</h2>
+      ${prBarChart(funnelRows)}
+      <p class="pr-note">${data.issue_rate}% of applied permits reach issuance${
+        data.completion_rate ? `, and ${data.completion_rate}% of issued permits are marked complete` : ""
+      }.</p>
+    </div>
+    <div class="ent-grid">
+      <div class="card">
+        <h2>Time in each stage</h2>
+        ${prBarChart(
+          [
+            {
+              label: "Apply → Issue",
+              value: data.applied_to_issued.median,
+              display: `${data.applied_to_issued.median} days`,
+              sub: `avg ${data.applied_to_issued.mean} · p90 ${data.applied_to_issued.p90}`,
+            },
+            {
+              label: "Issue → Complete",
+              value: data.issued_to_completed.median,
+              display: `${data.issued_to_completed.median} days`,
+              sub: `avg ${data.issued_to_completed.mean} · p90 ${data.issued_to_completed.p90}`,
+            },
+          ],
+          "var(--success)",
+        )}
+        <p class="pr-note">Median durations across ${data.applied_to_issued.count.toLocaleString()} issued and ${data.issued_to_completed.count.toLocaleString()} completed permits.</p>
+      </div>
+      <div class="card">
+        <h2>Median apply → issue by permit type</h2>
+        ${prBarChart(typeRows)}
+      </div>
+    </div>
+    <p class="pr-note">Raw numbers available as JSON at <a class="ent-link" href="/api/pipeline">/api/pipeline</a>.</p>
+    `
+        : emptyState
+    }`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
+// --- Housing units tracker --------------------------------------------------
+
+async function getHousingData(env) {
+  const [byYear, byNeighborhood, totals] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT substr(COALESCE(NULLIF(issued_date,''), applied_date),1,4) AS yr,
+              SUM(COALESCE(housing_units_added,0)) AS added,
+              SUM(COALESCE(housing_units_removed,0)) AS removed
+       FROM permits
+       WHERE COALESCE(NULLIF(issued_date,''), applied_date) IS NOT NULL
+         AND (housing_units_added IS NOT NULL OR housing_units_removed IS NOT NULL)
+       GROUP BY yr HAVING yr IS NOT NULL AND yr != '' ORDER BY yr ASC`,
+    ),
+    safeAll(
+      env,
+      `SELECT COALESCE(NULLIF(neighborhood,''),'Unknown') AS label,
+              SUM(COALESCE(housing_units_added,0)) AS added,
+              SUM(COALESCE(housing_units_removed,0)) AS removed
+       FROM permits
+       WHERE housing_units_added IS NOT NULL OR housing_units_removed IS NOT NULL
+       GROUP BY label
+       HAVING (SUM(COALESCE(housing_units_added,0)) - SUM(COALESCE(housing_units_removed,0))) > 0
+       ORDER BY (SUM(COALESCE(housing_units_added,0)) - SUM(COALESCE(housing_units_removed,0))) DESC LIMIT 12`,
+    ),
+    safeFirst(
+      env,
+      `SELECT SUM(COALESCE(housing_units_added,0)) AS added,
+              SUM(COALESCE(housing_units_removed,0)) AS removed,
+              SUM(CASE WHEN COALESCE(housing_units_added,0) > 0 THEN 1 ELSE 0 END) AS permits_adding
+       FROM permits`,
+    ),
+  ]);
+
+  const toRow = (r) => {
+    const added = Number(r.added) || 0;
+    const removed = Number(r.removed) || 0;
+    return { ...r, added, removed, net: added - removed };
+  };
+  const grand = summarizeNetHousing((totals ? [totals] : []).map((r) => ({ added: r.added, removed: r.removed })));
+
+  return {
+    totals: { ...grand, permits_adding: Number(totals?.permits_adding) || 0 },
+    by_year: byYear.map((r) => ({ year: r.yr, ...toRow(r) })),
+    by_neighborhood: byNeighborhood.map((r) => ({ label: r.label, ...toRow(r) })),
+  };
+}
+
+async function getHousingStats(env) {
+  const data = await getHousingData(env);
+  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+async function renderHousingPage(env) {
+  const canonical = `${BASE_URL}/insights/housing`;
+  const data = await getHousingData(env);
+  const t = data.totals;
+  const hasData = (t.added || 0) > 0 || (t.removed || 0) > 0;
+
+  const title = "Seattle Housing Units Permitted — Net New Homes Tracker";
+  const description =
+    "Net new housing units permitted in Seattle: units added vs. removed over time and the neighborhoods adding the most homes.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "Seattle Housing Units Permitted",
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "Building Seattle" },
+  }).replace(/</g, "\\u003c");
+
+  const yearRows = data.by_year.map((y) => ({
+    label: y.year,
+    value: y.net,
+    display: (y.net >= 0 ? "+" : "") + y.net.toLocaleString(),
+    sub: `+${y.added.toLocaleString()} / −${y.removed.toLocaleString()}`,
+  }));
+
+  const neighborhoodRows = data.by_neighborhood.map((n) => ({
+    label: n.label,
+    value: n.net,
+    display: `+${n.net.toLocaleString()}`,
+    sub: `${n.added.toLocaleString()} added`,
+  }));
+
+  const emptyState = `
+    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+      <h2 style="margin-top:0;">No housing data yet</h2>
+      <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Housing-unit counts come from permit records as they are ingested. Check back once permits with housing data have loaded.</p>
+    </div>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Housing" }])}
+    ${insightsStyles()}
+    ${insightsTabs("housing")}
+    <div class="ent-hero">
+      <div class="ent-kicker">Insights</div>
+      <h1>Net new housing permitted in Seattle</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Permits add and remove dwelling units. The net is the number the city and press care about most — how many homes Seattle is actually approving.</p>
+    </div>
+    ${
+      hasData
+        ? `
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Net units", (t.net >= 0 ? "+" : "") + t.net.toLocaleString())}
+        ${entStat("Units added", t.added.toLocaleString())}
+        ${entStat("Units removed", t.removed.toLocaleString())}
+        ${entStat("Permits adding homes", t.permits_adding.toLocaleString())}
+      </div>
+      <p class="pr-note">Across all permits on record, Seattle has permitted a net ${(t.net >= 0 ? "+" : "") + t.net.toLocaleString()} dwelling units (${t.added.toLocaleString()} added, ${t.removed.toLocaleString()} removed).</p>
+    </div>
+    <div class="card">
+      <h2>Net new units by year</h2>
+      ${prBarChart(yearRows, "var(--success)")}
+      <p class="pr-note">Bucketed by issue date (falling back to application date). Sub-labels show units added vs. removed.</p>
+    </div>
+    <div class="card">
+      <h2>Neighborhoods adding the most homes</h2>
+      ${prBarChart(neighborhoodRows, "var(--accent)")}
+    </div>
+    <p class="pr-note">Raw numbers available as JSON at <a class="ent-link" href="/api/housing">/api/housing</a>.</p>
+    `
+        : emptyState
+    }`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
+// --- Insights index ---------------------------------------------------------
+
+async function renderInsightsIndex(env) {
+  const canonical = `${BASE_URL}/insights`;
+  const [pr, pipe, house] = await Promise.all([
+    safeFirst(
+      env,
+      `SELECT COUNT(*) AS cnt, AVG(total_days_plan_review) AS avg_days
+       FROM permits WHERE total_days_plan_review IS NOT NULL AND total_days_plan_review >= 0`,
+    ),
+    safeFirst(
+      env,
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued
+       FROM permits`,
+    ),
+    safeFirst(
+      env,
+      `SELECT SUM(COALESCE(housing_units_added,0)) - SUM(COALESCE(housing_units_removed,0)) AS net
+       FROM permits`,
+    ),
+  ]);
+
+  const prCount = Number(pr?.cnt) || 0;
+  const prAvg = pr?.avg_days != null ? Math.round(Number(pr.avg_days)) : null;
+  const pipeTotal = Number(pipe?.total) || 0;
+  const pipeIssued = Number(pipe?.issued) || 0;
+  const houseNet = Number(house?.net) || 0;
+
+  const title = "Seattle Construction Insights — Permit Data Visualized";
+  const description =
+    "Data-driven views of Seattle construction: plan-review times, the permit pipeline from application to completion, and net new housing units permitted.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "CollectionPage",
+    name: "Building Seattle Insights",
+    description,
+    url: canonical,
+  }).replace(/</g, "\\u003c");
+
+  const feature = (href, kicker, h, teaser, stat) => `
+    <a class="ins-feature" href="${href}">
+      <div class="card">
+        <div class="ent-kicker">${escapeHtml(kicker)}</div>
+        <h2 style="margin:0.2rem 0 0.5rem;">${escapeHtml(h)}</h2>
+        <p style="color:var(--text-muted);margin:0 0 1rem;font-size:0.9rem;">${escapeHtml(teaser)}</p>
+        <div style="font-size:1.5rem;font-weight:800;color:var(--accent);">${stat}</div>
+      </div>
+    </a>`;
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights" }])}
+    ${insightsStyles()}
+    <div class="ent-hero">
+      <div class="ent-kicker">Insights</div>
+      <h1>Seattle construction, visualized</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Data-driven views built from the permits we aggregate across Seattle. Each report updates as new permit data is ingested.</p>
+    </div>
+    <div class="ins-card-grid">
+      ${feature(
+        "/insights/plan-review",
+        "Timing",
+        "Plan review times",
+        "How long permits spend in SDCI review before they're issued — by type, neighborhood, and review cycle.",
+        prCount ? `${prAvg} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">avg days · ${prCount.toLocaleString()} permits</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/pipeline",
+        "Flow",
+        "The permit pipeline",
+        "Application → issuance → completion: how many permits reach each stage and how long it takes.",
+        pipeTotal ? `${pipeIssued.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">issued of ${pipeTotal.toLocaleString()}</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/housing",
+        "Growth",
+        "Housing units tracker",
+        "Net new dwelling units permitted across Seattle and the neighborhoods adding the most homes.",
+        house && house.net != null ? `${houseNet >= 0 ? "+" : ""}${houseNet.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">net units</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+    </div>`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "insights" }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
   );
 }
@@ -5827,6 +6299,10 @@ async function renderSitemapXml(env, request) {
   const staticUrls = [
     { loc: origin + "/", priority: "1.0", changefreq: "daily" },
     { loc: origin + "/permits", priority: "0.9", changefreq: "daily" },
+    { loc: origin + "/insights", priority: "0.8", changefreq: "daily" },
+    { loc: origin + "/insights/plan-review", priority: "0.7", changefreq: "daily" },
+    { loc: origin + "/insights/pipeline", priority: "0.7", changefreq: "daily" },
+    { loc: origin + "/insights/housing", priority: "0.7", changefreq: "daily" },
   ];
 
   const permitUrls = permits.map((p) => ({
