@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import worker, { summarizePlanReview, percentileSorted } from "../worker.js";
+import worker, {
+  summarizePlanReview,
+  percentileSorted,
+  summarizeDays,
+  summarizeNetHousing,
+} from "../worker.js";
 
 const samplePermits = [
   {
@@ -529,6 +534,73 @@ test("percentileSorted interpolates between ranks", () => {
   assert.equal(percentileSorted([10, 20, 30, 40], 50), 25);
   assert.equal(percentileSorted([5], 90), 5);
   assert.equal(percentileSorted([], 50), 0);
+});
+
+test("summarizeDays returns count/mean/median/p90 and drops invalid values", () => {
+  const s = summarizeDays([10, 20, 30, 40, null, -3, "x"]);
+  assert.equal(s.count, 4);
+  assert.equal(s.median, 25);
+  assert.equal(s.mean, 25);
+  assert.equal(s.p90, 37);
+
+  const empty = summarizeDays([]);
+  assert.deepEqual(empty, { count: 0, mean: 0, median: 0, p90: 0 });
+});
+
+test("summarizeNetHousing sums added/removed and computes net", () => {
+  const s = summarizeNetHousing([
+    { added: 10, removed: 2 },
+    { added: 5, removed: 0 },
+    { added: null, removed: "3" },
+  ]);
+  assert.equal(s.added, 15);
+  assert.equal(s.removed, 5);
+  assert.equal(s.net, 10);
+
+  assert.deepEqual(summarizeNetHousing([]), { added: 0, removed: 0, net: 0 });
+});
+
+test("GET /api/pipeline returns a pipeline payload", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/pipeline"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(payload.stages, "stages present");
+  assert.ok(payload.applied_to_issued, "apply→issue timing present");
+  assert.ok(Array.isArray(payload.by_type));
+});
+
+test("GET /api/housing returns a housing payload", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/housing"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(payload.totals, "totals present");
+  assert.ok(Array.isArray(payload.by_year));
+  assert.ok(Array.isArray(payload.by_neighborhood));
+});
+
+test("GET /insights renders the insights index with all three reports", async () => {
+  const response = await worker.fetch(new Request("http://example.com/insights"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /text\/html/);
+  const html = await response.text();
+  assert.match(html, /Plan review times/i);
+  assert.match(html, /permit pipeline/i);
+  assert.match(html, /Housing units tracker/i);
+  assert.match(html, /href="\/insights\/pipeline"/);
+});
+
+test("GET /insights/pipeline and /insights/housing render", async () => {
+  for (const path of ["/insights/pipeline", "/insights/housing"]) {
+    const response = await worker.fetch(new Request(`http://example.com${path}`), createEnv(), createCtx());
+    assert.equal(response.status, 200, `${path} status`);
+    const html = await response.text();
+    assert.match(html, /Insights/);
+  }
 });
 
 test("GET /api/plan-review returns a plan-review summary payload", async () => {
