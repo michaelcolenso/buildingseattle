@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import worker from "../worker.js";
+import worker, { summarizePlanReview, percentileSorted } from "../worker.js";
 
 const samplePermits = [
   {
@@ -499,6 +499,59 @@ test("GET /favicon.ico returns the site icon", async () => {
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type") || "", /image\/png/);
+});
+
+test("summarizePlanReview computes count, mean, median, p90, and day buckets", () => {
+  const values = [10, 20, 30, 40, 200, -5, null, "x"];
+  const s = summarizePlanReview(values);
+
+  assert.equal(s.count, 5); // negatives and non-numerics dropped
+  assert.equal(s.median, 30);
+  assert.equal(s.mean, 60); // (10+20+30+40+200)/5
+  assert.equal(s.max, 200);
+  assert.equal(s.histogram.length, 6);
+  // 10,20,30 land in 0–30; 40 in 31–60; 200 in 181–365
+  assert.equal(s.histogram[0].count, 3);
+  assert.equal(s.histogram[1].count, 1);
+  assert.equal(s.histogram[4].count, 1);
+});
+
+test("summarizePlanReview handles empty input without dividing by zero", () => {
+  const s = summarizePlanReview([]);
+  assert.equal(s.count, 0);
+  assert.equal(s.mean, 0);
+  assert.equal(s.median, 0);
+  assert.equal(s.p90, 0);
+  assert.equal(s.histogram.reduce((sum, b) => sum + b.count, 0), 0);
+});
+
+test("percentileSorted interpolates between ranks", () => {
+  assert.equal(percentileSorted([10, 20, 30, 40], 50), 25);
+  assert.equal(percentileSorted([5], 90), 5);
+  assert.equal(percentileSorted([], 50), 0);
+});
+
+test("GET /api/plan-review returns a plan-review summary payload", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/plan-review"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(payload.summary, "summary present");
+  assert.equal(payload.summary.histogram.length, 6);
+  assert.ok(Array.isArray(payload.by_type));
+  assert.ok(Array.isArray(payload.by_neighborhood));
+  assert.ok(Array.isArray(payload.by_cycles));
+});
+
+test("GET /insights/plan-review renders the insights page", async () => {
+  const response = await worker.fetch(new Request("http://example.com/insights/plan-review"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /text\/html/);
+  const html = await response.text();
+  assert.match(html, /plan review/i);
+  assert.match(html, /Insights/);
 });
 
 test("GET /api/status-changes returns recent permit status transitions", async () => {

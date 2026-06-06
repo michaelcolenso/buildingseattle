@@ -100,6 +100,15 @@ export default {
         return secure(await getStatusChanges(request, env));
       }
 
+      if (path === "/api/plan-review") {
+        return secure(await getPlanReviewStats(env));
+      }
+
+      if (path === "/insights/plan-review" || path === "/insights" || path === "/insights/") {
+        ctx.waitUntil(logPageView(request, env, "/insights/plan-review"));
+        return secure(await renderPlanReviewPage(env));
+      }
+
       if (path === "/api/admin/stats") {
         const authError = requireAdminAuth(request, env);
         if (authError) return secure(authError);
@@ -577,6 +586,7 @@ function renderNav(activePage) {
         <div class="global-nav-links">
           ${link("/", "Home", "home")}
           ${link("/permits", "Browse Permits", "permits")}
+          ${link("/insights/plan-review", "Insights", "insights")}
           ${link("/api/permits", "API", "api")}
         </div>
       </div>
@@ -3422,6 +3432,283 @@ function entPermitRows(permits) {
     )
     .join("");
   return `<table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ===========================================================================
+// Plan review insights — distribution + breakdowns of how long Seattle's SDCI
+// permit plan review actually takes, derived from the enrichment columns
+// (total_days_plan_review, number_review_cycles, days_out_corrections).
+// Pure stat helpers below are unit-tested via the exported chart/summary logic.
+// ===========================================================================
+
+const PLAN_REVIEW_DAY_BUCKETS = [
+  { label: "0–30 days", min: 0, max: 30 },
+  { label: "31–60 days", min: 31, max: 60 },
+  { label: "61–90 days", min: 61, max: 90 },
+  { label: "91–180 days", min: 91, max: 180 },
+  { label: "181–365 days", min: 181, max: 365 },
+  { label: "365+ days", min: 366, max: Infinity },
+];
+
+// Linear-interpolated percentile over an ascending-sorted numeric array.
+export function percentileSorted(sorted, p) {
+  if (!sorted.length) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const idx = (p / 100) * (sorted.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+// Build the headline summary + day-bucket histogram from raw review-day values.
+export function summarizePlanReview(values) {
+  const sorted = values
+    .filter((v) => v != null && v !== "")
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v) && v >= 0)
+    .sort((a, b) => a - b);
+  const count = sorted.length;
+  const mean = count ? sorted.reduce((s, v) => s + v, 0) / count : 0;
+  const histogram = PLAN_REVIEW_DAY_BUCKETS.map((b) => ({
+    label: b.label,
+    count: sorted.filter((v) => v >= b.min && v <= b.max).length,
+  }));
+  return {
+    count,
+    mean: Math.round(mean),
+    median: Math.round(percentileSorted(sorted, 50)),
+    p90: Math.round(percentileSorted(sorted, 90)),
+    max: count ? sorted[count - 1] : 0,
+    histogram,
+  };
+}
+
+// Pull every input the plan-review insights need. Degrades to empty arrays via
+// safeAll/safeFirst so the page and API still render when columns are unenriched.
+async function getPlanReviewData(env) {
+  const reviewedWhere =
+    "total_days_plan_review IS NOT NULL AND total_days_plan_review >= 0";
+
+  const [rawDays, byType, byNeighborhood, byCycles, byReviewLevel, cyclesAvg] = await Promise.all([
+    safeAll(
+      env,
+      `SELECT total_days_plan_review AS d FROM permits WHERE ${reviewedWhere} ORDER BY d ASC`,
+    ),
+    safeAll(
+      env,
+      `SELECT COALESCE(NULLIF(type,''),'unknown') AS label, COUNT(*) AS cnt,
+              AVG(total_days_plan_review) AS avg_days, AVG(number_review_cycles) AS avg_cycles
+       FROM permits WHERE ${reviewedWhere} GROUP BY label ORDER BY cnt DESC`,
+    ),
+    safeAll(
+      env,
+      `SELECT COALESCE(NULLIF(neighborhood,''),'Unknown') AS label, COUNT(*) AS cnt,
+              AVG(total_days_plan_review) AS avg_days
+       FROM permits WHERE ${reviewedWhere}
+       GROUP BY label HAVING cnt >= 3 ORDER BY avg_days DESC LIMIT 12`,
+    ),
+    safeAll(
+      env,
+      `SELECT number_review_cycles AS cycles, COUNT(*) AS cnt
+       FROM permits WHERE number_review_cycles IS NOT NULL AND number_review_cycles >= 0
+       GROUP BY cycles ORDER BY cycles ASC LIMIT 15`,
+    ),
+    safeAll(
+      env,
+      `SELECT COALESCE(NULLIF(review_level,''),'Unknown') AS label, COUNT(*) AS cnt,
+              AVG(total_days_plan_review) AS avg_days
+       FROM permits WHERE ${reviewedWhere} GROUP BY label ORDER BY cnt DESC LIMIT 8`,
+    ),
+    safeFirst(
+      env,
+      `SELECT AVG(number_review_cycles) AS avg_cycles, AVG(days_out_corrections) AS avg_corrections
+       FROM permits WHERE number_review_cycles IS NOT NULL AND number_review_cycles >= 0`,
+    ),
+  ]);
+
+  const summary = summarizePlanReview(rawDays.map((r) => r.d));
+  return {
+    summary,
+    avg_cycles: cyclesAvg && cyclesAvg.avg_cycles != null ? Number(cyclesAvg.avg_cycles) : null,
+    avg_days_out_corrections:
+      cyclesAvg && cyclesAvg.avg_corrections != null ? Number(cyclesAvg.avg_corrections) : null,
+    by_type: byType.map((r) => ({
+      label: r.label,
+      count: Number(r.cnt) || 0,
+      avg_days: Math.round(Number(r.avg_days) || 0),
+      avg_cycles: r.avg_cycles != null ? Number(Number(r.avg_cycles).toFixed(1)) : null,
+    })),
+    by_neighborhood: byNeighborhood.map((r) => ({
+      label: r.label,
+      count: Number(r.cnt) || 0,
+      avg_days: Math.round(Number(r.avg_days) || 0),
+    })),
+    by_cycles: byCycles.map((r) => ({ cycles: Number(r.cycles) || 0, count: Number(r.cnt) || 0 })),
+    by_review_level: byReviewLevel.map((r) => ({
+      label: r.label,
+      count: Number(r.cnt) || 0,
+      avg_days: Math.round(Number(r.avg_days) || 0),
+    })),
+  };
+}
+
+async function getPlanReviewStats(env) {
+  const data = await getPlanReviewData(env);
+  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+// Server-rendered horizontal bar chart (CSP-safe: no external JS/CDN). `rows`
+// are { label, value, display, sub }; bars are scaled to the largest value.
+function prBarChart(rows, accent = "var(--accent)") {
+  if (!rows || rows.length === 0) {
+    return `<p style="color:var(--text-muted);">Not enough enriched data yet.</p>`;
+  }
+  const max = Math.max(...rows.map((r) => Number(r.value) || 0), 0);
+  return `<div class="pr-chart">${rows
+    .map((r) => {
+      const v = Number(r.value) || 0;
+      const pct = max > 0 ? Math.max(2, Math.round((v / max) * 100)) : 0;
+      return `<div class="pr-row">
+        <div class="pr-label" title="${escapeHtml(r.label)}">${escapeHtml(r.label)}</div>
+        <div class="pr-track"><div class="pr-fill" style="width:${pct}%;background:${accent};"></div></div>
+        <div class="pr-val">${escapeHtml(r.display != null ? String(r.display) : String(v))}${
+          r.sub ? `<span class="pr-sub"> · ${escapeHtml(r.sub)}</span>` : ""
+        }</div>
+      </div>`;
+    })
+    .join("")}</div>`;
+}
+
+async function renderPlanReviewPage(env) {
+  const canonical = `${BASE_URL}/insights/plan-review`;
+  const data = await getPlanReviewData(env);
+  const s = data.summary;
+  const hasData = s.count > 0;
+
+  const title = "Seattle Permit Plan Review Times — How Long Does It Take?";
+  const description =
+    "How long Seattle SDCI permit plan review really takes: distribution of review days, average wait by permit type and neighborhood, and review-cycle counts.";
+
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "Seattle Permit Plan Review Times",
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "Building Seattle" },
+  }).replace(/</g, "\\u003c");
+
+  const emptyState = `
+    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+      <h2 style="margin-top:0;">No plan-review data yet</h2>
+      <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Plan-review timing is populated as permits are enriched from the Seattle SDCI feed. Check back once enrichment has run.</p>
+    </div>`;
+
+  const histogramRows = s.histogram.map((b) => ({
+    label: b.label,
+    value: b.count,
+    display: b.count.toLocaleString(),
+    sub: s.count ? `${Math.round((b.count / s.count) * 100)}%` : "",
+  }));
+
+  const typeRows = data.by_type.map((t) => ({
+    label: t.label,
+    value: t.avg_days,
+    display: `${t.avg_days} days`,
+    sub: `${t.count.toLocaleString()} permits`,
+  }));
+
+  const neighborhoodRows = data.by_neighborhood.map((n) => ({
+    label: n.label,
+    value: n.avg_days,
+    display: `${n.avg_days} days`,
+    sub: `${n.count.toLocaleString()} permits`,
+  }));
+
+  const cycleRows = data.by_cycles.map((c) => ({
+    label: c.cycles === 1 ? "1 cycle" : `${c.cycles} cycles`,
+    value: c.count,
+    display: c.count.toLocaleString(),
+  }));
+
+  const reviewLevelRows = data.by_review_level.map((r) => ({
+    label: r.label,
+    value: r.avg_days,
+    display: `${r.avg_days} days`,
+    sub: `${r.count.toLocaleString()} permits`,
+  }));
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Plan Review Times" }])}
+    <style>
+      .pr-chart{display:flex;flex-direction:column;gap:0.55rem}
+      .pr-row{display:grid;grid-template-columns:minmax(90px,150px) 1fr auto;align-items:center;gap:0.85rem}
+      .pr-label{font-size:0.8rem;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .pr-track{background:var(--bg-alt);border:1px solid var(--border);border-radius:999px;height:0.85rem;overflow:hidden}
+      .pr-fill{height:100%;border-radius:999px;min-width:2px;transition:width .3s ease}
+      .pr-val{font-size:0.8rem;font-weight:700;color:var(--primary);white-space:nowrap}
+      .pr-sub{font-weight:500;color:var(--text-muted);font-size:0.72rem}
+      .pr-note{font-size:0.78rem;color:var(--text-muted);margin-top:1rem}
+      @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}}
+    </style>
+    <div class="ent-hero">
+      <div class="ent-kicker">Insights</div>
+      <h1>How long does Seattle permit plan review take?</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Based on ${s.count.toLocaleString()} permits with recorded SDCI plan-review timing. "Plan review" is the time spent in review cycles before a permit is issued.</p>
+    </div>
+    ${
+      hasData
+        ? `
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Permits analyzed", s.count.toLocaleString())}
+        ${entStat("Median review", `${s.median} days`)}
+        ${entStat("Average review", `${s.mean} days`)}
+        ${entStat("90th percentile", `${s.p90} days`)}
+        ${entStat("Avg review cycles", data.avg_cycles != null ? data.avg_cycles.toFixed(1) : "N/A")}
+      </div>
+      <p class="pr-note">Half of permits clear review in ${s.median} days or less, but the slowest 10% take ${s.p90}+ days — the gap is where projects stall.</p>
+    </div>
+    <div class="card">
+      <h2>Distribution of plan-review time</h2>
+      ${prBarChart(histogramRows)}
+    </div>
+    <div class="ent-grid">
+      <div class="card">
+        <h2>Average review time by permit type</h2>
+        ${prBarChart(typeRows)}
+      </div>
+      <div class="card">
+        <h2>Review cycles per permit</h2>
+        ${prBarChart(cycleRows, "var(--success)")}
+        <p class="pr-note">Each correction cycle adds a round-trip with reviewers. ${
+          data.avg_days_out_corrections != null
+            ? `Permits sit out for corrections about ${Math.round(data.avg_days_out_corrections)} days on average.`
+            : ""
+        }</p>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Slowest neighborhoods by average review time</h2>
+      <p style="color:var(--text-muted);margin-top:0;font-size:0.85rem;">Neighborhoods with at least 3 reviewed permits, ranked by longest average review.</p>
+      ${prBarChart(neighborhoodRows, "var(--amber)")}
+    </div>
+    <div class="card">
+      <h2>Average review time by review level</h2>
+      ${prBarChart(reviewLevelRows)}
+    </div>
+    <p class="pr-note">Raw numbers available as JSON at <a class="ent-link" href="/api/plan-review">/api/plan-review</a>.</p>
+    `
+        : emptyState
+    }`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
 }
 
 async function safeAll(env, sql, binds = []) {
