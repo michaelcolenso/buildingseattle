@@ -75,14 +75,36 @@ Key routes:
 | `GET /api/permits` | Query permits (supports `?neighborhood=`, `?type=`, `?permit=`) |
 | `GET /api/contractors` | List contractors with active project counts |
 | `GET /api/stats` | Aggregate counts for dashboard |
-| `GET /contractor/:slug` | Contractor detail page |
+| `GET /contractor/:slug` | Contractor detail page (curated `contractors` table, falls back to `people_orgs`) |
+| `GET /address/:slug` | Address / property entity page |
+| `GET /project/:slug` | Inferred project entity page |
+| `GET /neighborhood/:slug` | Neighborhood entity page |
 | `POST /leads` / `/leads/batch` | Lead capture |
 | `POST /ingest/permit` / `/ingest/permit/batch` | Data ingestion (no auth) |
 | `POST /ingest/contractor` / `/ingest/contractor/batch` | Data ingestion (no auth) |
+| `POST /admin/build-graph` | Rebuild the derived entity graph (admin auth) |
+| `GET /admin/entity-report` | Entity-graph validation report JSON (admin auth) |
 
 ### Database Schema (schema.sql)
 
-Three tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time.
+Core source tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time.
+
+### Entity Graph
+
+Permits are raw evidence. The primary user-facing entities are **addresses**,
+**projects** (inferred clusters of permits at an address), **people_orgs**
+(contractors/owners/applicants/architects), and **neighborhoods**. These derived
+tables are linked from `permits` via `permits.address_id` / `permits.project_id`.
+
+- Pure, testable derivation logic lives in `entity_graph.js` (`buildEntityGraph`,
+  address/name normalization, slug generation, project clustering). Tests:
+  `tests/entity_graph.test.js`.
+- `worker.js` loads permits, runs `buildEntityGraph`, and persists the result in
+  `rebuildEntityGraph(env)` — invoked after the scheduled ingest and via
+  `POST /admin/build-graph`.
+- Apply the schema once: `npx wrangler d1 execute buildingseattle --file migration_entity_graph.sql`
+- After a bulk import, rebuild: `curl -X POST -H "X-Admin-Token: $ADMIN_API_TOKEN" https://buildingseattle.com/admin/build-graph`
+- Validation report: `node scripts/entity_report.mjs` (or `GET /admin/entity-report`).
 
 ### Neighborhood & Type Detection
 

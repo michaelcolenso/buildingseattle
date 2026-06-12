@@ -1,0 +1,55 @@
+name: Daily Permit Enrichment
+
+# Runs scripts/enrich_unenriched.py once a day. Picks up where the
+# Worker scheduled ingest leaves off: the Worker fetches base permit
+# rows from the Seattle Open Data feed at 13:00 UTC, then this job
+# enriches the newest un-enriched permits an hour later by scraping
+# SDCI detail pages + resolving WA L&I licenses.
+#
+# Required repo secrets:
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare account ID
+#   CLOUDFLARE_API_TOKEN   Token with D1 read scope for buildingseattle DB
+#   INGEST_API_TOKEN       Token expected by the Worker /ingest endpoints
+
+on:
+  schedule:
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max permits to enrich this run'
+        default: '300'
+        required: false
+      concurrency:
+        description: 'Concurrent SDCI/L&I requests per chunk'
+        default: '3'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install 'httpx[http2]>=0.27.0' 'beautifulsoup4>=4.12.0' 'tenacity>=8.2.0'
+
+      - name: Run enrichment
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          INGEST_API_TOKEN: ${{ secrets.INGEST_API_TOKEN }}
+        run: |
+          python scripts/enrich_unenriched.py \
+            --limit "${{ inputs.limit || '300' }}" \
+            --concurrency "${{ inputs.concurrency || '3' }}"

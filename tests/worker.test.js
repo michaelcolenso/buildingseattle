@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import worker from "../worker.js";
+import worker, {
+  summarizePlanReview,
+  percentileSorted,
+  summarizeDays,
+  summarizeNetHousing,
+  projectSeattle,
+} from "../worker.js";
 
 const samplePermits = [
   {
@@ -658,6 +664,192 @@ test("GET /favicon.ico returns the site icon", async () => {
   assert.match(response.headers.get("Content-Type") || "", /image\/png/);
 });
 
+test("summarizePlanReview computes count, mean, median, p90, and day buckets", () => {
+  const values = [10, 20, 30, 40, 200, -5, null, "x"];
+  const s = summarizePlanReview(values);
+
+  assert.equal(s.count, 5); // negatives and non-numerics dropped
+  assert.equal(s.median, 30);
+  assert.equal(s.mean, 60); // (10+20+30+40+200)/5
+  assert.equal(s.max, 200);
+  assert.equal(s.histogram.length, 6);
+  // 10,20,30 land in 0–30; 40 in 31–60; 200 in 181–365
+  assert.equal(s.histogram[0].count, 3);
+  assert.equal(s.histogram[1].count, 1);
+  assert.equal(s.histogram[4].count, 1);
+});
+
+test("summarizePlanReview handles empty input without dividing by zero", () => {
+  const s = summarizePlanReview([]);
+  assert.equal(s.count, 0);
+  assert.equal(s.mean, 0);
+  assert.equal(s.median, 0);
+  assert.equal(s.p90, 0);
+  assert.equal(s.histogram.reduce((sum, b) => sum + b.count, 0), 0);
+});
+
+test("percentileSorted interpolates between ranks", () => {
+  assert.equal(percentileSorted([10, 20, 30, 40], 50), 25);
+  assert.equal(percentileSorted([5], 90), 5);
+  assert.equal(percentileSorted([], 50), 0);
+});
+
+test("summarizeDays returns count/mean/median/p90 and drops invalid values", () => {
+  const s = summarizeDays([10, 20, 30, 40, null, -3, "x"]);
+  assert.equal(s.count, 4);
+  assert.equal(s.median, 25);
+  assert.equal(s.mean, 25);
+  assert.equal(s.p90, 37);
+
+  const empty = summarizeDays([]);
+  assert.deepEqual(empty, { count: 0, mean: 0, median: 0, p90: 0 });
+});
+
+test("summarizeNetHousing sums added/removed and computes net", () => {
+  const s = summarizeNetHousing([
+    { added: 10, removed: 2 },
+    { added: 5, removed: 0 },
+    { added: null, removed: "3" },
+  ]);
+  assert.equal(s.added, 15);
+  assert.equal(s.removed, 5);
+  assert.equal(s.net, 10);
+
+  assert.deepEqual(summarizeNetHousing([]), { added: 0, removed: 0, net: 0 });
+});
+
+test("GET /api/pipeline returns a pipeline payload", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/pipeline"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(payload.stages, "stages present");
+  assert.ok(payload.applied_to_issued, "apply→issue timing present");
+  assert.ok(Array.isArray(payload.by_type));
+});
+
+test("GET /api/housing returns a housing payload", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/housing"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(payload.totals, "totals present");
+  assert.ok(Array.isArray(payload.by_year));
+  assert.ok(Array.isArray(payload.by_neighborhood));
+});
+
+test("GET /insights renders the insights index with all three reports", async () => {
+  const response = await worker.fetch(new Request("http://example.com/insights"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /text\/html/);
+  const html = await response.text();
+  assert.match(html, /Plan review times/i);
+  assert.match(html, /permit pipeline/i);
+  assert.match(html, /Housing units tracker/i);
+  assert.match(html, /href="\/insights\/pipeline"/);
+});
+
+test("GET /insights/pipeline and /insights/housing render", async () => {
+  for (const path of ["/insights/pipeline", "/insights/housing"]) {
+    const response = await worker.fetch(new Request(`http://example.com${path}`), createEnv(), createCtx());
+    assert.equal(response.status, 200, `${path} status`);
+    const html = await response.text();
+    assert.match(html, /Insights/);
+  }
+});
+
+test("projectSeattle maps the bounding box corners into the padded canvas", () => {
+  const W = 470;
+  const H = 820;
+  const pad = 40;
+  // North-west corner (max lat, min lng) projects to top-left of the inner area.
+  const [x0, y0] = projectSeattle(47.745, -122.435, W, H, pad);
+  assert.ok(Math.abs(x0 - pad) < 0.01, "min lng -> left pad");
+  assert.ok(Math.abs(y0 - pad) < 0.01, "max lat -> top pad");
+  // South-east corner (min lat, max lng) projects to bottom-right of inner area.
+  const [x1, y1] = projectSeattle(47.5, -122.245, W, H, pad);
+  assert.ok(Math.abs(x1 - (W - pad)) < 0.01, "max lng -> right pad");
+  assert.ok(Math.abs(y1 - (H - pad)) < 0.01, "min lat -> bottom pad");
+});
+
+test("GET /api/map returns neighborhood aggregates", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/map"), createEnv(), createCtx());
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(Array.isArray(payload.neighborhoods));
+  assert.ok("total_permits" in payload);
+  assert.ok("mapped_count" in payload);
+});
+
+test("GET /api/contractor-scorecards returns ranked contractors", async () => {
+  const response = await worker.fetch(
+    new Request("http://example.com/api/contractor-scorecards"),
+    createEnv(),
+    createCtx(),
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.ok(payload.totals, "totals present");
+  assert.ok(Array.isArray(payload.top_by_permits));
+  assert.ok(Array.isArray(payload.top_by_value));
+});
+
+test("GET /api/network returns nodes and edges", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/network"), createEnv(), createCtx());
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.ok(Array.isArray(payload.contractors));
+  assert.ok(Array.isArray(payload.neighborhoods));
+  assert.ok(Array.isArray(payload.edges));
+});
+
+test("GET /insights lists all six reports", async () => {
+  const response = await worker.fetch(new Request("http://example.com/insights"), createEnv(), createCtx());
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Construction activity map/i);
+  assert.match(html, /Contractor scorecards/i);
+  assert.match(html, /Who builds where/i);
+  assert.match(html, /href="\/insights\/map"/);
+  assert.match(html, /href="\/insights\/network"/);
+});
+
+test("GET /insights/map, /insights/contractors, /insights/network render", async () => {
+  for (const path of ["/insights/map", "/insights/contractors", "/insights/network"]) {
+    const response = await worker.fetch(new Request(`http://example.com${path}`), createEnv(), createCtx());
+    assert.equal(response.status, 200, `${path} status`);
+    const html = await response.text();
+    assert.match(html, /Insights/);
+  }
+});
+
+test("GET /api/plan-review returns a plan-review summary payload", async () => {
+  const response = await worker.fetch(new Request("http://example.com/api/plan-review"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+  const payload = await response.json();
+  assert.ok(payload.summary, "summary present");
+  assert.equal(payload.summary.histogram.length, 6);
+  assert.ok(Array.isArray(payload.by_type));
+  assert.ok(Array.isArray(payload.by_neighborhood));
+  assert.ok(Array.isArray(payload.by_cycles));
+});
+
+test("GET /insights/plan-review renders the insights page", async () => {
+  const response = await worker.fetch(new Request("http://example.com/insights/plan-review"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /text\/html/);
+  const html = await response.text();
+  assert.match(html, /plan review/i);
+  assert.match(html, /Insights/);
+});
+
 test("GET /api/status-changes returns recent permit status transitions", async () => {
   const response = await worker.fetch(new Request("http://example.com/api/status-changes"), createEnv(), createCtx());
 
@@ -669,13 +861,13 @@ test("GET /api/status-changes returns recent permit status transitions", async (
   assert.equal(payload.results[0].new_status, "active");
 });
 
-test("GET /permits/:permit_number hides empty people cards and removes alert CTAs", async () => {
+test("GET /permits/:permit_number hides empty people cards and shows the email alert CTA", async () => {
   const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), createEnv(), createCtx());
 
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /Request Project Updates/i);
+  assert.match(html, /Email Me Permit Updates/i);
   assert.doesNotMatch(html, /Contact Property Owner/);
   assert.doesNotMatch(html, /Watch This Project/);
   assert.doesNotMatch(html, /Property Owner/);
@@ -702,7 +894,7 @@ test("permit alert form requests only an email and posts to the alert subscripti
   const html = await response.text();
 
   assert.equal(response.status, 200);
-  assert.match(html, /Request Project Updates/i);
+  assert.match(html, /Email Me Permit Updates/i);
   assert.match(html, /fetch\('\/alerts\/subscribe'/);
   assert.doesNotMatch(html, /name="company"/);
   assert.doesNotMatch(html, /name="interest"/);
