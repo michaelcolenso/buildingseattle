@@ -572,6 +572,41 @@ function createCtx() {
   };
 }
 
+function createSitemapEnv({ statsByType = {}, rowsByType = {} } = {}) {
+  return {
+    DB: {
+      prepare(query) {
+        const sql = query.replace(/\s+/g, " ").trim();
+        const marker = sql.match(/\/\* sitemap:(stats|rows):([a-z]+) \*\//);
+        let params = [];
+
+        const statement = {
+          bind(...values) {
+            params = values;
+            return statement;
+          },
+          async first() {
+            if (!marker || marker[1] !== "stats") {
+              throw new Error(`Unhandled sitemap first() query: ${sql}`);
+            }
+            return statsByType[marker[2]] || { total: 0, lastmod: null };
+          },
+          async all() {
+            if (!marker || marker[1] !== "rows") {
+              throw new Error(`Unhandled sitemap all() query: ${sql}`);
+            }
+            const limit = Number(params[0]) || 45000;
+            const offset = Number(params[1]) || 0;
+            return { results: (rowsByType[marker[2]] || []).slice(offset, offset + limit) };
+          },
+        };
+
+        return statement;
+      },
+    },
+  };
+}
+
 async function subscribeAndConfirm(env, permitNumber = "PERM123", email = "reader@example.com") {
   const subscribeResponse = await worker.fetch(
     new Request("http://example.com/alerts/subscribe", {
@@ -662,6 +697,93 @@ test("GET /favicon.ico returns the site icon", async () => {
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type") || "", /image\/png/);
+});
+
+test("GET /sitemap.xml returns a category index and splits large sections", async () => {
+  const env = createSitemapEnv({
+    statsByType: {
+      permits: { total: 45001, lastmod: "2026-06-11" },
+      addresses: { total: 2, lastmod: "2026-06-12" },
+      projects: { total: 0, lastmod: null },
+      contractors: { total: 3, lastmod: "2026-06-10" },
+      neighborhoods: { total: 1, lastmod: "2026-06-09" },
+    },
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/sitemap.xml"), env, createCtx());
+  const xml = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /application\/xml/);
+  assert.match(xml, /<sitemapindex/);
+  assert.match(xml, /http:\/\/example\.com\/sitemaps\/static\.xml/);
+  assert.match(xml, /http:\/\/example\.com\/sitemaps\/permits-1\.xml/);
+  assert.match(xml, /http:\/\/example\.com\/sitemaps\/permits-2\.xml/);
+  assert.match(xml, /http:\/\/example\.com\/sitemaps\/addresses-1\.xml/);
+  assert.match(xml, /http:\/\/example\.com\/sitemaps\/contractors-1\.xml/);
+  assert.match(xml, /http:\/\/example\.com\/sitemaps\/neighborhoods\.xml/);
+  assert.doesNotMatch(xml, /projects-1\.xml/);
+  assert.doesNotMatch(xml, /<priority>|<changefreq>/);
+});
+
+test("GET /sitemaps/permits-1.xml returns canonical URLs with accurate lastmod values", async () => {
+  const env = createSitemapEnv({
+    statsByType: {
+      permits: { total: 2, lastmod: "2026-06-11" },
+    },
+    rowsByType: {
+      permits: [
+        { slug: "PERM 1 & A", lastmod: "2026-06-11" },
+        { slug: "PERM-2", lastmod: "2026-06-12" },
+      ],
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request("http://example.com/sitemaps/permits-1.xml"),
+    env,
+    createCtx(),
+  );
+  const xml = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(xml, /<urlset/);
+  assert.match(xml, /http:\/\/example\.com\/permits\/PERM%201%20%26%20A/);
+  assert.match(xml, /<lastmod>2026-06-12<\/lastmod>/);
+  assert.equal((xml.match(/<url>/g) || []).length, 2);
+  assert.doesNotMatch(xml, /<priority>|<changefreq>/);
+});
+
+test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
+  const env = createSitemapEnv({
+    statsByType: {
+      permits: { total: 2, lastmod: "2026-06-11" },
+    },
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/sitemaps/static.xml"), env, createCtx());
+  const xml = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.equal((xml.match(/<url>/g) || []).length, 9);
+  assert.match(xml, /http:\/\/example\.com\/insights\/network/);
+  assert.match(xml, /<lastmod>2026-06-11<\/lastmod>/);
+});
+
+test("out-of-range sitemap pages return 404", async () => {
+  const env = createSitemapEnv({
+    statsByType: {
+      permits: { total: 2, lastmod: "2026-06-11" },
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request("http://example.com/sitemaps/permits-2.xml"),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 404);
 });
 
 test("summarizePlanReview computes count, mean, median, p90, and day buckets", () => {

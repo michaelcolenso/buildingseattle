@@ -318,6 +318,10 @@ export default {
         return secure(await renderSitemapXml(env, request));
       }
 
+      if (path.startsWith("/sitemaps/")) {
+        return secure(await renderChildSitemapXml(path, env, request));
+      }
+
       if (path === "/409508639a064e738971e5aa92be599e.txt") {
         return new Response("409508639a064e738971e5aa92be599e", {
           headers: { "Content-Type": "text/plain" },
@@ -7190,106 +7194,288 @@ Sitemap: ${BASE_URL}/sitemap.xml
   });
 }
 
+const SITEMAP_PAGE_SIZE = 45000;
+const SITEMAP_STATIC_PATHS = [
+  "/",
+  "/permits",
+  "/insights",
+  "/insights/plan-review",
+  "/insights/pipeline",
+  "/insights/housing",
+  "/insights/map",
+  "/insights/contractors",
+  "/insights/network",
+];
+
+const SITEMAP_SECTIONS = {
+  permits: {
+    numbered: true,
+    urlPrefix: "/permits/",
+    statsSql: `/* sitemap:stats:permits */
+      SELECT
+        COUNT(*) AS total,
+        substr(MAX(COALESCE(updated_at, last_enriched_at, issued_date, created_at)), 1, 10) AS lastmod
+      FROM permits`,
+    rowsSql: `/* sitemap:rows:permits */
+      SELECT
+        permit_number AS slug,
+        substr(COALESCE(updated_at, last_enriched_at, issued_date, created_at), 1, 10) AS lastmod
+      FROM permits
+      ORDER BY permit_number
+      LIMIT ? OFFSET ?`,
+  },
+  addresses: {
+    numbered: true,
+    urlPrefix: "/address/",
+    statsSql: `/* sitemap:stats:addresses */
+      SELECT
+        COUNT(DISTINCT a.id) AS total,
+        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, a.updated_at)), 1, 10) AS lastmod
+      FROM addresses a
+      JOIN permits p ON p.address_id = a.id`,
+    rowsSql: `/* sitemap:rows:addresses */
+      SELECT
+        a.slug,
+        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, a.updated_at)), 1, 10) AS lastmod
+      FROM addresses a
+      JOIN permits p ON p.address_id = a.id
+      GROUP BY a.id, a.slug
+      ORDER BY a.slug
+      LIMIT ? OFFSET ?`,
+  },
+  projects: {
+    numbered: true,
+    urlPrefix: "/project/",
+    statsSql: `/* sitemap:stats:projects */
+      SELECT
+        COUNT(DISTINCT pr.id) AS total,
+        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, pr.updated_at)), 1, 10) AS lastmod
+      FROM projects pr
+      JOIN project_permits pp ON pp.project_id = pr.id
+      JOIN permits p ON p.id = pp.permit_id`,
+    rowsSql: `/* sitemap:rows:projects */
+      SELECT
+        pr.slug,
+        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, pr.updated_at)), 1, 10) AS lastmod
+      FROM projects pr
+      JOIN project_permits pp ON pp.project_id = pr.id
+      JOIN permits p ON p.id = pp.permit_id
+      GROUP BY pr.id, pr.slug
+      ORDER BY pr.slug
+      LIMIT ? OFFSET ?`,
+  },
+  contractors: {
+    numbered: true,
+    urlPrefix: "/contractor/",
+    statsSql: `/* sitemap:stats:contractors */
+      SELECT
+        COUNT(*) AS total,
+        substr(MAX(lastmod), 1, 10) AS lastmod
+      FROM (
+        SELECT slug, MAX(lastmod) AS lastmod
+        FROM (
+          SELECT c.slug, c.updated_at AS lastmod
+          FROM contractors c
+          UNION ALL
+          SELECT c.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
+          FROM contractors c
+          JOIN permits p ON p.contractor_id = c.id
+          UNION ALL
+          SELECT o.slug, o.updated_at AS lastmod
+          FROM people_orgs o
+          WHERE EXISTS (SELECT 1 FROM permit_participants pp WHERE pp.people_org_id = o.id)
+          UNION ALL
+          SELECT o.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
+          FROM people_orgs o
+          JOIN permit_participants pp ON pp.people_org_id = o.id
+          JOIN permits p ON p.id = pp.permit_id
+        )
+        GROUP BY slug
+      )`,
+    rowsSql: `/* sitemap:rows:contractors */
+      SELECT slug, substr(MAX(lastmod), 1, 10) AS lastmod
+      FROM (
+        SELECT c.slug, c.updated_at AS lastmod
+        FROM contractors c
+        UNION ALL
+        SELECT c.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
+        FROM contractors c
+        JOIN permits p ON p.contractor_id = c.id
+        UNION ALL
+        SELECT o.slug, o.updated_at AS lastmod
+        FROM people_orgs o
+        WHERE EXISTS (SELECT 1 FROM permit_participants pp WHERE pp.people_org_id = o.id)
+        UNION ALL
+        SELECT o.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
+        FROM people_orgs o
+        JOIN permit_participants pp ON pp.people_org_id = o.id
+        JOIN permits p ON p.id = pp.permit_id
+      )
+      GROUP BY slug
+      ORDER BY slug
+      LIMIT ? OFFSET ?`,
+  },
+  neighborhoods: {
+    numbered: false,
+    urlPrefix: "/neighborhood/",
+    statsSql: `/* sitemap:stats:neighborhoods */
+      SELECT
+        COUNT(DISTINCT n.id) AS total,
+        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at)), 1, 10) AS lastmod
+      FROM neighborhoods n
+      JOIN address_neighborhoods an ON an.neighborhood_id = n.id
+      JOIN permits p ON p.address_id = an.address_id`,
+    rowsSql: `/* sitemap:rows:neighborhoods */
+      SELECT
+        n.slug,
+        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at)), 1, 10) AS lastmod
+      FROM neighborhoods n
+      JOIN address_neighborhoods an ON an.neighborhood_id = n.id
+      JOIN permits p ON p.address_id = an.address_id
+      GROUP BY n.id, n.slug
+      ORDER BY n.slug
+      LIMIT ? OFFSET ?`,
+  },
+};
+
+function sitemapPageCount(total) {
+  return Math.ceil(Math.max(0, Number(total) || 0) / SITEMAP_PAGE_SIZE);
+}
+
+function sitemapDate(value) {
+  const match = String(value || "").match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : null;
+}
+
+function sitemapChildPath(type, page, totalPages) {
+  const section = SITEMAP_SECTIONS[type];
+  if (!section?.numbered && totalPages === 1) {
+    return `/sitemaps/${type}.xml`;
+  }
+  return `/sitemaps/${type}-${page}.xml`;
+}
+
+async function getSitemapStats(env, type) {
+  const section = SITEMAP_SECTIONS[type];
+  const stats = await env.DB.prepare(section.statsSql).first();
+  return {
+    total: Number(stats?.total) || 0,
+    lastmod: sitemapDate(stats?.lastmod),
+  };
+}
+
+function renderSitemapIndexEntry(loc, lastmod) {
+  return `  <sitemap>
+    <loc>${escapeHtml(loc)}</loc>${lastmod ? `\n    <lastmod>${escapeHtml(lastmod)}</lastmod>` : ""}
+  </sitemap>`;
+}
+
+function renderSitemapUrlEntry(loc, lastmod) {
+  return `  <url>
+    <loc>${escapeHtml(loc)}</loc>${lastmod ? `\n    <lastmod>${escapeHtml(lastmod)}</lastmod>` : ""}
+  </url>`;
+}
+
+function sitemapXmlResponse(xml, maxAge = 3600) {
+  return new Response(xml, {
+    headers: {
+      "Content-Type": "application/xml; charset=utf-8",
+      "Cache-Control": `public, max-age=${maxAge}`,
+    },
+  });
+}
+
+function sitemapNotFound() {
+  return new Response("Sitemap not found", {
+    status: 404,
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
 async function renderSitemapXml(env, request) {
   const origin = new URL(request.url).origin;
-  const [{ results: permits }, { results: contractors }, addresses, projects, orgs, neighborhoods] = await Promise.all([
-    env.DB.prepare("SELECT permit_number, issued_date FROM permits ORDER BY issued_date DESC").all(),
-    env.DB.prepare("SELECT slug, updated_at FROM contractors").all(),
-    // Only index entity pages with at least one linked permit (avoid thin pages).
-    safeAll(env, "SELECT slug, updated_at FROM addresses ORDER BY updated_at DESC"),
-    safeAll(env, "SELECT slug, updated_at FROM projects ORDER BY latest_activity_date DESC"),
-    safeAll(
-      env,
-      `SELECT o.slug, o.updated_at FROM people_orgs o
-       WHERE EXISTS (SELECT 1 FROM permit_participants pp WHERE pp.people_org_id = o.id)`,
-    ),
-    safeAll(env, "SELECT slug FROM neighborhoods"),
-  ]);
-
-  const staticUrls = [
-    { loc: origin + "/", priority: "1.0", changefreq: "daily" },
-    { loc: origin + "/permits", priority: "0.9", changefreq: "daily" },
-    { loc: origin + "/insights", priority: "0.8", changefreq: "daily" },
-    { loc: origin + "/insights/plan-review", priority: "0.7", changefreq: "daily" },
-    { loc: origin + "/insights/pipeline", priority: "0.7", changefreq: "daily" },
-    { loc: origin + "/insights/housing", priority: "0.7", changefreq: "daily" },
-    { loc: origin + "/insights/map", priority: "0.7", changefreq: "daily" },
-    { loc: origin + "/insights/contractors", priority: "0.7", changefreq: "daily" },
-    { loc: origin + "/insights/network", priority: "0.7", changefreq: "daily" },
+  const sectionTypes = Object.keys(SITEMAP_SECTIONS);
+  const statsEntries = await Promise.all(sectionTypes.map(async (type) => [type, await getSitemapStats(env, type)]));
+  const statsByType = Object.fromEntries(statsEntries);
+  const sitemaps = [
+    {
+      loc: origin + "/sitemaps/static.xml",
+      lastmod: statsByType.permits.lastmod,
+    },
   ];
 
-  const permitUrls = permits.map((p) => ({
-    loc: origin + "/permits/" + encodeURIComponent(p.permit_number),
-    priority: "0.6",
-    changefreq: "weekly",
-    lastmod: p.issued_date,
-  }));
-
-  const addressUrls = addresses.map((a) => ({
-    loc: origin + "/address/" + encodeURIComponent(a.slug),
-    priority: "0.8",
-    changefreq: "weekly",
-    lastmod: a.updated_at ? a.updated_at.substring(0, 10) : undefined,
-  }));
-
-  const projectUrls = projects.map((p) => ({
-    loc: origin + "/project/" + encodeURIComponent(p.slug),
-    priority: "0.7",
-    changefreq: "weekly",
-    lastmod: p.updated_at ? p.updated_at.substring(0, 10) : undefined,
-  }));
-
-  const neighborhoodUrls = neighborhoods.map((n) => ({
-    loc: origin + "/neighborhood/" + encodeURIComponent(n.slug),
-    priority: "0.7",
-    changefreq: "daily",
-  }));
-
-  // Curated contractors first, then any additional people/orgs from the graph.
-  const contractorSlugs = new Set(contractors.map((c) => c.slug));
-  const contractorUrls = contractors.map((c) => ({
-    loc: origin + "/contractor/" + encodeURIComponent(c.slug),
-    priority: "0.6",
-    changefreq: "weekly",
-    lastmod: c.updated_at ? c.updated_at.substring(0, 10) : undefined,
-  }));
-  const orgUrls = orgs
-    .filter((o) => !contractorSlugs.has(o.slug))
-    .map((o) => ({
-      loc: origin + "/contractor/" + encodeURIComponent(o.slug),
-      priority: "0.5",
-      changefreq: "weekly",
-      lastmod: o.updated_at ? o.updated_at.substring(0, 10) : undefined,
-    }));
-
-  const allUrls = [
-    ...staticUrls,
-    ...addressUrls,
-    ...projectUrls,
-    ...neighborhoodUrls,
-    ...contractorUrls,
-    ...orgUrls,
-    ...permitUrls,
-  ];
-
-  const urlEntries = allUrls
-    .map(
-      (u) => `  <url>
-	    <loc>${escapeHtml(u.loc)}</loc>
-	    <priority>${u.priority}</priority>
-	    <changefreq>${u.changefreq}</changefreq>${u.lastmod ? "\n    <lastmod>" + escapeHtml(u.lastmod) + "</lastmod>" : ""}
-	  </url>`,
-    )
-    .join("\n");
+  for (const type of sectionTypes) {
+    const stats = statsByType[type];
+    const totalPages = sitemapPageCount(stats.total);
+    for (let page = 1; page <= totalPages; page++) {
+      sitemaps.push({
+        loc: origin + sitemapChildPath(type, page, totalPages),
+        lastmod: stats.lastmod,
+      });
+    }
+  }
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${sitemaps.map((sitemap) => renderSitemapIndexEntry(sitemap.loc, sitemap.lastmod)).join("\n")}
+</sitemapindex>`;
+
+  return sitemapXmlResponse(xml, 900);
+}
+
+async function renderChildSitemapXml(path, env, request) {
+  const match = path.match(/^\/sitemaps\/([a-z]+?)(?:-(\d+))?\.xml$/);
+  if (!match) {
+    return sitemapNotFound();
+  }
+
+  const [, type, pageText] = match;
+  const origin = new URL(request.url).origin;
+
+  if (type === "static") {
+    if (pageText) return sitemapNotFound();
+    const permitStats = await getSitemapStats(env, "permits");
+    const entries = SITEMAP_STATIC_PATHS.map((staticPath) => ({
+      loc: origin + staticPath,
+      lastmod: permitStats.lastmod,
+    }));
+    return renderSitemapUrlSet(entries);
+  }
+
+  const section = SITEMAP_SECTIONS[type];
+  if (!section) {
+    return sitemapNotFound();
+  }
+
+  const stats = await getSitemapStats(env, type);
+  const totalPages = sitemapPageCount(stats.total);
+  const page = Number(pageText || 1);
+  if (
+    !Number.isInteger(page) ||
+    page < 1 ||
+    page > totalPages ||
+    path !== sitemapChildPath(type, page, totalPages)
+  ) {
+    return sitemapNotFound();
+  }
+
+  const offset = (page - 1) * SITEMAP_PAGE_SIZE;
+  const { results = [] } = await env.DB.prepare(section.rowsSql).bind(SITEMAP_PAGE_SIZE, offset).all();
+  const entries = results.map((row) => ({
+    loc: origin + section.urlPrefix + encodeURIComponent(row.slug),
+    lastmod: sitemapDate(row.lastmod),
+  }));
+
+  return renderSitemapUrlSet(entries);
+}
+
+function renderSitemapUrlSet(entries) {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urlEntries}
+${entries.map((entry) => renderSitemapUrlEntry(entry.loc, entry.lastmod)).join("\n")}
 </urlset>`;
 
-  return new Response(xml, {
-    headers: { "Content-Type": "application/xml", "Cache-Control": "public, max-age=3600" },
-  });
+  return sitemapXmlResponse(xml);
 }
 
 function renderOgImage() {

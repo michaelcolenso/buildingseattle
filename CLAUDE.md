@@ -79,6 +79,8 @@ Key routes:
 | `GET /address/:slug` | Address / property entity page |
 | `GET /project/:slug` | Inferred project entity page |
 | `GET /neighborhood/:slug` | Neighborhood entity page |
+| `GET /sitemap.xml` | Sitemap index for all public page types |
+| `GET /sitemaps/:section[-:page].xml` | Category child sitemap; dynamic sections split at 45,000 URLs |
 | `POST /leads` / `/leads/batch` | Lead capture |
 | `POST /ingest/permit` / `/ingest/permit/batch` | Data ingestion (no auth) |
 | `POST /ingest/contractor` / `/ingest/contractor/batch` | Data ingestion (no auth) |
