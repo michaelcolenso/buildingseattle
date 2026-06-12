@@ -8,6 +8,7 @@ const corsHeaders = {
 const INGEST_TOKEN_HEADER = "X-Ingest-Token";
 const BASE_URL = "https://buildingseattle.com";
 const ADMIN_TOKEN_HEADER = "X-Admin-Token";
+const ALERT_EMAIL_FROM = "alerts@buildingseattle.com";
 const SECURITY_HEADERS = {
   "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
   "X-Content-Type-Options": "nosniff",
@@ -61,6 +62,18 @@ export default {
 
       if (path === "/leads/batch" && request.method === "POST") {
         return secure(await handleLeadBatch(request, env));
+      }
+
+      if (path === "/alerts/subscribe" && request.method === "POST") {
+        return secure(await handleAlertSubscription(request, env));
+      }
+
+      if (path === "/alerts/confirm" && request.method === "GET") {
+        return secure(await handleAlertConfirmation(request, env));
+      }
+
+      if (path === "/alerts/unsubscribe" && (request.method === "GET" || request.method === "POST")) {
+        return secure(await handleAlertUnsubscribe(request, env));
       }
 
       if (path === "/api/permits") {
@@ -131,7 +144,9 @@ export default {
         if (authError) {
           return secure(authError);
         }
-        return secure(await ingestPermit(request, env));
+        const response = await ingestPermit(request, env);
+        ctx.waitUntil(sendPendingPermitAlerts(env));
+        return secure(response);
       }
 
       if (path === "/ingest/permit/batch" && request.method === "POST") {
@@ -139,7 +154,9 @@ export default {
         if (authError) {
           return secure(authError);
         }
-        return secure(await ingestPermitBatch(request, env));
+        const response = await ingestPermitBatch(request, env);
+        ctx.waitUntil(sendPendingPermitAlerts(env));
+        return secure(response);
       }
 
       if (path === "/ingest/permit/enrichment/batch" && request.method === "POST") {
@@ -188,6 +205,46 @@ export default {
 
       if (path === "/sitemap.xml") {
         return secure(await renderSitemapXml(env, request));
+      }
+
+      // === Agent Discovery (well-known) endpoints ===
+
+      if (path === "/.well-known/oauth-authorization-server") {
+        return secure(renderOAuthAuthorizationServer(env));
+      }
+
+      if (path === "/.well-known/oauth-protected-resource") {
+        return secure(renderOAuthProtectedResource(env));
+      }
+
+      if (path === "/auth.md") {
+        return secure(renderAuthMd());
+      }
+
+      // === Entity Graph routes ===
+
+      if (path.startsWith("/address/")) {
+        const slug = path.split("/address/")[1];
+        if (slug) {
+          ctx.waitUntil(logPageView(request, env, "/address/:slug"));
+          return secure(await renderAddressPage(slug, env, request));
+        }
+      }
+
+      if (path.startsWith("/project/")) {
+        const slug = path.split("/project/")[1];
+        if (slug) {
+          ctx.waitUntil(logPageView(request, env, "/project/:slug"));
+          return secure(await renderProjectPage(slug, env, request));
+        }
+      }
+
+      if (path.startsWith("/neighborhood/")) {
+        const slug = path.split("/neighborhood/")[1];
+        if (slug) {
+          ctx.waitUntil(logPageView(request, env, "/neighborhood/:slug"));
+          return secure(await renderNeighborhoodPage(slug, env, request));
+        }
       }
 
       return secure(render404());
@@ -1250,6 +1307,305 @@ async function handleLeadBatch(request, env) {
   });
 }
 
+async function handleAlertSubscription(request, env) {
+  if (!env.EMAIL) {
+    return jsonResponse({ error: "Permit alerts are temporarily unavailable" }, 503);
+  }
+
+  let data;
+  try {
+    data = await request.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON" }, 400);
+  }
+
+  const email = String(data.email || "").trim().toLowerCase();
+  const permitNumber = String(data.permit_number || "").trim();
+  if (!isValidEmail(email) || !permitNumber) {
+    return jsonResponse({ error: "A valid email and permit number are required" }, 400);
+  }
+
+  const permit = await env.DB.prepare(
+    "SELECT permit_number, address, status FROM permits WHERE permit_number = ?",
+  ).bind(permitNumber).first();
+  if (!permit) {
+    return jsonResponse({ error: "Permit not found" }, 404);
+  }
+
+  const existing = await env.DB.prepare(`
+    SELECT *
+    FROM permit_alert_subscriptions
+    WHERE lower(email) = ? AND permit_number = ?
+  `).bind(email, permitNumber).first();
+  if (existing?.status === "active") {
+    return jsonResponse({ success: true, status: "active" });
+  }
+
+  const confirmationToken = createAlertToken();
+  const confirmationTokenHash = await hashAlertToken(confirmationToken);
+  const unsubscribeToken = createAlertToken();
+
+  await env.DB.prepare(`
+    INSERT INTO permit_alert_subscriptions (
+      email,
+      permit_number,
+      status,
+      confirmation_token_hash,
+      unsubscribe_token,
+      confirmation_sent_at,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, 'pending', ?, ?, datetime('now'), datetime('now'), datetime('now'))
+    ON CONFLICT(email, permit_number) DO UPDATE SET
+      status = 'pending',
+      confirmation_token_hash = excluded.confirmation_token_hash,
+      unsubscribe_token = excluded.unsubscribe_token,
+      confirmation_sent_at = datetime('now'),
+      confirmed_at = NULL,
+      unsubscribed_at = NULL,
+      updated_at = datetime('now')
+  `).bind(email, permitNumber, confirmationTokenHash, unsubscribeToken).run();
+
+  const confirmationUrl = `${BASE_URL}/alerts/confirm?token=${encodeURIComponent(confirmationToken)}`;
+  try {
+    await env.EMAIL.send({
+      from: ALERT_EMAIL_FROM,
+      to: email,
+      subject: `Confirm permit alerts for ${permitNumber}`,
+      text: [
+        "Confirm your Building Seattle permit alert.",
+        "",
+        `${permitNumber}: ${permit.address || "Seattle permit"}`,
+        `Current status: ${normalizeStoredStatus(permit.status)}`,
+        "",
+        `Confirm: ${confirmationUrl}`,
+        "",
+        "You will receive email only when this permit's recorded status changes.",
+      ].join("\n"),
+      html: `
+        <h1>Confirm your permit alert</h1>
+        <p><strong>${escapeHtml(permitNumber)}</strong>: ${escapeHtml(permit.address || "Seattle permit")}</p>
+        <p>Current status: ${escapeHtml(normalizeStoredStatus(permit.status))}</p>
+        <p><a href="${escapeHtml(confirmationUrl)}">Confirm permit alerts</a></p>
+        <p>You will receive email only when this permit's recorded status changes.</p>
+      `,
+    });
+  } catch (error) {
+    await env.DB.prepare(`
+      DELETE FROM permit_alert_subscriptions
+      WHERE email = ?
+        AND permit_number = ?
+        AND confirmation_token_hash = ?
+        AND status = 'pending'
+    `).bind(email, permitNumber, confirmationTokenHash).run();
+    console.error("Permit alert confirmation email failed:", error);
+    return jsonResponse({ error: "Confirmation email could not be sent" }, 503);
+  }
+
+  return jsonResponse({ success: true, status: "pending_confirmation" }, 202);
+}
+
+async function handleAlertConfirmation(request, env) {
+  const token = new URL(request.url).searchParams.get("token") || "";
+  if (!token) {
+    return renderAlertResult("Invalid confirmation link", "This confirmation link is missing its token.", 400);
+  }
+
+  const tokenHash = await hashAlertToken(token);
+  const subscription = await env.DB.prepare(`
+    SELECT *
+    FROM permit_alert_subscriptions
+    WHERE confirmation_token_hash = ? AND status = 'pending'
+  `).bind(tokenHash).first();
+  if (!subscription) {
+    return renderAlertResult(
+      "Confirmation link expired",
+      "This link has already been used or is no longer valid. Return to the permit page to request a new one.",
+      404,
+    );
+  }
+
+  await env.DB.prepare(`
+    UPDATE permit_alert_subscriptions
+    SET
+      status = 'active',
+      confirmation_token_hash = NULL,
+      confirmed_at = datetime('now'),
+      unsubscribed_at = NULL,
+      last_notified_change_id = (
+        SELECT COALESCE(MAX(id), 0)
+        FROM permit_status_changes
+        WHERE permit_number = permit_alert_subscriptions.permit_number
+      ),
+      updated_at = datetime('now')
+    WHERE id = ? AND status = 'pending'
+  `).bind(subscription.id).run();
+
+  return renderAlertResult(
+    "Permit alert confirmed",
+    `You will receive an email when permit ${subscription.permit_number} changes status.`,
+  );
+}
+
+async function handleAlertUnsubscribe(request, env) {
+  const token = new URL(request.url).searchParams.get("token") || "";
+  const subscription = token
+    ? await env.DB.prepare(`
+      SELECT *
+      FROM permit_alert_subscriptions
+      WHERE unsubscribe_token = ?
+    `).bind(token).first()
+    : null;
+
+  if (!subscription) {
+    return renderAlertResult("Invalid unsubscribe link", "This unsubscribe link is not valid.", 404);
+  }
+
+  await env.DB.prepare(`
+    UPDATE permit_alert_subscriptions
+    SET
+      status = 'unsubscribed',
+      confirmation_token_hash = NULL,
+      unsubscribed_at = datetime('now'),
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).bind(subscription.id).run();
+
+  return renderAlertResult(
+    "Permit alert stopped",
+    `You will no longer receive status alerts for permit ${subscription.permit_number}.`,
+  );
+}
+
+async function sendPendingPermitAlerts(env) {
+  if (!env.EMAIL) {
+    console.warn("Permit alert delivery skipped because the EMAIL binding is unavailable.");
+    return { sent: 0, failed: 0 };
+  }
+
+  const { results } = await env.DB.prepare(`
+    SELECT
+      s.id AS subscription_id,
+      s.email,
+      s.permit_number,
+      s.unsubscribe_token,
+      sc.id AS change_id,
+      sc.previous_status,
+      sc.new_status,
+      sc.changed_at,
+      p.address
+    FROM permit_alert_subscriptions s
+    JOIN permit_status_changes sc
+      ON sc.permit_number = s.permit_number
+      AND sc.id > COALESCE(s.last_notified_change_id, 0)
+    LEFT JOIN permits p ON p.permit_number = s.permit_number
+    WHERE s.status = 'active'
+    ORDER BY sc.id ASC
+  `).all();
+
+  let sent = 0;
+  let failed = 0;
+  for (const change of results || []) {
+    const permitUrl = `${BASE_URL}/permits/${encodeURIComponent(change.permit_number)}`;
+    const unsubscribeUrl = `${BASE_URL}/alerts/unsubscribe?token=${encodeURIComponent(change.unsubscribe_token)}`;
+    const previousStatus = normalizeStoredStatus(change.previous_status);
+    const newStatus = normalizeStoredStatus(change.new_status);
+
+    try {
+      await env.EMAIL.send({
+        from: ALERT_EMAIL_FROM,
+        to: change.email,
+        subject: `Permit ${change.permit_number} changed to ${newStatus}`,
+        text: [
+          `Permit ${change.permit_number} changed status.`,
+          "",
+          `${previousStatus} -> ${newStatus}`,
+          change.address || "Seattle permit",
+          "",
+          `View permit: ${permitUrl}`,
+          `Unsubscribe from this permit: ${unsubscribeUrl}`,
+        ].join("\n"),
+        html: `
+          <h1>Permit status changed</h1>
+          <p><strong>${escapeHtml(change.permit_number)}</strong>: ${escapeHtml(change.address || "Seattle permit")}</p>
+          <p>${escapeHtml(previousStatus)} &rarr; <strong>${escapeHtml(newStatus)}</strong></p>
+          <p><a href="${escapeHtml(permitUrl)}">View permit details</a></p>
+          <p><a href="${escapeHtml(unsubscribeUrl)}">Unsubscribe from this permit</a></p>
+        `,
+        headers: {
+          "List-Unsubscribe": `<${unsubscribeUrl}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      });
+
+      await env.DB.prepare(`
+        UPDATE permit_alert_subscriptions
+        SET
+          last_notified_change_id = ?,
+          last_notified_at = ?,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(change.change_id, change.changed_at, change.subscription_id).run();
+      sent++;
+    } catch (error) {
+      failed++;
+      console.error(`Permit alert delivery failed for subscription ${change.subscription_id}:`, error);
+    }
+  }
+
+  return { sent, failed };
+}
+
+function isValidEmail(value) {
+  return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function createAlertToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashAlertToken(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function renderAlertResult(title, message, status = 200) {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>${escapeHtml(title)} | Building Seattle</title>
+  ${renderDesignTokens()}
+</head>
+<body>
+  ${renderNav()}
+  <div class="global-nav-spacer"></div>
+  <main class="container" style="padding-top:4rem;padding-bottom:6rem;max-width:720px;">
+    <h1 style="font-size:2rem;margin-bottom:1rem;color:var(--primary);">${escapeHtml(title)}</h1>
+    <p style="color:var(--text-muted);font-size:1.05rem;margin-bottom:2rem;">${escapeHtml(message)}</p>
+    <a href="/permits" style="color:var(--accent);font-weight:650;text-decoration:none;">Browse Seattle permits &rarr;</a>
+  </main>
+  ${renderFooter()}
+</body>
+</html>`;
+  return new Response(html, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
 async function getPermits(request, env) {
   const url = new URL(request.url);
   const permitNumber = url.searchParams.get("permit");
@@ -1647,9 +2003,11 @@ async function renderPermitDetail(permitNumber, env, request) {
            c.phone as contractor_phone,
            c.email as contractor_email,
            c.website as contractor_website,
-           c.address as contractor_address
+           c.address as contractor_address,
+           a.slug as address_slug
     FROM permits p
     LEFT JOIN contractors c ON p.contractor_id = c.id
+    LEFT JOIN addresses a ON p.address_id = a.id
     WHERE p.permit_number = ?
   `,
   )
@@ -1774,12 +2132,17 @@ async function renderPermitDetail(permitNumber, env, request) {
 	  };
 	  const statusColor = statusColors[permit.status] || "#64748b";
 	  const officialDetailUrl = safeHttpUrl(permit.permit_detail_url);
+	  const peopleSlug = (name) => {
+	    if (!name) return "";
+	    const s = String(name).toLowerCase().replace(/[.,#]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-");
+	    return s + "-seattle";
+	  };
 	  const peopleCards = [
     permit.owner_name
 	      ? `
 	                <div class="card">
 	                    <div class="card-label">Property Owner</div>
-	                    <div class="card-value">${escapeHtml(permit.owner_name)}</div>
+	                    <div class="card-value"><a href="/contractor/${encodeURIComponent(peopleSlug(permit.owner_name))}" style="color:var(--accent);text-decoration:none;">${escapeHtml(permit.owner_name)}</a></div>
 	                    ${permit.owner_address ? `<div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.owner_address)}</div>` : ""}
 	                </div>
 	      `
@@ -1788,7 +2151,7 @@ async function renderPermitDetail(permitNumber, env, request) {
       ? `
 	                <div class="card">
 	                    <div class="card-label">Applicant</div>
-	                    <div class="card-value">${escapeHtml(permit.applicant_name)}</div>
+	                    <div class="card-value"><a href="/contractor/${encodeURIComponent(peopleSlug(permit.applicant_name))}" style="color:var(--accent);text-decoration:none;">${escapeHtml(permit.applicant_name)}</a></div>
 	                </div>
       `
       : "",
@@ -1796,7 +2159,7 @@ async function renderPermitDetail(permitNumber, env, request) {
       ? `
 	                <div class="card">
 	                    <div class="card-label">Architect</div>
-	                    <div class="card-value">${escapeHtml(permit.architect_name)}</div>
+	                    <div class="card-value"><a href="/contractor/${encodeURIComponent(peopleSlug(permit.architect_name))}" style="color:var(--accent);text-decoration:none;">${escapeHtml(permit.architect_name)}</a></div>
 	                </div>
       `
       : "",
@@ -1843,12 +2206,11 @@ async function renderPermitDetail(permitNumber, env, request) {
       `
     : "";
   const primaryLeadLabel = permit.contractor_name ? "Request Project Updates" : "Request Permit Updates";
-  const leadSource = `permit_detail:${permit.permit_number}`;
-
   const permitType = typeMap[(permit.type || "").toLowerCase()] || (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
   const metaDesc = `${permit.address || "Seattle location"}: ${permitType} permit (${permit.status || "new"}) in ${neighborhood}. Project value: ${valueFormatted}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
+  const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
@@ -2177,6 +2539,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             <div class="permit-header">
 	                <div class="permit-number">PERMIT #${safePermitNumber}</div>
 	                <h1 class="permit-title">${safeAddress}</h1>
+	                ${permit.address_slug ? `<div style="margin-top:0.25rem;"><a href="/address/${encodeURIComponent(permit.address_slug)}" style="font-size:0.85rem;color:var(--accent);text-decoration:none;">View address page &rarr;</a></div>` : ""}
 	                <span class="status-badge" style="background: ${statusColor}20; color: ${statusColor};">
 	                    <span class="status-dot"></span>
 	                    ${safeStatus}
@@ -2243,36 +2606,21 @@ async function renderPermitDetail(permitNumber, env, request) {
         <div class="modal-content">
             <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
             <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
-            <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get notified about permit ${safePermitNumber} and similar Seattle projects.</p>
+            <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get an email when permit ${safePermitNumber} changes status.</p>
             <form id="leadForm" onsubmit="submitLead(event)">
                 <div class="form-group">
                     <label for="lead-email">Email *</label>
-                    <input id="lead-email" type="email" name="email" required placeholder="you@company.com">
-                </div>
-                <div class="form-group">
-                    <label for="lead-company">Company Name *</label>
-                    <input id="lead-company" type="text" name="company" required placeholder="Your Company">
-                </div>
-                <div class="form-group">
-                    <label for="lead-interest">Interest Type *</label>
-                    <select id="lead-interest" name="interest" required>
-                        <option value="">Select...</option>
-                        <option value="contractor">General Contractor</option>
-                        <option value="subcontractor">Subcontractor</option>
-                        <option value="supplier">Material Supplier</option>
-                        <option value="service">Professional Services</option>
-                        <option value="investor">Investor/Developer</option>
-                    </select>
+                    <input id="lead-email" type="email" name="email" required autocomplete="email" placeholder="you@example.com">
                 </div>
                 <button type="submit" class="btn btn-primary" style="width:100%;">
-                    <span id="submitText">Request Updates</span>
+                    <span id="submitText">Email Me Status Changes</span>
                     <span id="submitLoader" class="loader hidden"></span>
                 </button>
             </form>
             <div id="formSuccess" class="hidden" style="text-align:center;padding:2rem;">
                 <div style="font-size:3rem;margin-bottom:1rem;">&#10003;</div>
-                <h4>You're on the list!</h4>
-                <p style="color:var(--text-muted);">We'll email you when this project changes.</p>
+                <h4>Check your inbox to confirm</h4>
+                <p style="color:var(--text-muted);">The alert starts after you confirm your email address.</p>
             </div>
         </div>
     </div>
@@ -2299,22 +2647,19 @@ async function renderPermitDetail(permitNumber, env, request) {
             submitBtn.disabled = true;
             var data = {
                 email: form.email.value,
-                company: form.company.value,
-                interest: form.interest.value,
-                source: '${leadSource}',
-                neighborhoods: '${neighborhood}',
-                userAgent: navigator.userAgent
+                permit_number: ${serializedPermitNumber}
             };
             try {
-                var response = await fetch('/leads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+                var response = await fetch('/alerts/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
                 if (response.ok) {
                     form.style.display = 'none';
                     document.getElementById('formSuccess').classList.remove('hidden');
                 } else {
-                    throw new Error('Submission failed');
+                    var result = await response.json().catch(function() { return {}; });
+                    throw new Error(result.error || 'Submission failed');
                 }
             } catch (err) {
-                alert('Error submitting form. Please try again.');
+                alert(err.message || 'Error submitting form. Please try again.');
                 text.classList.remove('hidden');
                 loader.classList.add('hidden');
                 submitBtn.disabled = false;
@@ -2860,6 +3205,7 @@ async function runScheduledIngest(env) {
 
     await upsertScheduledContractors(env, contractors);
     const { added, updated } = await upsertScheduledPermits(env, permits);
+    const alertDelivery = await sendPendingPermitAlerts(env);
 
     await logIngest(env, {
       run_type: "scheduled",
@@ -2871,8 +3217,10 @@ async function runScheduledIngest(env) {
       end_time: new Date(),
     });
 
-    console.log(`Scheduled ingest complete: ${added} added, ${updated} updated`);
-    return { added, updated, contractors: contractors.length };
+    console.log(
+      `Scheduled ingest complete: ${added} added, ${updated} updated, ${alertDelivery.sent} alerts sent`,
+    );
+    return { added, updated, contractors: contractors.length, alerts_sent: alertDelivery.sent };
   } catch (error) {
     console.error("Scheduled ingest failed:", error);
     await logIngest(env, {
@@ -3806,9 +4154,12 @@ Sitemap: ${BASE_URL}/sitemap.xml
 
 async function renderSitemapXml(env, request) {
   const origin = new URL(request.url).origin;
-  const [{ results: permits }, { results: contractors }] = await Promise.all([
+  const [{ results: permits }, { results: contractors }, { results: addresses }, { results: projects }, { results: neighborhoods }] = await Promise.all([
     env.DB.prepare("SELECT permit_number, issued_date FROM permits ORDER BY issued_date DESC").all(),
     env.DB.prepare("SELECT slug, updated_at FROM contractors").all(),
+    env.DB.prepare("SELECT slug, updated_at FROM addresses").all(),
+    env.DB.prepare("SELECT slug, updated_at FROM projects").all(),
+    env.DB.prepare("SELECT slug, updated_at FROM neighborhoods").all(),
   ]);
 
   const staticUrls = [
@@ -3816,21 +4167,42 @@ async function renderSitemapXml(env, request) {
     { loc: origin + "/permits", priority: "0.9", changefreq: "daily" },
   ];
 
-  const permitUrls = permits.map((p) => ({
+  const permitUrls = (permits || []).map((p) => ({
     loc: origin + "/permits/" + encodeURIComponent(p.permit_number),
     priority: "0.7",
     changefreq: "weekly",
     lastmod: p.issued_date,
   }));
 
-  const contractorUrls = contractors.map((c) => ({
+  const contractorUrls = (contractors || []).map((c) => ({
     loc: origin + "/contractor/" + encodeURIComponent(c.slug),
     priority: "0.6",
     changefreq: "weekly",
     lastmod: c.updated_at ? c.updated_at.substring(0, 10) : undefined,
   }));
 
-  const allUrls = [...staticUrls, ...permitUrls, ...contractorUrls];
+  const addressUrls = (addresses || []).map((a) => ({
+    loc: origin + "/address/" + encodeURIComponent(a.slug),
+    priority: "0.7",
+    changefreq: "weekly",
+    lastmod: a.updated_at ? a.updated_at.substring(0, 10) : undefined,
+  }));
+
+  const projectUrls = (projects || []).map((pr) => ({
+    loc: origin + "/project/" + encodeURIComponent(pr.slug),
+    priority: "0.6",
+    changefreq: "weekly",
+    lastmod: pr.updated_at ? pr.updated_at.substring(0, 10) : undefined,
+  }));
+
+  const neighborhoodUrls = (neighborhoods || []).map((n) => ({
+    loc: origin + "/neighborhood/" + encodeURIComponent(n.slug),
+    priority: "0.5",
+    changefreq: "weekly",
+    lastmod: n.updated_at ? n.updated_at.substring(0, 10) : undefined,
+  }));
+
+  const allUrls = [...staticUrls, ...permitUrls, ...contractorUrls, ...addressUrls, ...projectUrls, ...neighborhoodUrls];
 
 	  const urlEntries = allUrls
 	    .map(
@@ -4323,6 +4695,589 @@ function renderOgImage() {
       "Cache-Control": "public, max-age=86400",
     },
   });
+}
+
+// === Agent Discovery handlers ===
+
+// OAuth 2.0 Authorization Server Metadata per RFC 8414
+// This site uses Cloudflare Access as the identity provider.
+// Set OAUTH_ISSUER in env to override the default issuer URL.
+function renderOAuthAuthorizationServer(env) {
+  const issuer = env.OAUTH_ISSUER || "https://buildingseattle.cloudflareaccess.com";
+  const metadata = {
+    issuer: issuer,
+    authorization_endpoint: issuer + "/cdn-cgi/access/authorize",
+    token_endpoint: issuer + "/cdn-cgi/access/token",
+    jwks_uri: issuer + "/cdn-cgi/access/jwks",
+    registration_endpoint: issuer + "/cdn-cgi/access/register",
+    scopes_supported: ["openid", "profile", "email"],
+    response_types_supported: ["code", "id_token", "token id_token"],
+    response_modes_supported: ["query", "fragment", "form_post"],
+    grant_types_supported: ["authorization_code", "implicit"],
+    token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
+    code_challenge_methods_supported: ["S256"],
+    // Agent auth extension for Auth.md
+    agent_auth: {
+      skill: "https://isitagentready.com/.well-known/agent-skills/auth-md/SKILL.md",
+      register_uri: "https://buildingseattle.com/agent/register",
+      identity_types_supported: ["anonymous"],
+      anonymous: {
+        credential_types_supported: ["api_key"],
+        claim_uri: "https://buildingseattle.com/agent/claim",
+      },
+    },
+  };
+  return new Response(JSON.stringify(metadata, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+// OAuth Protected Resource Metadata per RFC 9728
+function renderOAuthProtectedResource(env) {
+  const issuer = env.OAUTH_ISSUER || "https://buildingseattle.cloudflareaccess.com";
+  const metadata = {
+    resource: "https://buildingseattle.com",
+    authorization_servers: [issuer],
+    scopes_supported: ["read:permits", "read:contractors", "read:stats", "ingest:permits", "ingest:contractors"],
+    bearer_methods_supported: ["header"],
+  };
+  return new Response(JSON.stringify(metadata, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+// Auth.md — Agent registration discovery
+function renderAuthMd() {
+  const body = `# auth.md — Building Seattle Agent Registration
+
+## Audience
+
+AI agents and automated clients that need programmatic access to the Building Seattle
+construction-intelligence API.
+
+## Public API (no auth required)
+
+- \`GET /api/permits\` — search permits
+- \`GET /api/contractors\` — search contractors
+- \`GET /api/stats\` — aggregate statistics
+- \`GET /api/status-changes\` — recent status changes
+
+## Authenticated endpoints
+
+Building Seattle uses Cloudflare Access for browser-based admin authentication
+and API tokens for ingest endpoints.
+
+### Admin access (Cloudflare Access JWT)
+
+- \`GET /admin\` — dashboard
+- \`GET /api/admin/stats\` — admin statistics
+- \`GET /api/admin/analytics\` — analytics data
+
+Present a valid Cloudflare Access JWT in the \`CF-Access-Jwt-Assertion\` header
+or an admin token in the \`X-Admin-Token\` header.
+
+### Ingest access (API key)
+
+- \`POST /ingest/permit\`
+- \`POST /ingest/permit/batch\`
+- \`POST /ingest/permit/enrichment/batch\`
+- \`POST /ingest/contractor\`
+- \`POST /ingest/contractor/batch\`
+- \`POST /ingest/refresh\`
+
+Present an ingest token in the \`X-Ingest-Token\` header.
+
+## OAuth / OIDC Discovery
+
+- Authorization Server Metadata: \`/.well-known/oauth-authorization-server\`
+- Protected Resource Metadata:  \`/.well-known/oauth-protected-resource\`
+
+## Contact
+
+- Email: hello@buildingseattle.com
+- Site:  https://buildingseattle.com
+`;
+  return new Response(body, {
+    headers: { "Content-Type": "text/markdown; charset=utf-8" },
+  });
+}
+
+// === Entity Graph page renderers ===
+
+function formatMoney(value) {
+  if (!value) return "N/A";
+  const n = Number(value);
+  if (n >= 1e6) return "$" + (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return "$" + (n / 1e3).toFixed(0) + "K";
+  return "$" + n.toLocaleString();
+}
+
+function renderBreadcrumb(items) {
+  if (!items || items.length === 0) return "";
+  const parts = items.map((item, i) => {
+    if (i === items.length - 1) {
+      return `<span style="color:var(--text);font-weight:600;">${escapeHtml(item.label)}</span>`;
+    }
+    return `<a href="${escapeHtml(item.href)}" style="color:var(--accent);text-decoration:none;">${escapeHtml(item.label)}</a>`;
+  });
+  return `<nav aria-label="Breadcrumb" style="padding:1rem 0;font-size:0.8rem;color:var(--text-muted);">${parts.join(' <span style="color:var(--border);">/</span> ')}</nav>`;
+}
+
+// === Address Page ===
+async function renderAddressPage(slug, env, request) {
+  const addr = await env.DB.prepare("SELECT * FROM addresses WHERE slug = ?").bind(slug).first();
+  if (!addr) {
+    return render404({ heading: "Address not found", message: `No address matches "${slug}".` });
+  }
+
+  const canonical = BASE_URL + "/address/" + encodeURIComponent(slug);
+  const displayAddress = escapeHtml(addr.display_address);
+
+  // Aggregate stats
+  const stats = await env.DB.prepare(`
+    SELECT
+      COUNT(p.id) as permit_count,
+      COALESCE(SUM(p.value), 0) as total_value,
+      MIN(p.applied_date) as first_date,
+      MAX(COALESCE(p.completed_date, p.issued_date, p.applied_date)) as latest_date
+    FROM permits p
+    WHERE p.address_id = ?
+  `).bind(addr.id).first();
+
+  // Recent permits
+  const { results: permits } = await env.DB.prepare(`
+    SELECT p.*, c.name as contractor_name, c.slug as contractor_slug
+    FROM permits p
+    LEFT JOIN contractors c ON p.contractor_id = c.id
+    WHERE p.address_id = ?
+    ORDER BY COALESCE(p.issued_date, p.applied_date) DESC
+    LIMIT 30
+  `).bind(addr.id).all();
+
+  // Projects at this address
+  const { results: projects } = await env.DB.prepare(`
+    SELECT * FROM projects WHERE address_id = ? ORDER BY latest_activity_date DESC
+  `).bind(addr.id).all();
+
+  // Participants
+  const { results: participants } = await env.DB.prepare(`
+    SELECT DISTINCT po.id, po.name, po.slug, po.type_guess, pp.role
+    FROM permit_participants pp
+    JOIN people_orgs po ON pp.people_org_id = po.id
+    JOIN permits p ON pp.permit_id = p.id
+    WHERE p.address_id = ?
+    ORDER BY po.name
+  `).bind(addr.id).all();
+
+  // Nearby neighborhoods
+  const { results: hoods } = await env.DB.prepare(`
+    SELECT n.name, n.slug FROM address_neighborhoods an
+    JOIN neighborhoods n ON an.neighborhood_id = n.id
+    WHERE an.address_id = ?
+  `).bind(addr.id).all();
+
+  const title = `${addr.display_address} Seattle Construction Permits & Project Activity`;
+  const metaDesc = `View construction permits, contractors, project history, estimated values, and recent activity for ${addr.display_address} in Seattle.`;
+
+  const breadcrumb = renderBreadcrumb([
+    { label: "Home", href: "/" },
+    { label: "Addresses", href: "/permits" },
+    { label: addr.display_address, href: canonical },
+  ]);
+
+  // JSON-LD
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Place",
+    "name": addr.display_address,
+    "address": {
+      "@type": "PostalAddress",
+      "streetAddress": addr.display_address,
+      "addressLocality": addr.city || "Seattle",
+      "addressRegion": addr.state || "WA",
+      "postalCode": addr.zip || ""
+    }
+  });
+
+  const permitRows = (permits || []).map(p => {
+    const date = p.issued_date || p.applied_date || "";
+    const statusColor = { active: "#10b981", pending: "#f59e0b", completed: "#3b82f6", new: "#8b5cf6" }[p.status] || "#64748b";
+    const cLink = p.contractor_slug ? `<a href="/contractor/${escapeHtml(p.contractor_slug)}" style="color:var(--accent);text-decoration:none;">${escapeHtml(p.contractor_name || "Unknown")}</a>` : (p.contractor_name || "—");
+    return `<tr>
+      <td><a href="/permits/${encodeURIComponent(p.permit_number)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(p.permit_number)}</a></td>
+      <td>${escapeHtml(p.type || "General")}</td>
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};margin-right:0.35rem;"></span>${escapeHtml(p.status || "new")}</td>
+      <td>${formatMoney(p.value)}</td>
+      <td>${escapeHtml(date)}</td>
+      <td>${cLink}</td>
+    </tr>`;
+  }).join("");
+
+  const participantList = (participants || []).map(po => {
+    return `<a href="/contractor/${encodeURIComponent(po.slug)}" style="display:inline-block;margin:0.25rem;padding:0.35rem 0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:0.8rem;color:var(--text);text-decoration:none;">
+      ${escapeHtml(po.name)} <span style="color:var(--text-muted);font-size:0.7rem;">(${escapeHtml(po.role)})</span>
+    </a>`;
+  }).join("");
+
+  const projectCards = (projects || []).map(pr => {
+    return `<div style="padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:0.75rem;">
+      <a href="/project/${encodeURIComponent(pr.slug)}" style="font-weight:700;color:var(--accent);text-decoration:none;">${escapeHtml(pr.name)}</a>
+      <div style="font-size:0.8rem;color:var(--text-muted);margin-top:0.35rem;">
+        Confidence: ${pr.confidence_score}% &bull; Value: ${formatMoney(pr.total_estimated_value)}
+        ${pr.first_seen_date ? ` &bull; ${pr.first_seen_date} — ${pr.latest_activity_date || "present"}` : ""}
+      </div>
+    </div>`;
+  }).join("");
+
+  const hoodLinks = (hoods || []).map(h => {
+    return `<a href="/neighborhood/${encodeURIComponent(h.slug)}" style="color:var(--accent);text-decoration:none;margin-right:0.75rem;">${escapeHtml(h.name)}</a>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(metaDesc)}">
+    <link rel="canonical" href="${canonical}">
+    <meta property="og:title" content="${escapeHtml(title)}">
+    <meta property="og:description" content="${escapeHtml(metaDesc)}">
+    <meta property="og:type" content="place">
+    <meta property="og:url" content="${canonical}">
+    <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <meta name="twitter:card" content="summary">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    <script type="application/ld+json">${jsonLd}</script>
+    ${renderDesignTokens()}
+    <style>
+      .entity-hero { padding: 3rem 0 2rem; }
+      .entity-hero h1 { font-size: 2rem; font-weight:800; color:var(--primary); }
+      .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1rem; margin:1.5rem 0; }
+      .stat-card { background:var(--bg-alt); border:1px solid var(--border); border-radius:var(--radius-sm); padding:1.25rem; }
+      .stat-card .stat-value { font-size:1.5rem; font-weight:800; color:var(--primary); }
+      .stat-card .stat-label { font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-top:0.25rem; }
+      table { width:100%; border-collapse:collapse; }
+      th { text-align:left; padding:0.75rem; background:var(--bg-alt); font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); border-bottom:2px solid var(--border); }
+      td { padding:0.75rem; border-bottom:1px solid var(--border); font-size:0.875rem; }
+      .section { margin:2rem 0; }
+      .section h2 { font-size:1.25rem; font-weight:700; color:var(--primary); margin-bottom:1rem; }
+    </style>
+</head>
+<body>
+    ${renderNav()}
+    <div class="global-nav-spacer"></div>
+    <main class="container">
+      ${breadcrumb}
+      <div class="entity-hero">
+        <h1>${displayAddress}</h1>
+        ${hoodLinks ? `<div style="margin-top:0.5rem;font-size:0.85rem;">Neighborhood: ${hoodLinks}</div>` : ""}
+      </div>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-value">${stats?.permit_count || 0}</div><div class="stat-label">Permits</div></div>
+        <div class="stat-card"><div class="stat-value">${formatMoney(stats?.total_value)}</div><div class="stat-label">Total Value</div></div>
+        <div class="stat-card"><div class="stat-value">${stats?.first_date || "—"}</div><div class="stat-label">First Permit</div></div>
+        <div class="stat-card"><div class="stat-value">${stats?.latest_date || "—"}</div><div class="stat-label">Latest Activity</div></div>
+      </div>
+
+      ${projectCards ? `<div class="section"><h2>Projects at This Address</h2>${projectCards}</div>` : ""}
+
+      ${participantList ? `<div class="section"><h2>Contractors &amp; Participants</h2><div>${participantList}</div></div>` : ""}
+
+      <div class="section">
+        <h2>Permits (${(permits||[]).length})</h2>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Permit #</th><th>Type</th><th>Status</th><th>Value</th><th>Date</th><th>Contractor</th></tr></thead>
+            <tbody>${permitRows || '<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-muted);">No permits found.</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+</body>
+</html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html" } });
+}
+
+// === Project Page ===
+async function renderProjectPage(slug, env, request) {
+  const project = await env.DB.prepare(`
+    SELECT pr.*, a.display_address, a.slug as address_slug
+    FROM projects pr
+    LEFT JOIN addresses a ON pr.address_id = a.id
+    WHERE pr.slug = ?
+  `).bind(slug).first();
+  if (!project) {
+    return render404({ heading: "Project not found", message: `No project matches "${slug}".` });
+  }
+
+  const canonical = BASE_URL + "/project/" + encodeURIComponent(slug);
+
+  // Permits in this project
+  const { results: permits } = await env.DB.prepare(`
+    SELECT p.*, c.name as contractor_name, c.slug as contractor_slug
+    FROM project_permits pp
+    JOIN permits p ON pp.permit_id = p.id
+    LEFT JOIN contractors c ON p.contractor_id = c.id
+    WHERE pp.project_id = ?
+    ORDER BY COALESCE(p.issued_date, p.applied_date) DESC
+  `).bind(project.id).all();
+
+  // Participants
+  const { results: participants } = await env.DB.prepare(`
+    SELECT DISTINCT po.id, po.name, po.slug, po.type_guess, pp_inner.role
+    FROM project_participants pp_inner
+    JOIN people_orgs po ON pp_inner.people_org_id = po.id
+    WHERE pp_inner.project_id = ?
+    ORDER BY po.name
+  `).bind(project.id).all();
+
+  const title = `${project.name} | Seattle Construction Activity`;
+  const metaDesc = `Track permits, contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
+
+  const breadcrumb = renderBreadcrumb([
+    { label: "Home", href: "/" },
+    { label: "Addresses", href: "/permits" },
+    { label: project.display_address || "Address", href: project.address_slug ? "/address/" + project.address_slug : "#" },
+    { label: project.name, href: canonical },
+  ]);
+
+  const permitRows = (permits || []).map(p => {
+    const cLink = p.contractor_slug ? `<a href="/contractor/${escapeHtml(p.contractor_slug)}" style="color:var(--accent);text-decoration:none;">${escapeHtml(p.contractor_name || "Unknown")}</a>` : "—";
+    return `<tr>
+      <td><a href="/permits/${encodeURIComponent(p.permit_number)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(p.permit_number)}</a></td>
+      <td>${escapeHtml(p.type || "General")}</td>
+      <td>${escapeHtml(p.status || "new")}</td>
+      <td>${formatMoney(p.value)}</td>
+      <td>${escapeHtml(p.issued_date || p.applied_date || "")}</td>
+      <td>${cLink}</td>
+    </tr>`;
+  }).join("");
+
+  const participantChips = (participants || []).map(po => {
+    return `<a href="/contractor/${encodeURIComponent(po.slug)}" style="display:inline-block;margin:0.25rem;padding:0.35rem 0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:0.8rem;color:var(--text);text-decoration:none;">
+      ${escapeHtml(po.name)} <span style="color:var(--text-muted);font-size:0.7rem;">(${escapeHtml(po.role)})</span>
+    </a>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(metaDesc)}">
+    <link rel="canonical" href="${canonical}">
+    <meta property="og:title" content="${escapeHtml(title)}">
+    <meta property="og:description" content="${escapeHtml(metaDesc)}">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="${canonical}">
+    <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <meta name="twitter:card" content="summary">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
+    <style>
+      .entity-hero { padding: 3rem 0 2rem; }
+      .entity-hero h1 { font-size: 2rem; font-weight:800; color:var(--primary); }
+      .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1rem; margin:1.5rem 0; }
+      .stat-card { background:var(--bg-alt); border:1px solid var(--border); border-radius:var(--radius-sm); padding:1.25rem; }
+      .stat-card .stat-value { font-size:1.5rem; font-weight:800; color:var(--primary); }
+      .stat-card .stat-label { font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-top:0.25rem; }
+      table { width:100%; border-collapse:collapse; }
+      th { text-align:left; padding:0.75rem; background:var(--bg-alt); font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); border-bottom:2px solid var(--border); }
+      td { padding:0.75rem; border-bottom:1px solid var(--border); font-size:0.875rem; }
+      .section { margin:2rem 0; }
+      .section h2 { font-size:1.25rem; font-weight:700; color:var(--primary); margin-bottom:1rem; }
+    </style>
+</head>
+<body>
+    ${renderNav()}
+    <div class="global-nav-spacer"></div>
+    <main class="container">
+      ${breadcrumb}
+      <div class="entity-hero">
+        <h1>${escapeHtml(project.name)}</h1>
+        ${project.address_slug ? `<div style="margin-top:0.5rem;font-size:0.9rem;color:var(--text-muted);">📍 <a href="/address/${encodeURIComponent(project.address_slug)}" style="color:var(--accent);text-decoration:none;">${escapeHtml(project.display_address)}</a></div>` : ""}
+        ${project.description_summary ? `<p style="margin-top:0.75rem;color:var(--text-muted);font-size:0.9rem;">${escapeHtml(project.description_summary)}</p>` : ""}
+      </div>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-value">${(permits||[]).length}</div><div class="stat-label">Permits</div></div>
+        <div class="stat-card"><div class="stat-value">${formatMoney(project.total_estimated_value)}</div><div class="stat-label">Total Value</div></div>
+        <div class="stat-card"><div class="stat-value">${project.confidence_score || 50}%</div><div class="stat-label">Confidence</div></div>
+        <div class="stat-card"><div class="stat-value">${project.first_seen_date || "—"}</div><div class="stat-label">First Seen</div></div>
+      </div>
+
+      ${participantChips ? `<div class="section"><h2>Participants</h2><div>${participantChips}</div></div>` : ""}
+
+      <div class="section">
+        <h2>Permits (${(permits||[]).length})</h2>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Permit #</th><th>Type</th><th>Status</th><th>Value</th><th>Date</th><th>Contractor</th></tr></thead>
+            <tbody>${permitRows || '<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-muted);">No permits assigned.</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+</body>
+</html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html" } });
+}
+
+// === Neighborhood Page ===
+async function renderNeighborhoodPage(slug, env, request) {
+  const hood = await env.DB.prepare("SELECT * FROM neighborhoods WHERE slug = ?").bind(slug).first();
+  if (!hood) {
+    return render404({ heading: "Neighborhood not found", message: `No neighborhood matches "${slug}".` });
+  }
+
+  const canonical = BASE_URL + "/neighborhood/" + encodeURIComponent(slug);
+  const hoodName = escapeHtml(hood.name);
+
+  // Aggregate stats
+  const stats = await env.DB.prepare(`
+    SELECT
+      COUNT(p.id) as permit_count,
+      COALESCE(SUM(p.value), 0) as total_value,
+      SUM(CASE WHEN p.status IN ('active','pending','new') THEN 1 ELSE 0 END) as active_count
+    FROM permits p
+    WHERE p.neighborhood = ?
+  `).bind(hood.name).first();
+
+  // Recent permits
+  const { results: permits } = await env.DB.prepare(`
+    SELECT p.*, c.name as contractor_name, c.slug as contractor_slug
+    FROM permits p
+    LEFT JOIN contractors c ON p.contractor_id = c.id
+    WHERE p.neighborhood = ?
+    ORDER BY COALESCE(p.issued_date, p.applied_date) DESC
+    LIMIT 30
+  `).bind(hood.name).all();
+
+  // Top addresses
+  const { results: topAddresses } = await env.DB.prepare(`
+    SELECT a.slug, a.display_address, COUNT(p.id) as cnt, COALESCE(SUM(p.value),0) as total_val
+    FROM permits p
+    JOIN addresses a ON p.address_id = a.id
+    WHERE p.neighborhood = ?
+    GROUP BY a.id
+    ORDER BY cnt DESC
+    LIMIT 10
+  `).bind(hood.name).all();
+
+  // Top contractors
+  const { results: topContractors } = await env.DB.prepare(`
+    SELECT po.name, po.slug, COUNT(pp.permit_id) as cnt
+    FROM permit_participants pp
+    JOIN people_orgs po ON pp.people_org_id = po.id
+    JOIN permits p ON pp.permit_id = p.id
+    WHERE p.neighborhood = ? AND pp.role = 'contractor'
+    GROUP BY po.id
+    ORDER BY cnt DESC
+    LIMIT 10
+  `).bind(hood.name).all();
+
+  const title = `${hood.name} Seattle Construction Permits & Activity`;
+  const metaDesc = `Browse construction permits, active projects, top contractors, and recent activity in ${hood.name}, Seattle.`;
+
+  const breadcrumb = renderBreadcrumb([
+    { label: "Home", href: "/" },
+    { label: "Neighborhoods", href: "/permits" },
+    { label: hood.name, href: canonical },
+  ]);
+
+  const permitRows = (permits || []).map(p => {
+    const statusColor = { active: "#10b981", pending: "#f59e0b", completed: "#3b82f6", new: "#8b5cf6" }[p.status] || "#64748b";
+    return `<tr>
+      <td><a href="/permits/${encodeURIComponent(p.permit_number)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(p.permit_number)}</a></td>
+      <td>${escapeHtml(p.address || "—")}</td>
+      <td>${escapeHtml(p.type || "General")}</td>
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};margin-right:0.35rem;"></span>${escapeHtml(p.status || "new")}</td>
+      <td>${formatMoney(p.value)}</td>
+    </tr>`;
+  }).join("");
+
+  const addrLinks = (topAddresses || []).map(a => {
+    return `<div style="padding:0.5rem 0;border-bottom:1px solid var(--border);">
+      <a href="/address/${encodeURIComponent(a.slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(a.display_address)}</a>
+      <span style="color:var(--text-muted);font-size:0.8rem;margin-left:0.75rem;">${a.cnt} permits &bull; ${formatMoney(a.total_val)}</span>
+    </div>`;
+  }).join("");
+
+  const contractorLinks = (topContractors || []).map(c => {
+    return `<div style="padding:0.5rem 0;border-bottom:1px solid var(--border);">
+      <a href="/contractor/${encodeURIComponent(c.slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(c.name)}</a>
+      <span style="color:var(--text-muted);font-size:0.8rem;margin-left:0.75rem;">${c.cnt} permits</span>
+    </div>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(metaDesc)}">
+    <link rel="canonical" href="${canonical}">
+    <meta property="og:title" content="${escapeHtml(title)}">
+    <meta property="og:description" content="${escapeHtml(metaDesc)}">
+    <meta property="og:type" content="place">
+    <meta property="og:url" content="${canonical}">
+    <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <meta name="twitter:card" content="summary">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
+    <style>
+      .entity-hero { padding: 3rem 0 2rem; }
+      .entity-hero h1 { font-size: 2rem; font-weight:800; color:var(--primary); }
+      .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:1rem; margin:1.5rem 0; }
+      .stat-card { background:var(--bg-alt); border:1px solid var(--border); border-radius:var(--radius-sm); padding:1.25rem; }
+      .stat-card .stat-value { font-size:1.5rem; font-weight:800; color:var(--primary); }
+      .stat-card .stat-label { font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-top:0.25rem; }
+      table { width:100%; border-collapse:collapse; }
+      th { text-align:left; padding:0.75rem; background:var(--bg-alt); font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); border-bottom:2px solid var(--border); }
+      td { padding:0.75rem; border-bottom:1px solid var(--border); font-size:0.875rem; }
+      .section { margin:2rem 0; }
+      .section h2 { font-size:1.25rem; font-weight:700; color:var(--primary); margin-bottom:1rem; }
+      .two-col { display:grid; grid-template-columns:1fr; gap:2rem; }
+      @media(min-width:768px) { .two-col { grid-template-columns:1fr 1fr; } }
+    </style>
+</head>
+<body>
+    ${renderNav()}
+    <div class="global-nav-spacer"></div>
+    <main class="container">
+      ${breadcrumb}
+      <div class="entity-hero">
+        <h1>${hoodName}</h1>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-value">${stats?.permit_count || 0}</div><div class="stat-label">Total Permits</div></div>
+        <div class="stat-card"><div class="stat-value">${stats?.active_count || 0}</div><div class="stat-label">Active</div></div>
+        <div class="stat-card"><div class="stat-value">${formatMoney(stats?.total_value)}</div><div class="stat-label">Total Value</div></div>
+      </div>
+
+      <div class="two-col section">
+        ${addrLinks ? `<div><h2>Most Active Addresses</h2>${addrLinks}</div>` : ""}
+        ${contractorLinks ? `<div><h2>Top Contractors</h2>${contractorLinks}</div>` : ""}
+      </div>
+
+      <div class="section">
+        <h2>Recent Permits (${(permits||[]).length})</h2>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Permit #</th><th>Address</th><th>Type</th><th>Status</th><th>Value</th></tr></thead>
+            <tbody>${permitRows || '<tr><td colspan="5" style="text-align:center;padding:2rem;color:var(--text-muted);">No permits found.</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+    ${renderFooter()}
+</body>
+</html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html" } });
 }
 
 function render404(options) {
