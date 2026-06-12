@@ -29,3 +29,5 @@ seattle_contractors.jsonl
 
 # Local agent/tooling state
 .superpowers/
+.deepseek/
+.playwright-mcp/

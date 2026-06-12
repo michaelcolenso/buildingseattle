@@ -90,11 +90,19 @@ function createEnv() {
   const contractors = structuredClone(sampleContractors);
   const statusChanges = structuredClone(sampleStatusChanges);
   const leads = [];
+  const alertSubscriptions = [];
+  const sentEmails = [];
   const ingestLogs = [];
 
   return {
-    _state: { permits, contractors, statusChanges, leads, ingestLogs },
+    _state: { permits, contractors, statusChanges, leads, alertSubscriptions, sentEmails, ingestLogs },
     INGEST_API_TOKEN: "test-ingest-token",
+    EMAIL: {
+      async send(message) {
+        sentEmails.push(structuredClone(message));
+        return { messageId: `message-${sentEmails.length}` };
+      },
+    },
     DB: {
       prepare(query) {
         const sql = query.replace(/\s+/g, " ").trim();
@@ -106,6 +114,34 @@ function createEnv() {
             return statement;
           },
           async all() {
+            if (sql.includes("FROM permit_alert_subscriptions s") && sql.includes("JOIN permit_status_changes sc")) {
+              return {
+                results: alertSubscriptions.flatMap((subscription) => {
+                  if (subscription.status !== "active") return [];
+                  return statusChanges
+                    .filter(
+                      (change) =>
+                        change.permit_number === subscription.permit_number &&
+                        change.id > (subscription.last_notified_change_id || 0),
+                    )
+                    .map((change) => {
+                      const permit = permits.find((item) => item.permit_number === change.permit_number);
+                      return {
+                        subscription_id: subscription.id,
+                        email: subscription.email,
+                        permit_number: subscription.permit_number,
+                        unsubscribe_token: subscription.unsubscribe_token,
+                        change_id: change.id,
+                        previous_status: change.previous_status,
+                        new_status: change.new_status,
+                        changed_at: change.changed_at,
+                        address: permit?.address || null,
+                      };
+                    });
+                }),
+              };
+            }
+
             if (sql.includes("SELECT * FROM ingest_logs ORDER BY start_time DESC LIMIT 20")) {
               return { results: ingestLogs.map((log) => ({ ...log })) };
             }
@@ -205,6 +241,36 @@ function createEnv() {
             throw new Error(`Unhandled all() query: ${sql}`);
           },
           async first() {
+            if (sql.includes("SELECT permit_number, address, status FROM permits WHERE permit_number = ?")) {
+              const permit = permits.find((item) => item.permit_number === params[0]);
+              return permit
+                ? { permit_number: permit.permit_number, address: permit.address, status: permit.status }
+                : null;
+            }
+
+            if (sql.includes("FROM permit_alert_subscriptions") && sql.includes("lower(email) = ?")) {
+              return (
+                alertSubscriptions.find(
+                  (subscription) =>
+                    subscription.email.toLowerCase() === String(params[0]).toLowerCase() &&
+                    subscription.permit_number === params[1],
+                ) || null
+              );
+            }
+
+            if (sql.includes("FROM permit_alert_subscriptions") && sql.includes("confirmation_token_hash = ?")) {
+              return (
+                alertSubscriptions.find(
+                  (subscription) =>
+                    subscription.confirmation_token_hash === params[0] && subscription.status === "pending",
+                ) || null
+              );
+            }
+
+            if (sql.includes("FROM permit_alert_subscriptions") && sql.includes("unsubscribe_token = ?")) {
+              return alertSubscriptions.find((subscription) => subscription.unsubscribe_token === params[0]) || null;
+            }
+
             if (sql.includes("SELECT * FROM contractors WHERE slug = ?")) {
               return contractors.find((contractor) => contractor.slug === params[0]) || null;
             }
@@ -265,6 +331,75 @@ function createEnv() {
             throw new Error(`Unhandled first() query: ${sql}`);
           },
           async run() {
+            if (sql.includes("INSERT INTO permit_alert_subscriptions")) {
+              const existingIndex = alertSubscriptions.findIndex(
+                (subscription) =>
+                  subscription.email.toLowerCase() === String(params[0]).toLowerCase() &&
+                  subscription.permit_number === params[1],
+              );
+              const subscription = {
+                id: existingIndex >= 0 ? alertSubscriptions[existingIndex].id : alertSubscriptions.length + 1,
+                email: String(params[0]).toLowerCase(),
+                permit_number: params[1],
+                status: "pending",
+                confirmation_token_hash: params[2],
+                unsubscribe_token: params[3],
+                confirmation_sent_at: "2026-06-12 08:00:00",
+                confirmed_at: null,
+                unsubscribed_at: null,
+                last_notified_change_id: null,
+                last_notified_at: null,
+              };
+              if (existingIndex >= 0) {
+                alertSubscriptions[existingIndex] = subscription;
+              } else {
+                alertSubscriptions.push(subscription);
+              }
+              return { success: true, meta: { changes: 1 } };
+            }
+
+            if (sql.includes("DELETE FROM permit_alert_subscriptions")) {
+              const index = alertSubscriptions.findIndex(
+                (subscription) =>
+                  subscription.email === params[0] &&
+                  subscription.permit_number === params[1] &&
+                  subscription.confirmation_token_hash === params[2] &&
+                  subscription.status === "pending",
+              );
+              if (index >= 0) alertSubscriptions.splice(index, 1);
+              return { success: true, meta: { changes: index >= 0 ? 1 : 0 } };
+            }
+
+            if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("status = 'active'")) {
+              const subscription = alertSubscriptions.find((item) => item.id === params[0]);
+              if (!subscription || subscription.status !== "pending") {
+                return { success: true, meta: { changes: 0 } };
+              }
+              subscription.status = "active";
+              subscription.confirmation_token_hash = null;
+              subscription.confirmed_at = "2026-06-12 08:01:00";
+              subscription.last_notified_change_id = statusChanges
+                .filter((change) => change.permit_number === subscription.permit_number)
+                .reduce((max, change) => Math.max(max, change.id), 0);
+              return { success: true, meta: { changes: 1 } };
+            }
+
+            if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("status = 'unsubscribed'")) {
+              const subscription = alertSubscriptions.find((item) => item.id === params[0]);
+              if (!subscription) return { success: true, meta: { changes: 0 } };
+              subscription.status = "unsubscribed";
+              subscription.unsubscribed_at = "2026-06-12 08:02:00";
+              return { success: true, meta: { changes: 1 } };
+            }
+
+            if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("last_notified_change_id = ?")) {
+              const subscription = alertSubscriptions.find((item) => item.id === params[2]);
+              if (!subscription) return { success: true, meta: { changes: 0 } };
+              subscription.last_notified_change_id = params[0];
+              subscription.last_notified_at = "2026-06-12 08:03:00";
+              return { success: true, meta: { changes: 1 } };
+            }
+
             if (sql.includes("INSERT INTO ingest_logs")) {
               ingestLogs.push({
                 run_type: params[0],
@@ -428,9 +563,31 @@ function createEnv() {
 }
 
 function createCtx() {
+  const promises = [];
   return {
-    waitUntil() {},
+    promises,
+    waitUntil(promise) {
+      promises.push(Promise.resolve(promise));
+    },
   };
+}
+
+async function subscribeAndConfirm(env, permitNumber = "PERM123", email = "reader@example.com") {
+  const subscribeResponse = await worker.fetch(
+    new Request("http://example.com/alerts/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, permit_number: permitNumber }),
+    }),
+    env,
+    createCtx(),
+  );
+  assert.equal(subscribeResponse.status, 202);
+
+  const confirmationEmail = env._state.sentEmails.at(-1);
+  const confirmationUrl = confirmationEmail.text.match(/https?:\/\/\S+\/alerts\/confirm\?token=[^\s]+/)[0];
+  const confirmResponse = await worker.fetch(new Request(confirmationUrl), env, createCtx());
+  assert.equal(confirmResponse.status, 200);
 }
 
 test("GET /permits renders a public permit browser instead of returning 404", async () => {
@@ -704,13 +861,13 @@ test("GET /api/status-changes returns recent permit status transitions", async (
   assert.equal(payload.results[0].new_status, "active");
 });
 
-test("GET /permits/:permit_number hides empty people cards and removes alert CTAs", async () => {
+test("GET /permits/:permit_number hides empty people cards and shows the email alert CTA", async () => {
   const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), createEnv(), createCtx());
 
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /Request Project Updates/i);
+  assert.match(html, /Email Me Permit Updates/i);
   assert.doesNotMatch(html, /Contact Property Owner/);
   assert.doesNotMatch(html, /Watch This Project/);
   assert.doesNotMatch(html, /Property Owner/);
@@ -730,6 +887,143 @@ test("lead modals expose accessible dialog markup and associated labels", async 
   assert.match(html, /aria-label="Close dialog"/);
   assert.match(html, /<label for="lead-email">Email \*<\/label>/);
   assert.match(html, /<input[^>]+id="lead-email"/);
+});
+
+test("permit alert form requests only an email and posts to the alert subscription endpoint", async () => {
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), createEnv(), createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Email Me Permit Updates/i);
+  assert.match(html, /fetch\('\/alerts\/subscribe'/);
+  assert.doesNotMatch(html, /name="company"/);
+  assert.doesNotMatch(html, /name="interest"/);
+  assert.match(html, /Check your inbox to confirm/i);
+});
+
+test("POST /alerts/subscribe creates a pending permit subscription and sends confirmation email", async () => {
+  const env = createEnv();
+  const response = await worker.fetch(
+    new Request("http://example.com/alerts/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "Reader@Example.com", permit_number: "PERM123" }),
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 202);
+  assert.deepEqual(await response.json(), { success: true, status: "pending_confirmation" });
+  assert.equal(env._state.alertSubscriptions.length, 1);
+  assert.equal(env._state.alertSubscriptions[0].email, "reader@example.com");
+  assert.equal(env._state.alertSubscriptions[0].permit_number, "PERM123");
+  assert.equal(env._state.alertSubscriptions[0].status, "pending");
+  assert.equal(env._state.sentEmails.length, 1);
+  assert.match(env._state.sentEmails[0].subject, /Confirm permit alerts/i);
+  assert.match(env._state.sentEmails[0].text, /\/alerts\/confirm\?token=/);
+});
+
+test("one email address can subscribe to multiple permits", async () => {
+  const env = createEnv();
+
+  for (const permitNumber of ["PERM123", "PERM456"]) {
+    const response = await worker.fetch(
+      new Request("http://example.com/alerts/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "reader@example.com", permit_number: permitNumber }),
+      }),
+      env,
+      createCtx(),
+    );
+    assert.equal(response.status, 202);
+  }
+
+  assert.deepEqual(
+    env._state.alertSubscriptions.map((subscription) => subscription.permit_number).sort(),
+    ["PERM123", "PERM456"],
+  );
+});
+
+test("confirmation activates a permit alert without replaying historical status changes", async () => {
+  const env = createEnv();
+  await subscribeAndConfirm(env);
+
+  assert.equal(env._state.alertSubscriptions[0].status, "active");
+  assert.equal(env._state.alertSubscriptions[0].last_notified_change_id, 1);
+});
+
+test("unsubscribe link deactivates only the selected permit alert", async () => {
+  const env = createEnv();
+  await subscribeAndConfirm(env, "PERM123");
+  await subscribeAndConfirm(env, "PERM456");
+
+  const firstSubscription = env._state.alertSubscriptions.find(
+    (subscription) => subscription.permit_number === "PERM123",
+  );
+  const response = await worker.fetch(
+    new Request(`http://example.com/alerts/unsubscribe?token=${firstSubscription.unsubscribe_token}`),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(firstSubscription.status, "unsubscribed");
+  assert.equal(
+    env._state.alertSubscriptions.find((subscription) => subscription.permit_number === "PERM456").status,
+    "active",
+  );
+});
+
+test("one-click unsubscribe accepts the email provider POST request", async () => {
+  const env = createEnv();
+  await subscribeAndConfirm(env);
+  const subscription = env._state.alertSubscriptions[0];
+
+  const response = await worker.fetch(
+    new Request(`http://example.com/alerts/unsubscribe?token=${subscription.unsubscribe_token}`, {
+      method: "POST",
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(subscription.status, "unsubscribed");
+});
+
+test("permit status changes email confirmed subscribers and advance the delivery cursor", async () => {
+  const env = createEnv();
+  await subscribeAndConfirm(env);
+  const emailCountBeforeChange = env._state.sentEmails.length;
+  const ctx = createCtx();
+
+  const response = await worker.fetch(
+    new Request("http://example.com/ingest/permit", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Ingest-Token": "test-ingest-token",
+      },
+      body: JSON.stringify({
+        permit_number: "PERM123",
+        address: "407 Stewart St, Seattle, WA",
+        status: "completed",
+      }),
+    }),
+    env,
+    ctx,
+  );
+  await Promise.all(ctx.promises);
+
+  assert.equal(response.status, 200);
+  assert.equal(env._state.sentEmails.length, emailCountBeforeChange + 1);
+  const notification = env._state.sentEmails.at(-1);
+  assert.match(notification.subject, /Permit PERM123 changed to completed/i);
+  assert.match(notification.text, /pending|active/i);
+  assert.match(notification.text, /unsubscribe/i);
+  assert.equal(env._state.alertSubscriptions[0].last_notified_change_id, 2);
 });
 
 test("GET /permits/:permit_number renders enriched permit fields safely", async () => {

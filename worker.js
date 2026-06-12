@@ -16,6 +16,7 @@ const corsHeaders = {
 const INGEST_TOKEN_HEADER = "X-Ingest-Token";
 const BASE_URL = "https://buildingseattle.com";
 const ADMIN_TOKEN_HEADER = "X-Admin-Token";
+const ALERT_EMAIL_FROM = "alerts@buildingseattle.com";
 const SECURITY_HEADERS = {
   "Strict-Transport-Security": "max-age=31536000; includeSubDomains; preload",
   "X-Content-Type-Options": "nosniff",
@@ -69,6 +70,18 @@ export default {
 
       if (path === "/leads/batch" && request.method === "POST") {
         return secure(await handleLeadBatch(request, env));
+      }
+
+      if (path === "/alerts/subscribe" && request.method === "POST") {
+        return secure(await handleAlertSubscription(request, env));
+      }
+
+      if (path === "/alerts/confirm" && request.method === "GET") {
+        return secure(await handleAlertConfirmation(request, env));
+      }
+
+      if (path === "/alerts/unsubscribe" && (request.method === "GET" || request.method === "POST")) {
+        return secure(await handleAlertUnsubscribe(request, env));
       }
 
       if (path === "/api/permits") {
@@ -242,7 +255,9 @@ export default {
         if (authError) {
           return secure(authError);
         }
-        return secure(await ingestPermit(request, env));
+        const response = await ingestPermit(request, env);
+        ctx.waitUntil(sendPendingPermitAlerts(env));
+        return secure(response);
       }
 
       if (path === "/ingest/permit/batch" && request.method === "POST") {
@@ -250,7 +265,9 @@ export default {
         if (authError) {
           return secure(authError);
         }
-        return secure(await ingestPermitBatch(request, env));
+        const response = await ingestPermitBatch(request, env);
+        ctx.waitUntil(sendPendingPermitAlerts(env));
+        return secure(response);
       }
 
       if (path === "/ingest/permit/enrichment/batch" && request.method === "POST") {
@@ -1482,6 +1499,323 @@ async function handleLeadBatch(request, env) {
   });
 }
 
+async function handleAlertSubscription(request, env) {
+  if (!env.EMAIL) {
+    return alertJsonResponse({ error: "Permit alerts are temporarily unavailable" }, 503);
+  }
+
+  let data;
+  try {
+    data = await request.json();
+  } catch {
+    return alertJsonResponse({ error: "Invalid JSON" }, 400);
+  }
+
+  const email = String(data.email || "").trim().toLowerCase();
+  const permitNumber = String(data.permit_number || "").trim();
+  if (!isValidEmail(email) || !permitNumber) {
+    return alertJsonResponse({ error: "A valid email and permit number are required" }, 400);
+  }
+
+  const permit = await env.DB.prepare(
+    "SELECT permit_number, address, status FROM permits WHERE permit_number = ?",
+  )
+    .bind(permitNumber)
+    .first();
+  if (!permit) {
+    return alertJsonResponse({ error: "Permit not found" }, 404);
+  }
+
+  const existing = await env.DB.prepare(`
+    SELECT *
+    FROM permit_alert_subscriptions
+    WHERE lower(email) = ? AND permit_number = ?
+  `)
+    .bind(email, permitNumber)
+    .first();
+  if (existing?.status === "active") {
+    return alertJsonResponse({ success: true, status: "active" });
+  }
+
+  const confirmationToken = createAlertToken();
+  const confirmationTokenHash = await hashAlertToken(confirmationToken);
+  const unsubscribeToken = createAlertToken();
+
+  await env.DB.prepare(`
+    INSERT INTO permit_alert_subscriptions (
+      email,
+      permit_number,
+      status,
+      confirmation_token_hash,
+      unsubscribe_token,
+      confirmation_sent_at,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, 'pending', ?, ?, datetime('now'), datetime('now'), datetime('now'))
+    ON CONFLICT(email, permit_number) DO UPDATE SET
+      status = 'pending',
+      confirmation_token_hash = excluded.confirmation_token_hash,
+      unsubscribe_token = excluded.unsubscribe_token,
+      confirmation_sent_at = datetime('now'),
+      confirmed_at = NULL,
+      unsubscribed_at = NULL,
+      updated_at = datetime('now')
+  `)
+    .bind(email, permitNumber, confirmationTokenHash, unsubscribeToken)
+    .run();
+
+  const confirmationUrl = `${BASE_URL}/alerts/confirm?token=${encodeURIComponent(confirmationToken)}`;
+  try {
+    await env.EMAIL.send({
+      from: ALERT_EMAIL_FROM,
+      to: email,
+      subject: `Confirm permit alerts for ${permitNumber}`,
+      text: [
+        "Confirm your Building Seattle permit alert.",
+        "",
+        `${permitNumber}: ${permit.address || "Seattle permit"}`,
+        `Current status: ${normalizeStoredStatus(permit.status)}`,
+        "",
+        `Confirm: ${confirmationUrl}`,
+        "",
+        "You will receive email only when this permit's recorded status changes.",
+      ].join("\n"),
+      html: `
+        <h1>Confirm your permit alert</h1>
+        <p><strong>${escapeHtml(permitNumber)}</strong>: ${escapeHtml(permit.address || "Seattle permit")}</p>
+        <p>Current status: ${escapeHtml(normalizeStoredStatus(permit.status))}</p>
+        <p><a href="${escapeHtml(confirmationUrl)}">Confirm permit alerts</a></p>
+        <p>You will receive email only when this permit's recorded status changes.</p>
+      `,
+    });
+  } catch (error) {
+    await env.DB.prepare(`
+      DELETE FROM permit_alert_subscriptions
+      WHERE email = ?
+        AND permit_number = ?
+        AND confirmation_token_hash = ?
+        AND status = 'pending'
+    `)
+      .bind(email, permitNumber, confirmationTokenHash)
+      .run();
+    console.error("Permit alert confirmation email failed:", error);
+    return alertJsonResponse({ error: "Confirmation email could not be sent" }, 503);
+  }
+
+  return alertJsonResponse({ success: true, status: "pending_confirmation" }, 202);
+}
+
+async function handleAlertConfirmation(request, env) {
+  const token = new URL(request.url).searchParams.get("token") || "";
+  if (!token) {
+    return renderAlertResult("Invalid confirmation link", "This confirmation link is missing its token.", 400);
+  }
+
+  const tokenHash = await hashAlertToken(token);
+  const subscription = await env.DB.prepare(`
+    SELECT *
+    FROM permit_alert_subscriptions
+    WHERE confirmation_token_hash = ? AND status = 'pending'
+  `)
+    .bind(tokenHash)
+    .first();
+  if (!subscription) {
+    return renderAlertResult(
+      "Confirmation link expired",
+      "This link has already been used or is no longer valid. Return to the permit page to request a new one.",
+      404,
+    );
+  }
+
+  await env.DB.prepare(`
+    UPDATE permit_alert_subscriptions
+    SET
+      status = 'active',
+      confirmation_token_hash = NULL,
+      confirmed_at = datetime('now'),
+      unsubscribed_at = NULL,
+      last_notified_change_id = (
+        SELECT COALESCE(MAX(id), 0)
+        FROM permit_status_changes
+        WHERE permit_number = permit_alert_subscriptions.permit_number
+      ),
+      updated_at = datetime('now')
+    WHERE id = ? AND status = 'pending'
+  `)
+    .bind(subscription.id)
+    .run();
+
+  return renderAlertResult(
+    "Permit alert confirmed",
+    `You will receive an email when permit ${subscription.permit_number} changes status.`,
+  );
+}
+
+async function handleAlertUnsubscribe(request, env) {
+  const token = new URL(request.url).searchParams.get("token") || "";
+  const subscription = token
+    ? await env.DB.prepare(`
+      SELECT *
+      FROM permit_alert_subscriptions
+      WHERE unsubscribe_token = ?
+    `)
+        .bind(token)
+        .first()
+    : null;
+
+  if (!subscription) {
+    return renderAlertResult("Invalid unsubscribe link", "This unsubscribe link is not valid.", 404);
+  }
+
+  await env.DB.prepare(`
+    UPDATE permit_alert_subscriptions
+    SET
+      status = 'unsubscribed',
+      confirmation_token_hash = NULL,
+      unsubscribed_at = datetime('now'),
+      updated_at = datetime('now')
+    WHERE id = ?
+  `)
+    .bind(subscription.id)
+    .run();
+
+  return renderAlertResult(
+    "Permit alert stopped",
+    `You will no longer receive status alerts for permit ${subscription.permit_number}.`,
+  );
+}
+
+async function sendPendingPermitAlerts(env) {
+  if (!env.EMAIL) {
+    console.warn("Permit alert delivery skipped because the EMAIL binding is unavailable.");
+    return { sent: 0, failed: 0 };
+  }
+
+  const { results } = await env.DB.prepare(`
+    SELECT
+      s.id AS subscription_id,
+      s.email,
+      s.permit_number,
+      s.unsubscribe_token,
+      sc.id AS change_id,
+      sc.previous_status,
+      sc.new_status,
+      sc.changed_at,
+      p.address
+    FROM permit_alert_subscriptions s
+    JOIN permit_status_changes sc
+      ON sc.permit_number = s.permit_number
+      AND sc.id > COALESCE(s.last_notified_change_id, 0)
+    LEFT JOIN permits p ON p.permit_number = s.permit_number
+    WHERE s.status = 'active'
+    ORDER BY sc.id ASC
+  `).all();
+
+  let sent = 0;
+  let failed = 0;
+  for (const change of results || []) {
+    const permitUrl = `${BASE_URL}/permits/${encodeURIComponent(change.permit_number)}`;
+    const unsubscribeUrl = `${BASE_URL}/alerts/unsubscribe?token=${encodeURIComponent(change.unsubscribe_token)}`;
+    const previousStatus = normalizeStoredStatus(change.previous_status);
+    const newStatus = normalizeStoredStatus(change.new_status);
+
+    try {
+      await env.EMAIL.send({
+        from: ALERT_EMAIL_FROM,
+        to: change.email,
+        subject: `Permit ${change.permit_number} changed to ${newStatus}`,
+        text: [
+          `Permit ${change.permit_number} changed status.`,
+          "",
+          `${previousStatus} -> ${newStatus}`,
+          change.address || "Seattle permit",
+          "",
+          `View permit: ${permitUrl}`,
+          `Unsubscribe from this permit: ${unsubscribeUrl}`,
+        ].join("\n"),
+        html: `
+          <h1>Permit status changed</h1>
+          <p><strong>${escapeHtml(change.permit_number)}</strong>: ${escapeHtml(change.address || "Seattle permit")}</p>
+          <p>${escapeHtml(previousStatus)} &rarr; <strong>${escapeHtml(newStatus)}</strong></p>
+          <p><a href="${escapeHtml(permitUrl)}">View permit details</a></p>
+          <p><a href="${escapeHtml(unsubscribeUrl)}">Unsubscribe from this permit</a></p>
+        `,
+        headers: {
+          "List-Unsubscribe": `<${unsubscribeUrl}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      });
+
+      await env.DB.prepare(`
+        UPDATE permit_alert_subscriptions
+        SET
+          last_notified_change_id = ?,
+          last_notified_at = ?,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `)
+        .bind(change.change_id, change.changed_at, change.subscription_id)
+        .run();
+      sent++;
+    } catch (error) {
+      failed++;
+      console.error(`Permit alert delivery failed for subscription ${change.subscription_id}:`, error);
+    }
+  }
+
+  return { sent, failed };
+}
+
+function isValidEmail(value) {
+  return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function createAlertToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashAlertToken(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function alertJsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+function renderAlertResult(title, message, status = 200) {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>${escapeHtml(title)} | Building Seattle</title>
+  ${renderDesignTokens()}
+</head>
+<body>
+  ${renderNav()}
+  <div class="global-nav-spacer"></div>
+  <main class="container" style="padding-top:4rem;padding-bottom:6rem;max-width:720px;">
+    <h1 style="font-size:2rem;margin-bottom:1rem;color:var(--primary);">${escapeHtml(title)}</h1>
+    <p style="color:var(--text-muted);font-size:1.05rem;margin-bottom:2rem;">${escapeHtml(message)}</p>
+    <a href="/permits" style="color:var(--accent);font-weight:650;text-decoration:none;">Browse Seattle permits &rarr;</a>
+  </main>
+  ${renderFooter()}
+</body>
+</html>`;
+  return new Response(html, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
 async function getPermits(request, env) {
   const url = new URL(request.url);
   const permitNumber = url.searchParams.get("permit");
@@ -2117,8 +2451,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </div>
       `
     : "";
-  const primaryLeadLabel = permit.contractor_name ? "Request Project Updates" : "Request Permit Updates";
-  const leadSource = `permit_detail:${permit.permit_number}`;
+  const primaryLeadLabel = "Email Me Permit Updates";
 
   const permitType =
     typeMap[(permit.type || "").toLowerCase()] ||
@@ -2126,6 +2459,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
   const metaDesc = `${permit.address || "Seattle location"}: ${permitType} permit (${permit.status || "new"}) in ${neighborhood}. Project value: ${valueFormatted}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
+  const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
@@ -2482,36 +2816,21 @@ async function renderPermitDetail(permitNumber, env, request) {
         <div class="modal-content">
             <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
             <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
-            <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get notified about permit ${safePermitNumber} and similar Seattle projects.</p>
+            <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get an email when permit ${safePermitNumber} changes status.</p>
             <form id="leadForm" onsubmit="submitLead(event)">
                 <div class="form-group">
                     <label for="lead-email">Email *</label>
-                    <input id="lead-email" type="email" name="email" required placeholder="you@company.com">
-                </div>
-                <div class="form-group">
-                    <label for="lead-company">Company Name *</label>
-                    <input id="lead-company" type="text" name="company" required placeholder="Your Company">
-                </div>
-                <div class="form-group">
-                    <label for="lead-interest">Interest Type *</label>
-                    <select id="lead-interest" name="interest" required>
-                        <option value="">Select...</option>
-                        <option value="contractor">General Contractor</option>
-                        <option value="subcontractor">Subcontractor</option>
-                        <option value="supplier">Material Supplier</option>
-                        <option value="service">Professional Services</option>
-                        <option value="investor">Investor/Developer</option>
-                    </select>
+                    <input id="lead-email" type="email" name="email" required autocomplete="email" placeholder="you@example.com">
                 </div>
                 <button type="submit" class="btn btn-primary" style="width:100%;">
-                    <span id="submitText">Request Updates</span>
+                    <span id="submitText">Email Me Status Changes</span>
                     <span id="submitLoader" class="loader hidden"></span>
                 </button>
             </form>
             <div id="formSuccess" class="hidden" style="text-align:center;padding:2rem;">
                 <div style="font-size:3rem;margin-bottom:1rem;">&#10003;</div>
-                <h4>You're on the list!</h4>
-                <p style="color:var(--text-muted);">We'll email you when this project changes.</p>
+                <h4>Check your inbox to confirm</h4>
+                <p style="color:var(--text-muted);">The alert starts after you confirm your email address.</p>
             </div>
         </div>
     </div>
@@ -2534,22 +2853,19 @@ async function renderPermitDetail(permitNumber, env, request) {
             submitBtn.disabled = true;
             var data = {
                 email: form.email.value,
-                company: form.company.value,
-                interest: form.interest.value,
-                source: '${leadSource}',
-                neighborhoods: '${neighborhood}',
-                userAgent: navigator.userAgent
+                permit_number: ${serializedPermitNumber}
             };
             try {
-                var response = await fetch('/leads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+                var response = await fetch('/alerts/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
                 if (response.ok) {
                     form.style.display = 'none';
                     document.getElementById('formSuccess').classList.remove('hidden');
                 } else {
-                    throw new Error('Submission failed');
+                    var result = await response.json().catch(function() { return {}; });
+                    throw new Error(result.error || 'Submission failed');
                 }
             } catch (err) {
-                alert('Error submitting form. Please try again.');
+                alert(err.message || 'Error submitting form. Please try again.');
                 text.classList.remove('hidden');
                 loader.classList.add('hidden');
                 submitBtn.disabled = false;
@@ -3154,6 +3470,9 @@ async function rebuildEntityGraph(env) {
 
   // Clear derived tables and reset permit links (single transaction).
   await env.DB.batch([
+    // Older production schemas enforce permits.address_id as a foreign key.
+    // Clear those links before deleting the referenced graph rows.
+    P("UPDATE permits SET address_id = NULL, project_id = NULL"),
     P("DELETE FROM project_permits"),
     P("DELETE FROM permit_participants"),
     P("DELETE FROM project_participants"),
@@ -3162,7 +3481,6 @@ async function rebuildEntityGraph(env) {
     P("DELETE FROM neighborhoods"),
     P("DELETE FROM addresses"),
     P("DELETE FROM people_orgs"),
-    P("UPDATE permits SET address_id = NULL, project_id = NULL"),
   ]);
 
   // addresses
@@ -5445,6 +5763,7 @@ async function runScheduledIngest(env) {
     } catch (graphError) {
       console.error("Entity graph rebuild failed:", graphError);
     }
+    const alertDelivery = await sendPendingPermitAlerts(env);
 
     await logIngest(env, {
       run_type: "scheduled",
@@ -5456,8 +5775,10 @@ async function runScheduledIngest(env) {
       end_time: new Date(),
     });
 
-    console.log(`Scheduled ingest complete: ${added} added, ${updated} updated`);
-    return { added, updated, contractors: contractors.length };
+    console.log(
+      `Scheduled ingest complete: ${added} added, ${updated} updated, ${alertDelivery.sent} alerts sent`,
+    );
+    return { added, updated, contractors: contractors.length, alerts_sent: alertDelivery.sent };
   } catch (error) {
     console.error("Scheduled ingest failed:", error);
     await logIngest(env, {
@@ -6860,6 +7181,7 @@ Disallow: /admin
 Disallow: /api/admin/
 Disallow: /ingest/
 Disallow: /leads
+Disallow: /alerts/
 
 Sitemap: ${BASE_URL}/sitemap.xml
 `;

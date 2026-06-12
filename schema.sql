@@ -91,6 +91,25 @@ CREATE TABLE IF NOT EXISTS permit_status_changes (
     changed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS permit_alert_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    permit_number TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'active', 'unsubscribed')),
+    confirmation_token_hash TEXT,
+    unsubscribe_token TEXT NOT NULL UNIQUE,
+    confirmation_sent_at DATETIME,
+    confirmed_at DATETIME,
+    unsubscribed_at DATETIME,
+    last_notified_change_id INTEGER,
+    last_notified_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (email, permit_number),
+    FOREIGN KEY (permit_number) REFERENCES permits(permit_number)
+);
+
 CREATE INDEX IF NOT EXISTS idx_contractors_slug ON contractors(slug);
 CREATE INDEX IF NOT EXISTS idx_contractors_specialty ON contractors(specialty);
 CREATE INDEX IF NOT EXISTS idx_contractors_license_number ON contractors(license_number);
@@ -103,6 +122,9 @@ CREATE INDEX IF NOT EXISTS idx_permits_contractor_license ON permits(contractor_
 CREATE INDEX IF NOT EXISTS idx_permits_last_enriched_at ON permits(last_enriched_at);
 CREATE INDEX IF NOT EXISTS idx_permit_status_changes_changed_at ON permit_status_changes(changed_at);
 CREATE INDEX IF NOT EXISTS idx_permit_status_changes_permit_number ON permit_status_changes(permit_number);
+CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_status ON permit_alert_subscriptions(status);
+CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_permit ON permit_alert_subscriptions(permit_number);
+CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_email ON permit_alert_subscriptions(email);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
 
