@@ -3470,6 +3470,9 @@ async function rebuildEntityGraph(env) {
 
   // Clear derived tables and reset permit links (single transaction).
   await env.DB.batch([
+    // Older production schemas enforce permits.address_id as a foreign key.
+    // Clear those links before deleting the referenced graph rows.
+    P("UPDATE permits SET address_id = NULL, project_id = NULL"),
     P("DELETE FROM project_permits"),
     P("DELETE FROM permit_participants"),
     P("DELETE FROM project_participants"),
@@ -3478,7 +3481,6 @@ async function rebuildEntityGraph(env) {
     P("DELETE FROM neighborhoods"),
     P("DELETE FROM addresses"),
     P("DELETE FROM people_orgs"),
-    P("UPDATE permits SET address_id = NULL, project_id = NULL"),
   ]);
 
   // addresses
