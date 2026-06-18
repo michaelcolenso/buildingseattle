@@ -1458,3 +1458,31 @@ test("renderProjectReviewSummary aggregates across permits and hides when no rev
   assert.match(html, /350/); // city control (500 - 150)
   assert.doesNotMatch(html, /null|NaN|undefined/);
 });
+
+test("renderPermitTimeline shows plan-review and ready-to-issue milestones when present", () => {
+  const html = renderPermitTimeline({
+    status: "pending",
+    applied_date: "2025-01-02",
+    plan_review_complete_date: "2025-06-15",
+    ready_to_issue_date: "2025-07-01",
+    issued_date: null,
+    number_review_cycles: 3,
+  });
+  assert.match(html, /Reviews Done/);
+  assert.match(html, /June 15, 2025/);
+  assert.match(html, /Ready to Issue/);
+  assert.match(html, /July 1, 2025/);
+  // ready-to-issue but not yet issued -> the sharpened next-step hint
+  assert.match(html, /ready to issue/i);
+});
+
+test("renderPermitTimeline omits optional milestones when their dates are absent", () => {
+  const html = renderPermitTimeline({
+    status: "active",
+    applied_date: "2025-01-02",
+    issued_date: "2025-03-03",
+    number_review_cycles: 1,
+  });
+  assert.doesNotMatch(html, /Reviews Done|Ready to Issue/);
+  assert.doesNotMatch(html, /null|NaN|undefined/);
+});
