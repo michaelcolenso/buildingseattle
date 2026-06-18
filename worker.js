@@ -2215,6 +2215,114 @@ async function renderPermitBrowser(request, env) {
   });
 }
 
+// Renders a permit's review journey as a stepped timeline card (pure: takes a
+// permit row, returns an HTML string, or "" when there is nothing to show).
+// Mirrors Seattle DCI's "Construction Permit Timeline" using fields we already
+// store: total_days_plan_review is the headline "Plan Review Days, Total", and
+// "City control" is that total minus the days the applicant held the permit for
+// corrections (days_out_corrections) — matching SDCI's own methodology.
+export function renderPermitTimeline(permit) {
+  const fmtDate = (d) =>
+    d ? new Date(d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : null;
+  const num = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const status = String(permit.status || "").toLowerCase();
+  const applied = fmtDate(permit.applied_date);
+  const issued = fmtDate(permit.issued_date);
+  const completed = fmtDate(permit.completed_date);
+  const expires = fmtDate(permit.expires_date);
+
+  const totalDays = num(permit.total_days_plan_review);
+  const corrections = num(permit.days_out_corrections);
+  const cycles = num(permit.number_review_cycles);
+  const cityDays =
+    totalDays !== null && corrections !== null && totalDays - corrections >= 0 ? totalDays - corrections : null;
+
+  const hasReview = totalDays !== null || corrections !== null || cycles !== null;
+  const hasAnyDate = !!(applied || issued || completed || expires);
+  if (!hasReview && !hasAnyDate) return "";
+
+  // Milestone nodes in chronological order; "reached" controls the fill color.
+  const reviewDetail =
+    cycles !== null ? `${cycles} cycle${cycles === 1 ? "" : "s"}` : applied && !issued ? "In progress" : null;
+  const nodes = [
+    { label: "Applied", detail: applied, reached: !!applied },
+    { label: "In Review", detail: reviewDetail, reached: !!applied },
+    { label: "Issued", detail: issued, reached: !!issued },
+    { label: "Completed", detail: completed, reached: !!completed },
+    { label: "Expires", detail: expires, reached: !!expires },
+  ];
+  const nodesHtml = nodes
+    .map((n) => {
+      const detail = n.detail
+        ? `<div class="timeline-date">${escapeHtml(n.detail)}</div>`
+        : `<div class="timeline-date muted">&mdash;</div>`;
+      return `<div class="timeline-node${n.reached ? " reached" : ""}"><div class="timeline-dot"></div><div class="timeline-label">${escapeHtml(
+        n.label,
+      )}</div>${detail}</div>`;
+    })
+    .join('<div class="timeline-bar"></div>');
+
+  // Metrics strip — only cells that actually have data (like enrichmentFields).
+  const metrics = [
+    ["Plan Review Days — Total", totalDays],
+    ["Plan Review Days — City Control", cityDays],
+    ["Days in Applicant Control", corrections],
+    ["Review Cycles", cycles],
+  ].filter(([, v]) => v !== null);
+  const metricsHtml = metrics.length
+    ? `<div class="timeline-metrics">${metrics
+        .map(
+          ([label, v]) =>
+            `<div class="timeline-metric"><div class="timeline-metric-value">${v.toLocaleString()}</div><div class="timeline-metric-label">${escapeHtml(
+              label,
+            )}</div></div>`,
+        )
+        .join("")}</div>`
+    : "";
+
+  // Conservative "next step" hint derived from status/dates (we do not have
+  // per-cycle City-vs-applicant ownership, so wording stays modest).
+  let nextStep = null;
+  if (completed || status === "completed") nextStep = "All reviews complete — permit closed out.";
+  else if (issued || status === "active") nextStep = "Permit issued — construction underway.";
+  else if (applied) nextStep = "In City review — awaiting the next action.";
+  const nextStepHtml = nextStep
+    ? `<div class="timeline-next"><span class="timeline-next-label">Next step</span>${escapeHtml(nextStep)}</div>`
+    : "";
+
+  return `
+                <div class="card card-full timeline-card">
+                    <style>
+                      .timeline{display:flex;flex-wrap:wrap;align-items:flex-start;gap:0.25rem;margin-top:1rem}
+                      .timeline-node{display:flex;flex-direction:column;align-items:center;text-align:center;flex:1 1 90px;min-width:78px}
+                      .timeline-bar{flex:1 1 18px;min-width:14px;height:2px;background:var(--border);margin-top:7px}
+                      .timeline-dot{width:16px;height:16px;border-radius:50%;background:var(--bg-alt);border:2px solid var(--border)}
+                      .timeline-node.reached .timeline-dot{background:var(--accent);border-color:var(--accent)}
+                      .timeline-label{font-size:0.72rem;font-weight:700;margin-top:0.45rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.03em}
+                      .timeline-node.reached .timeline-label{color:var(--primary)}
+                      .timeline-date{font-size:0.8rem;color:var(--text);margin-top:0.15rem}
+                      .timeline-date.muted{color:var(--text-muted)}
+                      .timeline-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-top:1.5rem}
+                      .timeline-metric{background:var(--bg-alt);border:1px solid var(--border);border-radius:0.5rem;padding:0.85rem 1rem;text-align:center}
+                      .timeline-metric-value{font-size:1.5rem;font-weight:800;color:var(--accent);line-height:1.1}
+                      .timeline-metric-label{font-size:0.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-top:0.3rem}
+                      .timeline-next{margin-top:1.25rem;font-size:0.9rem;color:var(--text)}
+                      .timeline-next-label{display:inline-block;font-weight:700;color:var(--primary);margin-right:0.5rem;text-transform:uppercase;font-size:0.68rem;letter-spacing:0.05em}
+                      .timeline-foot{margin-top:1rem;font-size:0.72rem;color:var(--text-muted);line-height:1.5}
+                    </style>
+                    <div class="card-label">Construction Permit Timeline</div>
+                    <div class="timeline">${nodesHtml}</div>
+                    ${metricsHtml}
+                    ${nextStepHtml}
+                    <div class="timeline-foot">Plan-review data from Seattle DCI. &ldquo;City control&rdquo; is total plan-review days minus the days the applicant held the permit for corrections.</div>
+                </div>`;
+}
+
 async function renderPermitDetail(permitNumber, env, request) {
   const canonical = BASE_URL + "/permits/" + encodeURIComponent(permitNumber);
   // Prefer the entity-graph-enriched query; fall back gracefully if the graph
@@ -2456,6 +2564,7 @@ async function renderPermitDetail(permitNumber, env, request) {
       `
     : "";
   const primaryLeadLabel = "Email Me Permit Updates";
+  const timelineCard = renderPermitTimeline(permit);
 
   const permitType =
     typeMap[(permit.type || "").toLowerCase()] ||
@@ -2759,6 +2868,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </span>
             </div>
             <div class="detail-grid">
+                ${timelineCard}
                 ${entityLinksCard}
                 <div class="card">
                     <div class="card-label">Project Details</div>
@@ -3753,6 +3863,68 @@ function entBreadcrumb(items) {
 
 function entStat(label, value) {
   return `<div class="metric"><div style="font-size:1.4rem;font-weight:800;color:var(--primary);">${value}</div><div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(label)}</div></div>`;
+}
+
+// Aggregates plan-review metrics across a project's clustered permits into a
+// summary card (pure). Returns "" when no permit carries review data so the
+// project page is unchanged for projects without it.
+export function renderProjectReviewSummary(permits) {
+  const rows = Array.isArray(permits) ? permits : [];
+  const num = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  let totalDays = 0;
+  let corrections = 0;
+  let cycles = 0;
+  let hasDays = false;
+  let hasCorr = false;
+  let hasCycles = false;
+  let firstApplied = null;
+  let lastDone = null;
+  for (const p of rows) {
+    const td = num(p.total_days_plan_review);
+    if (td !== null) {
+      totalDays += td;
+      hasDays = true;
+    }
+    const dc = num(p.days_out_corrections);
+    if (dc !== null) {
+      corrections += dc;
+      hasCorr = true;
+    }
+    const cy = num(p.number_review_cycles);
+    if (cy !== null) {
+      cycles += cy;
+      hasCycles = true;
+    }
+    if (p.applied_date) {
+      const d = new Date(p.applied_date);
+      if (!Number.isNaN(d.getTime()) && (!firstApplied || d < firstApplied)) firstApplied = d;
+    }
+    for (const f of [p.completed_date, p.issued_date]) {
+      if (!f) continue;
+      const d = new Date(f);
+      if (!Number.isNaN(d.getTime()) && (!lastDone || d > lastDone)) lastDone = d;
+    }
+  }
+  if (!hasDays && !hasCorr && !hasCycles) return "";
+
+  const cityDays = hasDays && hasCorr && totalDays - corrections >= 0 ? totalDays - corrections : null;
+  const stats = [];
+  if (firstApplied && lastDone) stats.push(entStat("Review span", `${entDate(firstApplied)} &rarr; ${entDate(lastDone)}`));
+  if (hasDays) stats.push(entStat("Plan review days (total)", totalDays.toLocaleString()));
+  if (cityDays !== null) stats.push(entStat("City control days", cityDays.toLocaleString()));
+  if (hasCorr) stats.push(entStat("Applicant correction days", corrections.toLocaleString()));
+  if (hasCycles) stats.push(entStat("Review cycles", cycles.toLocaleString()));
+
+  return `
+        <div class="card">
+          <h2>Review timeline</h2>
+          <div class="stat-row">${stats.join("")}</div>
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0;">Plan-review metrics aggregated across this project's permits, from Seattle DCI. "City control days" is total plan-review days minus the days applicants held permits for corrections.</p>
+        </div>`;
 }
 
 function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType = "website", body, activeNav = "permits" }) {
@@ -5371,6 +5543,7 @@ async function renderProjectPage(slug, env, request) {
           </div>
           ${project.description_summary ? `<p style="margin-top:0.5rem;">${escapeHtml(project.description_summary)}</p>` : ""}
         </div>
+        ${renderProjectReviewSummary(permits)}
         <div class="card">
           <h2>Permit records (${permits.length})</h2>
           ${entPermitRows(permits)}
