@@ -462,8 +462,9 @@ const PERMIT_UPSERT_SQL = `
     applied_date, issued_date, completed_date,
     housing_units_added, housing_units_removed, housing_category,
     dwelling_unit_type, zoning, parent_permit_number, related_mup,
-    number_review_cycles, total_days_plan_review, days_out_corrections
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    number_review_cycles, total_days_plan_review, days_out_corrections,
+    plan_review_complete_date, ready_to_issue_date
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(permit_number) DO UPDATE SET
     contractor_id = COALESCE(excluded.contractor_id, permits.contractor_id),
     applicant_name = COALESCE(excluded.applicant_name, permits.applicant_name),
@@ -487,6 +488,8 @@ const PERMIT_UPSERT_SQL = `
     number_review_cycles = excluded.number_review_cycles,
     total_days_plan_review = excluded.total_days_plan_review,
     days_out_corrections = excluded.days_out_corrections,
+    plan_review_complete_date = excluded.plan_review_complete_date,
+    ready_to_issue_date = excluded.ready_to_issue_date,
     updated_at = CURRENT_TIMESTAMP
 `;
 
@@ -2232,6 +2235,8 @@ export function renderPermitTimeline(permit) {
 
   const status = String(permit.status || "").toLowerCase();
   const applied = fmtDate(permit.applied_date);
+  const reviewsDone = fmtDate(permit.plan_review_complete_date);
+  const readyToIssue = fmtDate(permit.ready_to_issue_date);
   const issued = fmtDate(permit.issued_date);
   const completed = fmtDate(permit.completed_date);
   const expires = fmtDate(permit.expires_date);
@@ -2243,15 +2248,19 @@ export function renderPermitTimeline(permit) {
     totalDays !== null && corrections !== null && totalDays - corrections >= 0 ? totalDays - corrections : null;
 
   const hasReview = totalDays !== null || corrections !== null || cycles !== null;
-  const hasAnyDate = !!(applied || issued || completed || expires);
+  const hasAnyDate = !!(applied || reviewsDone || readyToIssue || issued || completed || expires);
   if (!hasReview && !hasAnyDate) return "";
 
   // Milestone nodes in chronological order; "reached" controls the fill color.
+  // "Reviews Done" / "Ready to Issue" are optional and only shown when SDCI has
+  // supplied the date, so the bar stays clean for permits that lack them.
   const reviewDetail =
     cycles !== null ? `${cycles} cycle${cycles === 1 ? "" : "s"}` : applied && !issued ? "In progress" : null;
   const nodes = [
     { label: "Applied", detail: applied, reached: !!applied },
     { label: "In Review", detail: reviewDetail, reached: !!applied },
+    ...(reviewsDone ? [{ label: "Reviews Done", detail: reviewsDone, reached: true }] : []),
+    ...(readyToIssue ? [{ label: "Ready to Issue", detail: readyToIssue, reached: true }] : []),
     { label: "Issued", detail: issued, reached: !!issued },
     { label: "Completed", detail: completed, reached: !!completed },
     { label: "Expires", detail: expires, reached: !!expires },
@@ -2290,6 +2299,7 @@ export function renderPermitTimeline(permit) {
   let nextStep = null;
   if (completed || status === "completed") nextStep = "All reviews complete — permit closed out.";
   else if (issued || status === "active") nextStep = "Permit issued — construction underway.";
+  else if (readyToIssue) nextStep = "Plan review complete — ready to issue, awaiting final fees/issuance.";
   else if (applied) nextStep = "In City review — awaiting the next action.";
   const nextStepHtml = nextStep
     ? `<div class="timeline-next"><span class="timeline-next-label">Next step</span>${escapeHtml(nextStep)}</div>`
@@ -6089,6 +6099,8 @@ function normalizeSdciPermits(rawPermits) {
       number_review_cycles: intOrNull(item.numberreviewcycles),
       total_days_plan_review: intOrNull(item.totaldaysplanreview),
       days_out_corrections: intOrNull(item.daysoutcorrections),
+      plan_review_complete_date: extractDate(item.planreviewcompletedate),
+      ready_to_issue_date: extractDate(item.readytoissuedate),
       applied_date: extractDate(item.applieddate),
       issued_date: extractDate(item.issueddate),
       completed_date: extractDate(item.completeddate),
@@ -6177,6 +6189,8 @@ async function upsertScheduledPermits(env, permits) {
         intOrNull(permit.number_review_cycles),
         intOrNull(permit.total_days_plan_review),
         intOrNull(permit.days_out_corrections),
+        dateOrNull(permit.plan_review_complete_date),
+        dateOrNull(permit.ready_to_issue_date),
       );
     });
 
@@ -6377,6 +6391,8 @@ async function ingestPermit(request, env) {
       intOrNull(data.number_review_cycles),
       intOrNull(data.total_days_plan_review),
       intOrNull(data.days_out_corrections),
+      dateOrNull(data.plan_review_complete_date),
+      dateOrNull(data.ready_to_issue_date),
     )
     .run();
 
@@ -6487,6 +6503,8 @@ async function ingestPermitBatch(request, env) {
           intOrNull(item.number_review_cycles),
           intOrNull(item.total_days_plan_review),
           intOrNull(item.days_out_corrections),
+          dateOrNull(item.plan_review_complete_date),
+          dateOrNull(item.ready_to_issue_date),
         ),
       );
     }
