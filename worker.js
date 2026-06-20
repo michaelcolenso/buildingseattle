@@ -680,12 +680,6 @@ function renderFooter() {
 // top contractors, neighborhoods, and latest activity. Renders nothing until
 // the graph has been built at least once.
 function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighborhoods, latestActivity }) {
-  const hasData =
-    (topAddresses && topAddresses.length) ||
-    (topGraphContractors && topGraphContractors.length) ||
-    (latestActivity && latestActivity.length);
-  if (!hasData) return "";
-
   const money = (n) => {
     const v = Number(n);
     return Number.isFinite(v) && v > 0 ? `$${Math.round(v).toLocaleString()}` : "—";
@@ -727,6 +721,28 @@ function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighbor
     )
     .join("");
 
+  // Only render panels that have data, skip empty ones
+  const panels = [
+    addrItems && `<div class="data-panel">
+                    <div class="panel-header"><h3>Top Addresses</h3></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${addrItems}</ul></div>
+                </div>`,
+    contractorItems && `<div class="data-panel">
+                    <div class="panel-header"><h3>Top Contractors</h3></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${contractorItems}</ul></div>
+                </div>`,
+    activityItems && `<div class="data-panel">
+                    <div class="panel-header"><h3>Latest Activity</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${activityItems}</ul></div>
+                </div>`,
+    neighborhoodChips && `<div class="data-panel">
+                    <div class="panel-header"><h3>Neighborhoods</h3></div>
+                    <div class="panel-content"><div style="display:flex;flex-wrap:wrap;gap:0.5rem;">${neighborhoodChips}</div></div>
+                </div>`,
+  ].filter(Boolean);
+
+  if (panels.length === 0) return "";
+
   return `<section class="live-data" id="graph" style="background:var(--bg-alt);">
         <div class="container">
             <div class="section-header">
@@ -734,22 +750,7 @@ function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighbor
                 <p>Permits rolled up into properties, projects, contractors, and neighborhoods.</p>
             </div>
             <div class="data-grid">
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Top Addresses</h3></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${addrItems || '<li class="loading">No data yet</li>'}</ul></div>
-                </div>
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Top Contractors</h3></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${contractorItems || '<li class="loading">No data yet</li>'}</ul></div>
-                </div>
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Latest Activity</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${activityItems || '<li class="loading">No data yet</li>'}</ul></div>
-                </div>
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Neighborhoods</h3></div>
-                    <div class="panel-content"><div style="display:flex;flex-wrap:wrap;gap:0.5rem;">${neighborhoodChips || '<span class="loading">No data yet</span>'}</div></div>
-                </div>
+                ${panels.join("\n                ")}
             </div>
         </div>
     </section>`;
