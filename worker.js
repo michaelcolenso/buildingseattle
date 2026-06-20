@@ -4161,7 +4161,17 @@ function insightsStyles() {
       .ins-feature{display:block;text-decoration:none;color:inherit}
       .ins-feature .card{height:100%;margin:0;transition:box-shadow .2s ease,transform .2s ease}
       .ins-feature:hover .card{box-shadow:var(--shadow);transform:translateY(-2px)}
-      @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}}
+      .nb-contractor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1rem}
+      .nb-contractor-card{border:1px solid var(--border);border-radius:16px;background:var(--bg);padding:1rem}
+      .nb-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;border-bottom:1px solid var(--border);padding-bottom:0.75rem;margin-bottom:0.75rem}
+      .nb-card-head h3{margin:0;font-size:1rem;color:var(--text)}
+      .nb-card-head span{color:var(--text-muted);font-size:0.78rem;font-weight:700;white-space:nowrap}
+      .nb-contractor-card ol{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.55rem}
+      .nb-contractor-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:0.6rem;font-size:0.84rem}
+      .nb-rank{display:inline-flex;align-items:center;justify-content:center;width:1.45rem;height:1.45rem;border-radius:999px;background:rgba(59,130,246,0.12);color:var(--accent);font-weight:800;font-size:0.72rem}
+      .nb-count{color:var(--text-muted);font-size:0.76rem;font-weight:700;white-space:nowrap}
+      .nb-empty{color:var(--text-muted);font-size:0.84rem}
+      @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}.nb-contractor-grid{grid-template-columns:1fr}.nb-contractor-row{grid-template-columns:auto 1fr}.nb-count{grid-column:2;white-space:normal}}
   </style>`;
 }
 
@@ -4977,8 +4987,39 @@ async function getNetworkData(env) {
      FROM contractors c JOIN permits p ON p.contractor_id = c.id
      GROUP BY c.id ORDER BY permits DESC LIMIT 16`,
   );
+  const allNeighborhoods = await safeAll(
+    env,
+    `SELECT neighborhood AS name, COUNT(*) AS permits
+     FROM permits
+     WHERE neighborhood IS NOT NULL AND neighborhood != ''
+     GROUP BY neighborhood ORDER BY neighborhood ASC`,
+  );
+  const contractorRows = await safeAll(
+    env,
+    `SELECT p.neighborhood AS neighborhood, c.id AS contractor_id, c.name AS contractor_name, c.slug AS contractor_slug, COUNT(*) AS permits
+     FROM permits p JOIN contractors c ON c.id = p.contractor_id
+     WHERE p.neighborhood IS NOT NULL AND p.neighborhood != ''
+     GROUP BY p.neighborhood, c.id
+     ORDER BY p.neighborhood ASC, permits DESC, c.name ASC`,
+  );
+  const contractorsByNeighborhood = new Map();
+  for (const row of contractorRows) {
+    const name = row.neighborhood;
+    if (!contractorsByNeighborhood.has(name)) contractorsByNeighborhood.set(name, []);
+    contractorsByNeighborhood.get(name).push({
+      name: row.contractor_name,
+      slug: row.contractor_slug,
+      permits: Number(row.permits) || 0,
+    });
+  }
+  const neighborhoodContractors = allNeighborhoods.map((n) => ({
+    name: n.name,
+    permits: Number(n.permits) || 0,
+    contractors: (contractorsByNeighborhood.get(n.name) || []).slice(0, 5),
+  }));
+
   if (!topContractors.length) {
-    return { contractors: [], neighborhoods: [], edges: [] };
+    return { contractors: [], neighborhoods: [], edges: [], neighborhood_contractors: neighborhoodContractors };
   }
   const ids = topContractors.map((c) => Number(c.id));
   const placeholders = ids.map(() => "?").join(",");
@@ -5015,6 +5056,7 @@ async function getNetworkData(env) {
     contractors: topContractors.map((c) => ({ name: c.name, slug: c.slug, permits: Number(c.permits) || 0 })),
     neighborhoods,
     edges,
+    neighborhood_contractors: neighborhoodContractors,
   };
 }
 
@@ -5117,20 +5159,29 @@ async function renderNetworkPage(env) {
     })
     .join("");
 
-  // Inverse fallback: each neighborhood's top contractors as text.
-  const neighborhoodAdjacency = data.neighborhoods
+  // Every neighborhood's top contractors, independently calculated from all
+  // attributed permits instead of only the contractors shown in the SVG.
+  const neighborhoodContractorCards = (data.neighborhood_contractors || [])
     .map((n) => {
-      const contractors = data.edges
-        .filter((e) => e.neighborhood === n.name)
-        .sort((a, b) => b.count - a.count)
-        .map(
-          (e) =>
-            `<a class="ent-link" href="/contractor/${encodeURIComponent(e.contractor)}">${escapeHtml(e.contractor_name)}</a> (${e.count})`,
-        )
-        .join(", ");
-      return contractors
-        ? `<li><span style="font-weight:700;color:var(--text);">${escapeHtml(n.name)}</span> <span style="color:var(--text-muted);font-size:0.82rem;">→ ${contractors}</span></li>`
-        : "";
+      const contractorRows = n.contractors.length
+        ? n.contractors
+            .map(
+              (c, index) =>
+                `<li class="nb-contractor-row">
+                  <span class="nb-rank">${index + 1}</span>
+                  <a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(c.name)}</a>
+                  <span class="nb-count">${Number(c.permits).toLocaleString()} permit${Number(c.permits) === 1 ? "" : "s"}</span>
+                </li>`,
+            )
+            .join("")
+        : `<li class="nb-empty">No attributed contractors yet</li>`;
+      return `<article class="nb-contractor-card">
+        <div class="nb-card-head">
+          <h3>${escapeHtml(n.name)}</h3>
+          <span>${Number(n.permits).toLocaleString()} permit${Number(n.permits) === 1 ? "" : "s"}</span>
+        </div>
+        <ol>${contractorRows}</ol>
+      </article>`;
     })
     .join("");
 
@@ -5157,15 +5208,14 @@ async function renderNetworkPage(env) {
       ${svgBipartiteNetwork(data.contractors, data.neighborhoods, data.edges)}
       <p class="pr-note">Blue = contractors (sized by total permits) · green = neighborhoods (sized by permits from these contractors). Click a contractor to open their page. Each contractor is linked to its top 4 neighborhoods.</p>
     </div>
-    <div class="ent-grid">
-      <div class="card">
-        <h2>Top neighborhoods by contractor</h2>
-        <ul class="ent-list">${adjacency}</ul>
-      </div>
-      <div class="card">
-        <h2>Top contractors by neighborhood</h2>
-        <ul class="ent-list">${neighborhoodAdjacency}</ul>
-      </div>
+    <div class="card">
+      <h2>Top neighborhoods by contractor</h2>
+      <ul class="ent-list">${adjacency}</ul>
+    </div>
+    <div class="card">
+      <h2>Top contractors by neighborhood</h2>
+      <p class="pr-note">Includes every neighborhood with permit activity. Contractor rankings are recalculated across all attributed permits for that neighborhood.</p>
+      <div class="nb-contractor-grid">${neighborhoodContractorCards}</div>
     </div>
     <p class="pr-note">Raw nodes and edges available as JSON at <a class="ent-link" href="/api/network">/api/network</a>.</p>
     `
