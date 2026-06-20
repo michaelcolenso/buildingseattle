@@ -5116,6 +5116,23 @@ async function renderNetworkPage(env) {
     })
     .join("");
 
+  // Inverse fallback: each neighborhood's top contractors as text.
+  const neighborhoodAdjacency = data.neighborhoods
+    .map((n) => {
+      const contractors = data.edges
+        .filter((e) => e.neighborhood === n.name)
+        .sort((a, b) => b.count - a.count)
+        .map(
+          (e) =>
+            `<a class="ent-link" href="/contractor/${encodeURIComponent(e.contractor)}">${escapeHtml(e.contractor_name)}</a> (${e.count})`,
+        )
+        .join(", ");
+      return contractors
+        ? `<li><span style="font-weight:700;color:var(--text);">${escapeHtml(n.name)}</span> <span style="color:var(--text-muted);font-size:0.82rem;">→ ${contractors}</span></li>`
+        : "";
+    })
+    .join("");
+
   const emptyState = `
     <div class="card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No network data yet</h2>
@@ -5139,9 +5156,15 @@ async function renderNetworkPage(env) {
       ${svgBipartiteNetwork(data.contractors, data.neighborhoods, data.edges)}
       <p class="pr-note">Blue = contractors (sized by total permits) · green = neighborhoods (sized by permits from these contractors). Click a contractor to open their page. Each contractor is linked to its top 4 neighborhoods.</p>
     </div>
-    <div class="card">
-      <h2>Top neighborhoods by contractor</h2>
-      <ul class="ent-list">${adjacency}</ul>
+    <div class="ent-grid">
+      <div class="card">
+        <h2>Top neighborhoods by contractor</h2>
+        <ul class="ent-list">${adjacency}</ul>
+      </div>
+      <div class="card">
+        <h2>Top contractors by neighborhood</h2>
+        <ul class="ent-list">${neighborhoodAdjacency}</ul>
+      </div>
     </div>
     <p class="pr-note">Raw nodes and edges available as JSON at <a class="ent-link" href="/api/network">/api/network</a>.</p>
     `
