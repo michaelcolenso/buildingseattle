@@ -2637,7 +2637,7 @@ async function renderPermitDetail(permitNumber, env, request) {
     typeMap[(permit.type || "").toLowerCase()] ||
     (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
-  const metaDesc = `${permit.address || "Seattle location"}: ${permitType} permit (${permit.status || "new"}) in ${neighborhood}. Project value: ${valueFormatted}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
+  const metaDesc = `See what's being built at ${permit.address || "Seattle"}: a ${permitType} project valued at ${valueFormatted}, currently ${permit.status || "under review"} in ${neighborhood}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
@@ -2688,10 +2688,10 @@ async function renderPermitDetail(permitNumber, env, request) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	    <title>Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle</title>
+	    <title>${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle</title>
 	    <meta name="description" content="${safeMetaDesc}">
 	    <link rel="canonical" href="${canonical}">
-	    <meta property="og:title" content="Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle">
+	    <meta property="og:title" content="${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle">
 	    <meta property="og:description" content="${safeMetaDesc}">
     <meta property="og:type" content="article">
     <meta property="og:url" content="${canonical}">
@@ -5498,8 +5498,27 @@ async function renderAddressPage(slug, env, request) {
   const display = address.display_address;
   const noindex = permitCount === 0;
 
-  const title = `${display} Seattle Construction Permits & Project Activity`;
-  const description = `View construction permits, contractors, project history, estimated values, and recent activity for ${display} in Seattle.`;
+  // Build SEO title/description from actual permit data instead of a generic template.
+  // This helps match search intent for address queries ("what's being built at X?").
+  const latestPermit = permits[0];  // Already sorted by date DESC via SQL
+  const permitTypeLabel = latestPermit
+    ? ({ commercial: "Commercial Construction", residential: "Residential Construction",
+         industrial: "Industrial Construction", demolition: "Demolition" })[(latestPermit.type || "").toLowerCase()] ||
+      (latestPermit.type ? latestPermit.type.charAt(0).toUpperCase() + latestPermit.type.slice(1).toLowerCase() : "Construction")
+    : "Construction";
+  const valueStr = totalValue ? `$${parseInt(totalValue).toLocaleString()}` : "";
+  const latestContractor = latestPermit?.contractor_name || "";
+
+  const title = activePermits.length > 0
+    ? `${display} — Active ${permitTypeLabel} Project in Seattle | Building Seattle`
+    : `${display} — Latest ${permitTypeLabel} Activity in Seattle | Building Seattle`;
+
+  const descParts = [`See what's being built at ${display} in Seattle.`];
+  if (activePermits.length > 0) descParts.push(`${activePermits.length} active permit${activePermits.length !== 1 ? "s" : ""}.`);
+  if (valueStr) descParts.push(`Estimated value: ${valueStr}.`);
+  if (latestContractor) descParts.push(`Contractor: ${latestContractor}.`);
+  if (!activePermits.length && permits.length > 0) descParts.push(`${permits.length} total permit${permits.length !== 1 ? "s" : ""} on record.`);
+  const description = descParts.join(" ");
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
