@@ -804,10 +804,11 @@ async function handleRoot(request, env) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Seattle Construction Permits & Contractor Intelligence | Building Seattle</title>
-    <meta name="description" content="Track live Seattle construction permits, contractors, project values, and status changes from public records in one fast market-intelligence view.">
+    <meta name="description" content="Search Seattle construction permits, contractor activity, project values, neighborhoods, and status changes from public records. Find active building projects and development leads faster.">
+    <meta name="robots" content="index,follow,max-image-preview:large">
     <link rel="canonical" href="${canonical}">
     <meta property="og:title" content="Building Seattle | Seattle Construction Intelligence & Lead Generation">
-    <meta property="og:description" content="Real-time Seattle construction permits, contractor profiles, and development opportunities.">
+    <meta property="og:description" content="Search Seattle construction permits, contractor profiles, project values, neighborhoods, and development opportunities from public records.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary_large_image">
@@ -841,7 +842,12 @@ async function handleRoot(request, env) {
         @media (min-width: 1024px) { .hero-grid { grid-template-columns: 1fr 1fr; } }
         .hero h1 { font-size: 3rem; line-height: 1.1; font-weight: 800; margin-bottom: 1.5rem; letter-spacing: -0.02em; }
         @media (min-width: 768px) { .hero h1 { font-size: 4rem; } }
-        .hero p { font-size: 1.25rem; margin-bottom: 2rem; max-width: 540px; }
+        .hero p { font-size: 1.25rem; margin-bottom: 2rem; max-width: 620px; }
+        .hero-proof { display: grid; grid-template-columns: 1fr; gap: 0.75rem; margin: 1.5rem 0 0; max-width: 680px; }
+        .proof-item { display: flex; gap: 0.65rem; align-items: flex-start; padding: 0.85rem 1rem; border: 1px solid rgba(255,255,255,0.16); background: rgba(15,23,42,0.38); color: rgba(255,255,255,0.86); backdrop-filter: blur(10px); }
+        .proof-item strong { display: block; color: #fff; font-size: 0.9rem; line-height: 1.25; }
+        .proof-item span { display: block; color: rgba(255,255,255,0.72); font-size: 0.78rem; margin-top: 0.15rem; }
+        @media (min-width: 768px) { .hero-proof { grid-template-columns: repeat(3, 1fr); } }
         .ops-strip { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.25rem 0 2rem; }
         .ops-chip { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2.25rem; padding: 0.45rem 0.7rem; border: 1px solid rgba(255,255,255,0.18); background: rgba(15,23,42,0.42); color: rgba(255,255,255,0.86); backdrop-filter: blur(10px); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
         .ops-dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; background: var(--success); box-shadow: 0 0 0 0 rgba(16,185,129,0.45); animation: radarPulse 1.8s infinite; }
@@ -858,6 +864,17 @@ async function handleRoot(request, env) {
         .section-header p { color: var(--text-muted); font-size: 1.125rem; }
         .live-data { padding: 6rem 0; background: var(--bg); }
         .data-grid { display: grid; grid-template-columns: 1fr; gap: 2rem; margin-top: 3rem; }
+        .seo-grid { display: grid; grid-template-columns: 1fr; gap: 1.25rem; margin-top: 2.5rem; }
+        @media (min-width: 768px) { .seo-grid { grid-template-columns: repeat(3, 1fr); } }
+        .seo-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; box-shadow: 0 8px 30px rgba(15,23,42,0.04); }
+        .seo-card h3 { color: var(--primary); font-size: 1.05rem; margin-bottom: 0.65rem; }
+        .seo-card p { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 1rem; }
+        .seo-card a { color: var(--accent); font-weight: 700; text-decoration: none; }
+        .seo-card a:hover { text-decoration: underline; }
+        .faq-list { max-width: 880px; margin: 2.5rem auto 0; display: grid; gap: 1rem; }
+        .faq-item { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem 1.5rem; }
+        .faq-item h3 { color: var(--primary); font-size: 1rem; margin-bottom: 0.45rem; }
+        .faq-item p { color: var(--text-muted); margin: 0; }
         @media (min-width: 768px) { .data-grid { grid-template-columns: repeat(2, 1fr); } }
         .data-panel { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 0.75rem; overflow: hidden; box-shadow: 0 14px 45px rgba(15,23,42,0.06); }
         .panel-header { padding: 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
@@ -915,7 +932,7 @@ async function handleRoot(request, env) {
           *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.001ms !important; }
         }
     </style>
-    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","name":"Building Seattle","url":"https://buildingseattle.com","logo":"https://buildingseattle.com/og-image.png","description":"Real-time Seattle construction permits, contractor profiles, and development opportunities."},{"@type":"WebSite","name":"Building Seattle","url":"https://buildingseattle.com","potentialAction":{"@type":"SearchAction","target":"https://buildingseattle.com/permits?neighborhood={search_term_string}","query-input":"required name=search_term_string"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"}]}]}</script>
+    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","name":"Building Seattle","url":"https://buildingseattle.com","logo":"https://buildingseattle.com/og-image.png","description":"Real-time Seattle construction permits, contractor profiles, and development opportunities."},{"@type":"WebSite","name":"Building Seattle","url":"https://buildingseattle.com","potentialAction":{"@type":"SearchAction","target":"https://buildingseattle.com/permits?q={search_term_string}","query-input":"required name=search_term_string"}},{"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What can I search on Building Seattle?","acceptedAnswer":{"@type":"Answer","text":"Browse Seattle construction permits by address, neighborhood, permit type, status, contractor, project value, and recent activity."}},{"@type":"Question","name":"Where does the permit data come from?","acceptedAnswer":{"@type":"Answer","text":"Building Seattle aggregates public Seattle Department of Construction and Inspections permit records and enriches them into property, contractor, and neighborhood views."}},{"@type":"Question","name":"How does Building Seattle help with construction lead generation?","acceptedAnswer":{"@type":"Answer","text":"The site highlights active permits, contractors, project values, addresses, and neighborhoods so teams can prioritize outreach and market research."}}]},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"}]}]}</script>
 </head>
 <body>
     ${renderNav("home")}
@@ -927,11 +944,16 @@ async function handleRoot(request, env) {
                 <div class="hero-content">
                     <div class="hero-badge"><span class="ops-dot"></span><span>Now tracking live permits</span></div>
                     <h1>Construction intelligence for the Seattle metro</h1>
-                    <p>Track live Seattle permits, explore active contractors, and capture opportunities without bouncing between city portals and PDFs.</p>
+                    <p>Search live Seattle construction permits, compare contractor activity, and spot new development leads by address, neighborhood, permit type, status, and project value.</p>
                     <div class="ops-strip">
                         <div class="ops-chip"><span class="ops-dot"></span><span>Seattle DCI feed</span></div>
                         <div class="ops-chip">Daily ingest</div>
                         <div class="ops-chip">Permit value radar</div>
+                    </div>
+                    <div class="hero-proof" aria-label="Building Seattle use cases">
+                        <div class="proof-item"><div aria-hidden="true">⌕</div><div><strong>Find projects earlier</strong><span>Monitor applications, issued permits, and status changes.</span></div></div>
+                        <div class="proof-item"><div aria-hidden="true">▦</div><div><strong>Research any property</strong><span>Jump from permits to addresses, projects, and neighborhoods.</span></div></div>
+                        <div class="proof-item"><div aria-hidden="true">↗</div><div><strong>Prioritize outreach</strong><span>Use value, type, and contractor signals to qualify leads.</span></div></div>
                     </div>
                     <div style="display:flex;gap:1rem;flex-wrap:wrap;">
                         <a class="btn btn-primary" href="/permits">Browse Live Permits</a>
@@ -978,6 +1000,25 @@ async function handleRoot(request, env) {
     </section>
 
     ${graphSection}
+
+    <section class="live-data" id="use-cases" style="background:var(--bg-alt);">
+        <div class="container">
+            <div class="section-header">
+                <h2>Built for Seattle permit research and lead generation</h2>
+                <p>Building Seattle turns public records into crawlable, searchable pages that help owners, contractors, developers, and real estate teams understand what is being built.</p>
+            </div>
+            <div class="seo-grid">
+                <article class="seo-card"><h3>For contractors and suppliers</h3><p>Discover active building permits, remodels, additions, and high-value projects before competitors find them manually.</p><a href="/permits">Search Seattle permits</a></article>
+                <article class="seo-card"><h3>For developers and investors</h3><p>Track neighborhood development activity, project values, permit velocity, and active addresses across Seattle.</p><a href="/insights/pipeline">View pipeline insights</a></article>
+                <article class="seo-card"><h3>For market researchers</h3><p>Use contractor profiles, public API access, and structured permit pages to monitor the Seattle construction market.</p><a href="/api-docs">Explore the API</a></article>
+            </div>
+            <div class="faq-list" aria-label="Seattle permit data FAQ">
+                <div class="faq-item"><h3>What can I search on Building Seattle?</h3><p>You can browse Seattle construction permits by address, neighborhood, permit type, status, contractor, project value, and recent activity.</p></div>
+                <div class="faq-item"><h3>Where does the permit data come from?</h3><p>The site aggregates public Seattle Department of Construction and Inspections permit records and enriches them into property, contractor, and neighborhood views.</p></div>
+                <div class="faq-item"><h3>How does this help with SEO and traffic?</h3><p>Each crawlable permit, contractor, address, project, neighborhood, and insight page creates internal links around high-intent Seattle construction search terms.</p></div>
+            </div>
+        </div>
+    </section>
 
     <section class="cta">
         <div class="container">
