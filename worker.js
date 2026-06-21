@@ -1001,6 +1001,21 @@ async function handleRoot(request, env) {
 
     ${graphSection}
 
+    <section style="padding:4rem 0;background:var(--bg-alt);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+        <div class="container" style="max-width:800px;">
+            <h2 style="font-size:2rem;font-weight:800;color:var(--primary);margin-bottom:1.5rem;">Seattle Construction Market Activity</h2>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
+                Building Seattle tracks construction permits across the Seattle metro area — from commercial towers in South Lake Union to residential renovations in Ballard and Capitol Hill. Every permit issued by the Seattle Department of Construction and Inspections is collected, organized, and made searchable so you can track who's building what, where, and with whom.
+            </p>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
+                The Seattle construction market covers everything from tenant improvements and new residential construction to major commercial projects and demolitions. Whether you're a contractor scoping new work, a developer tracking competition, or a property owner researching permit timelines, Building Seattle gives you the real-time market intelligence you need.
+            </p>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;">
+                Browse thousands of active permits by neighborhood, contractor, or project type. Monitor permit valuations, track review timelines, and discover which contractors are winning work in Seattle's most active development areas.
+            </p>
+        </div>
+    </section>
+
     <section class="live-data" id="use-cases" style="background:var(--bg-alt);">
         <div class="container">
             <div class="section-header">
@@ -2622,7 +2637,7 @@ async function renderPermitDetail(permitNumber, env, request) {
     typeMap[(permit.type || "").toLowerCase()] ||
     (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
-  const metaDesc = `${permit.address || "Seattle location"}: ${permitType} permit (${permit.status || "new"}) in ${neighborhood}. Project value: ${valueFormatted}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
+  const metaDesc = `See what's being built at ${permit.address || "Seattle"}: a ${permitType} project valued at ${valueFormatted}, currently ${permit.status || "under review"} in ${neighborhood}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
@@ -2673,10 +2688,10 @@ async function renderPermitDetail(permitNumber, env, request) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	    <title>Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle</title>
+	    <title>${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle</title>
 	    <meta name="description" content="${safeMetaDesc}">
 	    <link rel="canonical" href="${canonical}">
-	    <meta property="og:title" content="Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle">
+	    <meta property="og:title" content="${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle">
 	    <meta property="og:description" content="${safeMetaDesc}">
     <meta property="og:type" content="article">
     <meta property="og:url" content="${canonical}">
@@ -2920,8 +2935,10 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </span>
             </div>
             <div class="detail-grid">
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Permit Timeline &amp; Status</h2>
                 ${timelineCard}
                 ${entityLinksCard}
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Project Overview</h2>
                 <div class="card">
                     <div class="card-label">Project Details</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem;">
@@ -2932,6 +2949,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     </div>
                 </div>
 
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Contractor Information</h2>
                 <div class="card">
                     <div class="card-label">Contractor</div>
                     ${
@@ -2951,6 +2969,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     ${peopleCards}
                 </div>
 
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Location &amp; Map</h2>
                 <div class="card" style="padding: 0; overflow: hidden;">
 	                    <iframe width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
                     <div style="padding: 0.75rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: center;">
@@ -2963,6 +2982,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     <div class="card-label">Project Description</div>
 	                    <div class="description-text">${safeDescription}</div>
                 </div>
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Additional Details</h2>
                 ${enrichmentCards}
             </div>
 
@@ -3374,7 +3394,7 @@ async function renderContractorPage(slug, env, request) {
   const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
   const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
   const safeContractorMetaDescription = escapeHtml(
-    `${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.`,
+    `Learn about ${contractor.name}, a ${contractor.specialty || "construction"} contractor serving Seattle, WA. View ${activeProjects} active projects, ${permits.results.length} total permits, permit timelines, and review cycles from Seattle DCI data.`,
   );
   const contractorWebsite = safeHttpUrl(contractor.website);
   const contractorJsonLd = JSON.stringify({
@@ -3472,6 +3492,20 @@ async function renderContractorPage(slug, env, request) {
     <div class="container" style="padding:3rem 1.5rem">
         <div class="grid">
             <div>
+                <div class="card">
+                    <h2>About ${safeContractorName}</h2>
+                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0 0 1rem 0;">
+                        ${safeContractorName} is ${contractor.specialty ? `a ${escapeHtml(contractor.specialty)}` : "a construction"} contractor operating in Seattle, Washington. 
+                        Based on Seattle DCI permit records, this contractor has been involved in ${permits.results.length} permit${permits.results.length !== 1 ? "s" : ""} 
+                        across Seattle's neighborhoods${activeProjects > 0 ? `, with ${activeProjects} currently active` : ""}. 
+                        ${metrics.total_count > 0 ? `Permits by this contractor average ${permitDays} days from application to issuance, with an average of ${reviewCycles} review cycle${reviewCycles === "1.0" ? "" : "s"}.` : ""}
+                    </p>
+                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0;">
+                        ${contractor.description 
+                          ? escapeHtml(contractor.description) 
+                          : `Track ${contractor.name}'s Seattle construction projects including permit valuations, review timelines, and building activity across the city. Contractors listed on Building Seattle are drawn from public SDCI permit data and may include general contractors, subcontractors, and specialty trades.`}
+                    </p>
+                </div>
                 <div class="card">
                     <h2>Projects (${permits.results.length})</h2>
                     ${permits.results
@@ -5464,8 +5498,27 @@ async function renderAddressPage(slug, env, request) {
   const display = address.display_address;
   const noindex = permitCount === 0;
 
-  const title = `${display} Seattle Construction Permits & Project Activity`;
-  const description = `View construction permits, contractors, project history, estimated values, and recent activity for ${display} in Seattle.`;
+  // Build SEO title/description from actual permit data instead of a generic template.
+  // This helps match search intent for address queries ("what's being built at X?").
+  const latestPermit = permits[0];  // Already sorted by date DESC via SQL
+  const permitTypeLabel = latestPermit
+    ? ({ commercial: "Commercial Construction", residential: "Residential Construction",
+         industrial: "Industrial Construction", demolition: "Demolition" })[(latestPermit.type || "").toLowerCase()] ||
+      (latestPermit.type ? latestPermit.type.charAt(0).toUpperCase() + latestPermit.type.slice(1).toLowerCase() : "Construction")
+    : "Construction";
+  const valueStr = totalValue ? `$${parseInt(totalValue).toLocaleString()}` : "";
+  const latestContractor = latestPermit?.contractor_name || "";
+
+  const title = activePermits.length > 0
+    ? `${display} — Active ${permitTypeLabel} Project in Seattle | Building Seattle`
+    : `${display} — Latest ${permitTypeLabel} Activity in Seattle | Building Seattle`;
+
+  const descParts = [`See what's being built at ${display} in Seattle.`];
+  if (activePermits.length > 0) descParts.push(`${activePermits.length} active permit${activePermits.length !== 1 ? "s" : ""}.`);
+  if (valueStr) descParts.push(`Estimated value: ${valueStr}.`);
+  if (latestContractor) descParts.push(`Contractor: ${latestContractor}.`);
+  if (!activePermits.length && permits.length > 0) descParts.push(`${permits.length} total permit${permits.length !== 1 ? "s" : ""} on record.`);
+  const description = descParts.join(" ");
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
