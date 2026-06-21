@@ -172,6 +172,11 @@ export default {
         return secure(await renderNetworkPage(env));
       }
 
+      if (path === "/insights/insurance-alerts") {
+        ctx.waitUntil(logPageView(request, env, "/insights/insurance-alerts"));
+        return secure(await renderInsuranceAlertsPage(env));
+      }
+
       if (path === "/api/admin/stats") {
         const authError = requireAdminAuth(request, env);
         if (authError) return secure(authError);
@@ -978,6 +983,21 @@ async function handleRoot(request, env) {
     </section>
 
     ${graphSection}
+
+    <section style="padding:4rem 0;background:var(--bg-alt);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+        <div class="container" style="max-width:800px;">
+            <h2 style="font-size:2rem;font-weight:800;color:var(--primary);margin-bottom:1.5rem;">Seattle Construction Market Activity</h2>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
+                Building Seattle tracks construction permits across the Seattle metro area — from commercial towers in South Lake Union to residential renovations in Ballard and Capitol Hill. Every permit issued by the Seattle Department of Construction and Inspections is collected, organized, and made searchable so you can track who's building what, where, and with whom.
+            </p>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
+                The Seattle construction market covers everything from tenant improvements and new residential construction to major commercial projects and demolitions. Whether you're a contractor scoping new work, a developer tracking competition, or a property owner researching permit timelines, Building Seattle gives you the real-time market intelligence you need.
+            </p>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;">
+                Browse thousands of active permits by neighborhood, contractor, or project type. Monitor permit valuations, track review timelines, and discover which contractors are winning work in Seattle's most active development areas.
+            </p>
+        </div>
+    </section>
 
     <section class="cta">
         <div class="container">
@@ -2879,8 +2899,10 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </span>
             </div>
             <div class="detail-grid">
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Permit Timeline &amp; Status</h2>
                 ${timelineCard}
                 ${entityLinksCard}
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Project Overview</h2>
                 <div class="card">
                     <div class="card-label">Project Details</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem;">
@@ -2891,6 +2913,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     </div>
                 </div>
 
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Contractor Information</h2>
                 <div class="card">
                     <div class="card-label">Contractor</div>
                     ${
@@ -2910,6 +2933,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     ${peopleCards}
                 </div>
 
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Location &amp; Map</h2>
                 <div class="card" style="padding: 0; overflow: hidden;">
 	                    <iframe width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
                     <div style="padding: 0.75rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: center;">
@@ -2922,6 +2946,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     <div class="card-label">Project Description</div>
 	                    <div class="description-text">${safeDescription}</div>
                 </div>
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Additional Details</h2>
                 ${enrichmentCards}
             </div>
 
@@ -3056,7 +3081,7 @@ async function getStats(env) {
 }
 
 async function getAdminStats(env) {
-  const [lastRun, growth24h, neighborhoods, performance, counts] = await Promise.all([
+  const [lastRun, growth24h, neighborhoods, performance, counts, insuranceExpired, insuranceNoData] = await Promise.all([
     env.DB.prepare("SELECT * FROM ingest_logs ORDER BY start_time DESC LIMIT 1").first(),
     env.DB.prepare(
       "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day')",
@@ -3080,12 +3105,25 @@ async function getAdminStats(env) {
     ).first(),
     env.DB.prepare(
       `
-      SELECT 
+      SELECT
         (SELECT COUNT(*) FROM permits) as permits,
         (SELECT COUNT(*) FROM contractors) as contractors,
         (SELECT COUNT(*) FROM leads) as leads
     `,
     ).first(),
+    env.DB.prepare(`
+      SELECT COUNT(DISTINCT c.id) AS expired
+      FROM contractors c
+      JOIN permits p ON p.contractor_id = c.id
+      WHERE p.status IN ('active', 'new', 'pending')
+        AND c.insurance_expires_date < date('now')
+    `).first(),
+    env.DB.prepare(`
+      SELECT COUNT(*) AS no_data
+      FROM contractors c
+      WHERE c.insurance_expires_date IS NULL
+        AND EXISTS (SELECT 1 FROM permits p WHERE p.contractor_id = c.id)
+    `).first(),
   ]);
 
   return {
@@ -3094,6 +3132,8 @@ async function getAdminStats(env) {
     hotspots: neighborhoods.results,
     performance: performance,
     total_counts: counts,
+    insurance_expired: insuranceExpired?.expired || 0,
+    insurance_no_data: insuranceNoData?.no_data || 0,
   };
 }
 
@@ -3173,6 +3213,18 @@ async function renderAdminDashboard(request, env) {
               <div class="card"><span class="label">24h Growth</span><div class="value">+${stats.growth_24h}</div></div>
               <div class="card"><span class="label">Total Permits</span><div class="value">${stats.total_counts.permits}</div></div>
               <div class="card"><span class="label">Success Rate</span><div class="value">${Math.round(stats.performance?.success_rate || 0)}%</div></div>
+              ${stats.insurance_expired > 0 ? `
+              <div class="card" style="border-color:#dc2626;">
+                <span class="label" style="color:#dc2626;">⚠ Insurance Lapsed</span>
+                <div class="value" style="color:#dc2626;">${stats.insurance_expired}</div>
+                <p style="margin:0;font-size:0.75rem;color:#dc2626;">
+                  <a href="/insights/insurance-alerts" style="color:#dc2626;">View details →</a>
+                </p>
+              </div>` : `
+              <div class="card">
+                <span class="label">Insurance Lapsed</span>
+                <div class="value" style="color:#10b981;">0</div>
+              </div>`}
           </div>
 
           <h2>Leads (${leads.results.length})</h2>
@@ -3333,7 +3385,7 @@ async function renderContractorPage(slug, env, request) {
   const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
   const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
   const safeContractorMetaDescription = escapeHtml(
-    `${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.`,
+    `Learn about ${contractor.name}, a ${contractor.specialty || "construction"} contractor serving Seattle, WA. View ${activeProjects} active projects, ${permits.results.length} total permits, permit timelines, and review cycles from Seattle DCI data.`,
   );
   const contractorWebsite = safeHttpUrl(contractor.website);
   const contractorJsonLd = JSON.stringify({
@@ -3431,6 +3483,20 @@ async function renderContractorPage(slug, env, request) {
     <div class="container" style="padding:3rem 1.5rem">
         <div class="grid">
             <div>
+                <div class="card">
+                    <h2>About ${safeContractorName}</h2>
+                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0 0 1rem 0;">
+                        ${safeContractorName} is ${contractor.specialty ? `a ${escapeHtml(contractor.specialty)}` : "a construction"} contractor operating in Seattle, Washington. 
+                        Based on Seattle DCI permit records, this contractor has been involved in ${permits.results.length} permit${permits.results.length !== 1 ? "s" : ""} 
+                        across Seattle's neighborhoods${activeProjects > 0 ? `, with ${activeProjects} currently active` : ""}. 
+                        ${metrics.total_count > 0 ? `Permits by this contractor average ${permitDays} days from application to issuance, with an average of ${reviewCycles} review cycle${reviewCycles === "1.0" ? "" : "s"}.` : ""}
+                    </p>
+                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0;">
+                        ${contractor.description 
+                          ? escapeHtml(contractor.description) 
+                          : `Track ${contractor.name}'s Seattle construction projects including permit valuations, review timelines, and building activity across the city. Contractors listed on Building Seattle are drawn from public SDCI permit data and may include general contractors, subcontractors, and specialty trades.`}
+                    </p>
+                </div>
                 <div class="card">
                     <h2>Projects (${permits.results.length})</h2>
                     ${permits.results
@@ -5178,11 +5244,152 @@ async function renderNetworkPage(env) {
   );
 }
 
+// --- Insurance lapse alerts -------------------------------------------------
+
+async function renderInsuranceAlertsPage(env) {
+  const canonical = `${BASE_URL}/insights/insurance-alerts`;
+  const today = new Date().toISOString().split("T")[0];
+
+  const [expired, expiresSoon, noData] = await Promise.all([
+    env.DB.prepare(`
+      SELECT
+        c.name, c.slug, c.insurance_amount, c.insurance_expires_date, c.license_status,
+        c.ubi, c.phone, c.website,
+        COUNT(p.id) AS active_permits,
+        COALESCE(SUM(p.value), 0) AS total_active_value,
+        GROUP_CONCAT(DISTINCT p.neighborhood) AS neighborhoods
+      FROM contractors c
+      JOIN permits p ON p.contractor_id = c.id
+      WHERE p.status IN ('active', 'new', 'pending')
+        AND c.insurance_expires_date < date(?)
+      GROUP BY c.id
+      ORDER BY total_active_value DESC
+    `).bind(today).all(),
+
+    env.DB.prepare(`
+      SELECT
+        c.name, c.slug, c.insurance_amount, c.insurance_expires_date, c.license_status,
+        COUNT(p.id) AS active_permits,
+        COALESCE(SUM(p.value), 0) AS total_active_value
+      FROM contractors c
+      JOIN permits p ON p.contractor_id = c.id
+      WHERE p.status IN ('active', 'new', 'pending')
+        AND c.insurance_expires_date BETWEEN date(?) AND date(?, '+30 days')
+      GROUP BY c.id
+      ORDER BY c.insurance_expires_date ASC
+    `).bind(today, today).all(),
+
+    env.DB.prepare(`
+      SELECT COUNT(*) AS cnt
+      FROM contractors c
+      WHERE c.insurance_expires_date IS NULL
+        AND EXISTS (SELECT 1 FROM permits p WHERE p.contractor_id = c.id)
+    `).first(),
+  ]);
+
+  const expiredTotal = expired.results.reduce((s, r) => s + Number(r.total_active_value), 0);
+
+  function renderContractorTable(rows, severity) {
+    if (!rows || rows.length === 0) {
+      return '<p style="color:var(--text-muted);">None found.</p>';
+    }
+    const badge = severity === "danger"
+      ? '<span class="badge" style="background:#fef2f2;color:#dc2626;">LAPSED</span>'
+      : '<span class="badge" style="background:#fffbeb;color:#d97706;">EXPIRING</span>';
+    return `<table>
+      <thead><tr>
+        <th>Contractor</th>
+        <th>Active Permits</th>
+        <th>Active Value</th>
+        <th>Insurance</th>
+        <th>Expired</th>
+      </tr></thead>
+      <tbody>${rows.map(r => {
+        const daysSince = Math.round((new Date() - new Date(r.insurance_expires_date)) / 86400000);
+        const expiresDisplay = severity === "danger"
+          ? `${daysSince}d ago`
+          : `${-daysSince}d away`;
+        return `<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.75rem;font-weight:600;">
+            <a href="/contractor/${encodeURIComponent(r.slug)}" style="color:var(--primary);text-decoration:none;">${escapeHtml(r.name)}</a>
+            ${badge}
+          </td>
+          <td style="padding:0.75rem;">${r.active_permits}</td>
+          <td style="padding:0.75rem;font-weight:600;">$${Number(r.total_active_value).toLocaleString()}</td>
+          <td style="padding:0.75rem;">$${Number(r.insurance_amount || 0).toLocaleString()}</td>
+          <td style="padding:0.75rem;color:${severity === "danger" ? "#dc2626" : "#d97706"};font-weight:600;">
+            ${escapeHtml(r.insurance_expires_date)} (${expiresDisplay})
+          </td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+  }
+
+  const body = `
+    <div class="container">
+      <h1 style="margin-bottom:2rem;">$${expiredTotal.toLocaleString()} in Active Permits at Risk</h1>
+
+      <div class="grid" style="margin-bottom:2rem;">
+        <div class="card">
+          <span class="label">Expired Insurance</span>
+          <div class="value" style="color:#dc2626;">${expired.results.length}</div>
+          <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">
+            contractors with active permits and lapsed insurance
+          </p>
+        </div>
+        <div class="card">
+          <span class="label">Expiring Soon</span>
+          <div class="value" style="color:#d97706;">${expiresSoon.results.length}</div>
+          <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">
+            contractors whose insurance expires within 30 days
+          </p>
+        </div>
+        <div class="card">
+          <span class="label">No Insurance Data</span>
+          <div class="value">${noData?.cnt || 0}</div>
+          <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">
+            contractors with active permits but no insurance date on file
+          </p>
+        </div>
+      </div>
+
+      ${expired.results.length > 0 ? `
+        <h2>Insurance Lapsed</h2>
+        <div style="overflow-x:auto;margin-bottom:3rem;">
+          ${renderContractorTable(expired.results, "danger")}
+        </div>
+      ` : ""}
+
+      ${expiresSoon.results.length > 0 ? `
+        <h2>Expiring Within 30 Days</h2>
+        <div style="overflow-x:auto;margin-bottom:3rem;">
+          ${renderContractorTable(expiresSoon.results, "warning")}
+        </div>
+      ` : ""}
+    </div>`;
+
+  const title = "Seattle Contractor Insurance Lapse Alerts";
+  const description = "Which Seattle contractors with active permits have lapsed or expiring insurance coverage.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: title,
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "Building Seattle" },
+  }).replace(/</g, "\\u003c");
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
 // --- Insights index ---------------------------------------------------------
 
 async function renderInsightsIndex(env) {
   const canonical = `${BASE_URL}/insights`;
-  const [pr, pipe, house, mapAgg, contractorAgg] = await Promise.all([
+  const [pr, pipe, house, mapAgg, contractorAgg, insuranceExpired] = await Promise.all([
     safeFirst(
       env,
       `SELECT COUNT(*) AS cnt, AVG(total_days_plan_review) AS avg_days
@@ -5208,6 +5415,14 @@ async function renderInsightsIndex(env) {
       env,
       `SELECT COUNT(DISTINCT contractor_id) AS active_contractors
        FROM permits WHERE contractor_id IS NOT NULL`,
+    ),
+    safeFirst(
+      env,
+      `SELECT COUNT(DISTINCT c.id) AS expired
+       FROM contractors c
+       JOIN permits p ON p.contractor_id = c.id
+       WHERE p.status IN ('active', 'new', 'pending')
+         AND c.insurance_expires_date < date('now')`,
     ),
   ]);
 
@@ -5283,6 +5498,13 @@ async function renderInsightsIndex(env) {
         "Contractor scorecards",
         "Which contractors pull the most permits, the highest value, and have the widest neighborhood reach.",
         activeContractors ? `${activeContractors.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">active contractors</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/insurance-alerts",
+        "Risks",
+        "Insurance lapse alerts",
+        "Which active contractors have expired or soon-to-expire insurance coverage on their active permits.",
+        insuranceExpired?.expired ? `${insuranceExpired.expired} <span style="font-size:0.9rem;color:#dc2626;font-weight:600;">LAPSED</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">No issues</span>`,
       )}
       ${feature(
         "/insights/network",
@@ -5975,6 +6197,29 @@ async function runScheduledIngest(env) {
       console.error("Entity graph rebuild failed:", graphError);
     }
     const alertDelivery = await sendPendingPermitAlerts(env);
+
+    // Check for contractors with lapsed insurance and active permits.
+    try {
+      const { results: lapsed } = await env.DB.prepare(`
+        SELECT c.name, c.insurance_expires_date, COUNT(p.id) AS permits, COALESCE(SUM(p.value), 0) AS total_val
+        FROM contractors c
+        JOIN permits p ON p.contractor_id = c.id
+        WHERE p.status IN ('active', 'new', 'pending')
+          AND c.insurance_expires_date < date('now')
+        GROUP BY c.id
+        ORDER BY total_val DESC
+      `).all();
+      if (lapsed?.length) {
+        const totalAtRisk = lapsed.reduce((s, r) => s + Number(r.total_val), 0);
+        console.warn(
+          `Insurance lapse warning: ${lapsed.length} contractors with expired insurance` +
+          ` and active permits totaling $${(totalAtRisk / 1_000_000).toFixed(1)}M.` +
+          ` Top offender: ${lapsed[0].name} ($${(Number(lapsed[0].total_val) / 1_000_000).toFixed(1)}M)`,
+        );
+      }
+    } catch (e) {
+      console.error("Insurance lapse check failed:", e);
+    }
 
     await logIngest(env, {
       run_type: "scheduled",
