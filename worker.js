@@ -172,11 +172,6 @@ export default {
         return secure(await renderNetworkPage(env));
       }
 
-      if (path === "/insights/insurance-alerts") {
-        ctx.waitUntil(logPageView(request, env, "/insights/insurance-alerts"));
-        return secure(await renderInsuranceAlertsPage(env));
-      }
-
       if (path === "/api/admin/stats") {
         const authError = requireAdminAuth(request, env);
         if (authError) return secure(authError);
@@ -3081,7 +3076,7 @@ async function getStats(env) {
 }
 
 async function getAdminStats(env) {
-  const [lastRun, growth24h, neighborhoods, performance, counts, insuranceExpired, insuranceNoData] = await Promise.all([
+  const [lastRun, growth24h, neighborhoods, performance, counts] = await Promise.all([
     env.DB.prepare("SELECT * FROM ingest_logs ORDER BY start_time DESC LIMIT 1").first(),
     env.DB.prepare(
       "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day')",
@@ -3105,25 +3100,12 @@ async function getAdminStats(env) {
     ).first(),
     env.DB.prepare(
       `
-      SELECT
+      SELECT 
         (SELECT COUNT(*) FROM permits) as permits,
         (SELECT COUNT(*) FROM contractors) as contractors,
         (SELECT COUNT(*) FROM leads) as leads
     `,
     ).first(),
-    env.DB.prepare(`
-      SELECT COUNT(DISTINCT c.id) AS expired
-      FROM contractors c
-      JOIN permits p ON p.contractor_id = c.id
-      WHERE p.status IN ('active', 'new', 'pending')
-        AND c.insurance_expires_date < date('now')
-    `).first(),
-    env.DB.prepare(`
-      SELECT COUNT(*) AS no_data
-      FROM contractors c
-      WHERE c.insurance_expires_date IS NULL
-        AND EXISTS (SELECT 1 FROM permits p WHERE p.contractor_id = c.id)
-    `).first(),
   ]);
 
   return {
@@ -3132,8 +3114,6 @@ async function getAdminStats(env) {
     hotspots: neighborhoods.results,
     performance: performance,
     total_counts: counts,
-    insurance_expired: insuranceExpired?.expired || 0,
-    insurance_no_data: insuranceNoData?.no_data || 0,
   };
 }
 
@@ -3213,18 +3193,6 @@ async function renderAdminDashboard(request, env) {
               <div class="card"><span class="label">24h Growth</span><div class="value">+${stats.growth_24h}</div></div>
               <div class="card"><span class="label">Total Permits</span><div class="value">${stats.total_counts.permits}</div></div>
               <div class="card"><span class="label">Success Rate</span><div class="value">${Math.round(stats.performance?.success_rate || 0)}%</div></div>
-              ${stats.insurance_expired > 0 ? `
-              <div class="card" style="border-color:#dc2626;">
-                <span class="label" style="color:#dc2626;">⚠ Insurance Lapsed</span>
-                <div class="value" style="color:#dc2626;">${stats.insurance_expired}</div>
-                <p style="margin:0;font-size:0.75rem;color:#dc2626;">
-                  <a href="/insights/insurance-alerts" style="color:#dc2626;">View details →</a>
-                </p>
-              </div>` : `
-              <div class="card">
-                <span class="label">Insurance Lapsed</span>
-                <div class="value" style="color:#10b981;">0</div>
-              </div>`}
           </div>
 
           <h2>Leads (${leads.results.length})</h2>
@@ -5244,152 +5212,11 @@ async function renderNetworkPage(env) {
   );
 }
 
-// --- Insurance lapse alerts -------------------------------------------------
-
-async function renderInsuranceAlertsPage(env) {
-  const canonical = `${BASE_URL}/insights/insurance-alerts`;
-  const today = new Date().toISOString().split("T")[0];
-
-  const [expired, expiresSoon, noData] = await Promise.all([
-    env.DB.prepare(`
-      SELECT
-        c.name, c.slug, c.insurance_amount, c.insurance_expires_date, c.license_status,
-        c.ubi, c.phone, c.website,
-        COUNT(p.id) AS active_permits,
-        COALESCE(SUM(p.value), 0) AS total_active_value,
-        GROUP_CONCAT(DISTINCT p.neighborhood) AS neighborhoods
-      FROM contractors c
-      JOIN permits p ON p.contractor_id = c.id
-      WHERE p.status IN ('active', 'new', 'pending')
-        AND c.insurance_expires_date < date(?)
-      GROUP BY c.id
-      ORDER BY total_active_value DESC
-    `).bind(today).all(),
-
-    env.DB.prepare(`
-      SELECT
-        c.name, c.slug, c.insurance_amount, c.insurance_expires_date, c.license_status,
-        COUNT(p.id) AS active_permits,
-        COALESCE(SUM(p.value), 0) AS total_active_value
-      FROM contractors c
-      JOIN permits p ON p.contractor_id = c.id
-      WHERE p.status IN ('active', 'new', 'pending')
-        AND c.insurance_expires_date BETWEEN date(?) AND date(?, '+30 days')
-      GROUP BY c.id
-      ORDER BY c.insurance_expires_date ASC
-    `).bind(today, today).all(),
-
-    env.DB.prepare(`
-      SELECT COUNT(*) AS cnt
-      FROM contractors c
-      WHERE c.insurance_expires_date IS NULL
-        AND EXISTS (SELECT 1 FROM permits p WHERE p.contractor_id = c.id)
-    `).first(),
-  ]);
-
-  const expiredTotal = expired.results.reduce((s, r) => s + Number(r.total_active_value), 0);
-
-  function renderContractorTable(rows, severity) {
-    if (!rows || rows.length === 0) {
-      return '<p style="color:var(--text-muted);">None found.</p>';
-    }
-    const badge = severity === "danger"
-      ? '<span class="badge" style="background:#fef2f2;color:#dc2626;">LAPSED</span>'
-      : '<span class="badge" style="background:#fffbeb;color:#d97706;">EXPIRING</span>';
-    return `<table>
-      <thead><tr>
-        <th>Contractor</th>
-        <th>Active Permits</th>
-        <th>Active Value</th>
-        <th>Insurance</th>
-        <th>Expired</th>
-      </tr></thead>
-      <tbody>${rows.map(r => {
-        const daysSince = Math.round((new Date() - new Date(r.insurance_expires_date)) / 86400000);
-        const expiresDisplay = severity === "danger"
-          ? `${daysSince}d ago`
-          : `${-daysSince}d away`;
-        return `<tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:0.75rem;font-weight:600;">
-            <a href="/contractor/${encodeURIComponent(r.slug)}" style="color:var(--primary);text-decoration:none;">${escapeHtml(r.name)}</a>
-            ${badge}
-          </td>
-          <td style="padding:0.75rem;">${r.active_permits}</td>
-          <td style="padding:0.75rem;font-weight:600;">$${Number(r.total_active_value).toLocaleString()}</td>
-          <td style="padding:0.75rem;">$${Number(r.insurance_amount || 0).toLocaleString()}</td>
-          <td style="padding:0.75rem;color:${severity === "danger" ? "#dc2626" : "#d97706"};font-weight:600;">
-            ${escapeHtml(r.insurance_expires_date)} (${expiresDisplay})
-          </td>
-        </tr>`;
-      }).join("")}</tbody>
-    </table>`;
-  }
-
-  const body = `
-    <div class="container">
-      <h1 style="margin-bottom:2rem;">$${expiredTotal.toLocaleString()} in Active Permits at Risk</h1>
-
-      <div class="grid" style="margin-bottom:2rem;">
-        <div class="card">
-          <span class="label">Expired Insurance</span>
-          <div class="value" style="color:#dc2626;">${expired.results.length}</div>
-          <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">
-            contractors with active permits and lapsed insurance
-          </p>
-        </div>
-        <div class="card">
-          <span class="label">Expiring Soon</span>
-          <div class="value" style="color:#d97706;">${expiresSoon.results.length}</div>
-          <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">
-            contractors whose insurance expires within 30 days
-          </p>
-        </div>
-        <div class="card">
-          <span class="label">No Insurance Data</span>
-          <div class="value">${noData?.cnt || 0}</div>
-          <p style="margin-top:0.5rem;font-size:0.875rem;color:var(--text-muted);">
-            contractors with active permits but no insurance date on file
-          </p>
-        </div>
-      </div>
-
-      ${expired.results.length > 0 ? `
-        <h2>Insurance Lapsed</h2>
-        <div style="overflow-x:auto;margin-bottom:3rem;">
-          ${renderContractorTable(expired.results, "danger")}
-        </div>
-      ` : ""}
-
-      ${expiresSoon.results.length > 0 ? `
-        <h2>Expiring Within 30 Days</h2>
-        <div style="overflow-x:auto;margin-bottom:3rem;">
-          ${renderContractorTable(expiresSoon.results, "warning")}
-        </div>
-      ` : ""}
-    </div>`;
-
-  const title = "Seattle Contractor Insurance Lapse Alerts";
-  const description = "Which Seattle contractors with active permits have lapsed or expiring insurance coverage.";
-  const jsonLd = JSON.stringify({
-    "@context": "https://schema.org",
-    "@type": "Dataset",
-    name: title,
-    description,
-    url: canonical,
-    creator: { "@type": "Organization", name: "Building Seattle" },
-  }).replace(/</g, "\\u003c");
-
-  return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, body, activeNav: "insights" }),
-    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
-  );
-}
-
 // --- Insights index ---------------------------------------------------------
 
 async function renderInsightsIndex(env) {
   const canonical = `${BASE_URL}/insights`;
-  const [pr, pipe, house, mapAgg, contractorAgg, insuranceExpired] = await Promise.all([
+  const [pr, pipe, house, mapAgg, contractorAgg] = await Promise.all([
     safeFirst(
       env,
       `SELECT COUNT(*) AS cnt, AVG(total_days_plan_review) AS avg_days
@@ -5415,14 +5242,6 @@ async function renderInsightsIndex(env) {
       env,
       `SELECT COUNT(DISTINCT contractor_id) AS active_contractors
        FROM permits WHERE contractor_id IS NOT NULL`,
-    ),
-    safeFirst(
-      env,
-      `SELECT COUNT(DISTINCT c.id) AS expired
-       FROM contractors c
-       JOIN permits p ON p.contractor_id = c.id
-       WHERE p.status IN ('active', 'new', 'pending')
-         AND c.insurance_expires_date < date('now')`,
     ),
   ]);
 
@@ -5498,13 +5317,6 @@ async function renderInsightsIndex(env) {
         "Contractor scorecards",
         "Which contractors pull the most permits, the highest value, and have the widest neighborhood reach.",
         activeContractors ? `${activeContractors.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">active contractors</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
-      )}
-      ${feature(
-        "/insights/insurance-alerts",
-        "Risks",
-        "Insurance lapse alerts",
-        "Which active contractors have expired or soon-to-expire insurance coverage on their active permits.",
-        insuranceExpired?.expired ? `${insuranceExpired.expired} <span style="font-size:0.9rem;color:#dc2626;font-weight:600;">LAPSED</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">No issues</span>`,
       )}
       ${feature(
         "/insights/network",
@@ -6197,29 +6009,6 @@ async function runScheduledIngest(env) {
       console.error("Entity graph rebuild failed:", graphError);
     }
     const alertDelivery = await sendPendingPermitAlerts(env);
-
-    // Check for contractors with lapsed insurance and active permits.
-    try {
-      const { results: lapsed } = await env.DB.prepare(`
-        SELECT c.name, c.insurance_expires_date, COUNT(p.id) AS permits, COALESCE(SUM(p.value), 0) AS total_val
-        FROM contractors c
-        JOIN permits p ON p.contractor_id = c.id
-        WHERE p.status IN ('active', 'new', 'pending')
-          AND c.insurance_expires_date < date('now')
-        GROUP BY c.id
-        ORDER BY total_val DESC
-      `).all();
-      if (lapsed?.length) {
-        const totalAtRisk = lapsed.reduce((s, r) => s + Number(r.total_val), 0);
-        console.warn(
-          `Insurance lapse warning: ${lapsed.length} contractors with expired insurance` +
-          ` and active permits totaling $${(totalAtRisk / 1_000_000).toFixed(1)}M.` +
-          ` Top offender: ${lapsed[0].name} ($${(Number(lapsed[0].total_val) / 1_000_000).toFixed(1)}M)`,
-        );
-      }
-    } catch (e) {
-      console.error("Insurance lapse check failed:", e);
-    }
 
     await logIngest(env, {
       run_type: "scheduled",
