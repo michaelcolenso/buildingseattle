@@ -5,5 +5,8 @@
   "scripts": {
     "refresh-data": "uv run python sdci_scraper.py && uv run python direct_import.py",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "4.107.0"
   }
 }
