@@ -1,2 +1,4 @@
 deploy_cf.py
 gen_mcp_js.py
+node_modules/
+.venv/
