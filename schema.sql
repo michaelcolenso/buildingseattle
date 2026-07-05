@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS permits (
     number_review_cycles INTEGER,
     total_days_plan_review INTEGER,
     days_out_corrections INTEGER,
+    plan_review_complete_date DATE,
+    ready_to_issue_date DATE,
     has_required_inspections INTEGER DEFAULT 0,
     has_completed_inspections INTEGER DEFAULT 0,
     last_enriched_at DATETIME,

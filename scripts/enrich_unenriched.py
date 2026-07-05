@@ -117,11 +117,23 @@ def build_parser():
     return p
 
 
+def require_env(name):
+    value = (os.environ.get(name) or "").strip()
+    if not value:
+        sys.stderr.write(
+            f"error: required environment variable {name} is missing or empty.\n"
+            f"  In GitHub Actions, add it under Settings -> Secrets and variables -> Actions.\n"
+        )
+        sys.exit(2)
+    return value
+
+
 async def main():
     args = build_parser().parse_args()
 
-    account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"].strip()
-    token = os.environ["CLOUDFLARE_API_TOKEN"]
+    account_id = require_env("CLOUDFLARE_ACCOUNT_ID")
+    token = require_env("CLOUDFLARE_API_TOKEN")
+    require_env("INGEST_API_TOKEN")
 
     sql = (
         "SELECT permit_number FROM permits "

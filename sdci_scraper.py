@@ -341,6 +341,8 @@ async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
                 "number_review_cycles": extract_int(item.get("numberreviewcycles")),
                 "total_days_plan_review": extract_int(item.get("totaldaysplanreview")),
                 "days_out_corrections": extract_int(item.get("daysoutcorrections")),
+                "plan_review_complete_date": extract_date(item.get("planreviewcompletedate")),
+                "ready_to_issue_date": extract_date(item.get("readytoissuedate")),
                 "permit_class": item.get("permitclass", ""),
                 "permit_type_detail": item.get("permittypemapped", ""),
                 "zip_code": item.get("originalzip", ""),

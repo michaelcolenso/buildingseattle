@@ -7,6 +7,8 @@ import worker, {
   summarizeDays,
   summarizeNetHousing,
   projectSeattle,
+  renderPermitTimeline,
+  renderProjectReviewSummary,
 } from "../worker.js";
 
 const samplePermits = [
@@ -1404,4 +1406,83 @@ test("POST /ingest/permit accepts requests with the configured ingest token", as
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { success: true });
+});
+
+test("renderPermitTimeline derives City control as total plan-review days minus corrections", () => {
+  const html = renderPermitTimeline({
+    status: "completed",
+    applied_date: "2018-01-10",
+    issued_date: "2019-06-01",
+    completed_date: "2021-07-04",
+    total_days_plan_review: 1276,
+    days_out_corrections: 921,
+    number_review_cycles: 5,
+  });
+  assert.match(html, /Construction Permit Timeline/);
+  assert.match(html, /Plan Review Days — Total/);
+  assert.match(html, /1,276/);
+  // City control = 1276 - 921 = 355 (the SDCI screenshot's headline number).
+  assert.match(html, /Plan Review Days — City Control/);
+  assert.match(html, /355/);
+  assert.match(html, /All reviews complete/);
+});
+
+test("renderPermitTimeline omits review metrics that are null instead of rendering NaN/null", () => {
+  const html = renderPermitTimeline({
+    status: "pending",
+    applied_date: "2026-05-14",
+    issued_date: null,
+    total_days_plan_review: null,
+    days_out_corrections: null,
+    number_review_cycles: 2,
+  });
+  assert.doesNotMatch(html, /null|NaN|undefined/);
+  // No total days -> City control cannot be derived and must be absent.
+  assert.doesNotMatch(html, /City Control/);
+  assert.match(html, /Review Cycles/);
+  assert.match(html, /In City review/);
+});
+
+test("renderPermitTimeline returns empty string when there is no date or review data", () => {
+  assert.equal(renderPermitTimeline({ status: "new" }), "");
+});
+
+test("renderProjectReviewSummary aggregates across permits and hides when no review data", () => {
+  assert.equal(renderProjectReviewSummary([{ applied_date: "2020-01-01" }]), "");
+  const html = renderProjectReviewSummary([
+    { applied_date: "2019-01-01", completed_date: "2020-01-01", total_days_plan_review: 300, days_out_corrections: 100, number_review_cycles: 2 },
+    { applied_date: "2018-01-01", issued_date: "2019-01-01", total_days_plan_review: 200, days_out_corrections: 50, number_review_cycles: 1 },
+  ]);
+  assert.match(html, /Review timeline/);
+  assert.match(html, /500/); // total plan review days 300 + 200
+  assert.match(html, /350/); // city control (500 - 150)
+  assert.doesNotMatch(html, /null|NaN|undefined/);
+});
+
+test("renderPermitTimeline shows plan-review and ready-to-issue milestones when present", () => {
+  const html = renderPermitTimeline({
+    status: "pending",
+    applied_date: "2025-01-02",
+    plan_review_complete_date: "2025-06-15",
+    ready_to_issue_date: "2025-07-01",
+    issued_date: null,
+    number_review_cycles: 3,
+  });
+  assert.match(html, /Reviews Done/);
+  assert.match(html, /June 15, 2025/);
+  assert.match(html, /Ready to Issue/);
+  assert.match(html, /July 1, 2025/);
+  // ready-to-issue but not yet issued -> the sharpened next-step hint
+  assert.match(html, /ready to issue/i);
+});
+
+test("renderPermitTimeline omits optional milestones when their dates are absent", () => {
+  const html = renderPermitTimeline({
+    status: "active",
+    applied_date: "2025-01-02",
+    issued_date: "2025-03-03",
+    number_review_cycles: 1,
+  });
+  assert.doesNotMatch(html, /Reviews Done|Ready to Issue/);
+  assert.doesNotMatch(html, /null|NaN|undefined/);
 });

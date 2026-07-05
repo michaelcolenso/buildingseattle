@@ -462,8 +462,9 @@ const PERMIT_UPSERT_SQL = `
     applied_date, issued_date, completed_date,
     housing_units_added, housing_units_removed, housing_category,
     dwelling_unit_type, zoning, parent_permit_number, related_mup,
-    number_review_cycles, total_days_plan_review, days_out_corrections
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    number_review_cycles, total_days_plan_review, days_out_corrections,
+    plan_review_complete_date, ready_to_issue_date
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(permit_number) DO UPDATE SET
     contractor_id = COALESCE(excluded.contractor_id, permits.contractor_id),
     applicant_name = COALESCE(excluded.applicant_name, permits.applicant_name),
@@ -487,6 +488,8 @@ const PERMIT_UPSERT_SQL = `
     number_review_cycles = excluded.number_review_cycles,
     total_days_plan_review = excluded.total_days_plan_review,
     days_out_corrections = excluded.days_out_corrections,
+    plan_review_complete_date = excluded.plan_review_complete_date,
+    ready_to_issue_date = excluded.ready_to_issue_date,
     updated_at = CURRENT_TIMESTAMP
 `;
 
@@ -677,12 +680,6 @@ function renderFooter() {
 // top contractors, neighborhoods, and latest activity. Renders nothing until
 // the graph has been built at least once.
 function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighborhoods, latestActivity }) {
-  const hasData =
-    (topAddresses && topAddresses.length) ||
-    (topGraphContractors && topGraphContractors.length) ||
-    (latestActivity && latestActivity.length);
-  if (!hasData) return "";
-
   const money = (n) => {
     const v = Number(n);
     return Number.isFinite(v) && v > 0 ? `$${Math.round(v).toLocaleString()}` : "—";
@@ -724,6 +721,28 @@ function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighbor
     )
     .join("");
 
+  // Only render panels that have data, skip empty ones
+  const panels = [
+    addrItems && `<div class="data-panel">
+                    <div class="panel-header"><h3>Top Addresses</h3></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${addrItems}</ul></div>
+                </div>`,
+    contractorItems && `<div class="data-panel">
+                    <div class="panel-header"><h3>Top Contractors</h3></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${contractorItems}</ul></div>
+                </div>`,
+    activityItems && `<div class="data-panel">
+                    <div class="panel-header"><h3>Latest Activity</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
+                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${activityItems}</ul></div>
+                </div>`,
+    neighborhoodChips && `<div class="data-panel">
+                    <div class="panel-header"><h3>Neighborhoods</h3></div>
+                    <div class="panel-content"><div style="display:flex;flex-wrap:wrap;gap:0.5rem;">${neighborhoodChips}</div></div>
+                </div>`,
+  ].filter(Boolean);
+
+  if (panels.length === 0) return "";
+
   return `<section class="live-data" id="graph" style="background:var(--bg-alt);">
         <div class="container">
             <div class="section-header">
@@ -731,22 +750,7 @@ function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighbor
                 <p>Permits rolled up into properties, projects, contractors, and neighborhoods.</p>
             </div>
             <div class="data-grid">
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Top Addresses</h3></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${addrItems || '<li class="loading">No data yet</li>'}</ul></div>
-                </div>
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Top Contractors</h3></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${contractorItems || '<li class="loading">No data yet</li>'}</ul></div>
-                </div>
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Latest Activity</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${activityItems || '<li class="loading">No data yet</li>'}</ul></div>
-                </div>
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Neighborhoods</h3></div>
-                    <div class="panel-content"><div style="display:flex;flex-wrap:wrap;gap:0.5rem;">${neighborhoodChips || '<span class="loading">No data yet</span>'}</div></div>
-                </div>
+                ${panels.join("\n                ")}
             </div>
         </div>
     </section>`;
@@ -996,6 +1000,21 @@ async function handleRoot(request, env) {
     </section>
 
     ${graphSection}
+
+    <section style="padding:4rem 0;background:var(--bg-alt);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+        <div class="container" style="max-width:800px;">
+            <h2 style="font-size:2rem;font-weight:800;color:var(--primary);margin-bottom:1.5rem;">Seattle Construction Market Activity</h2>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
+                Building Seattle tracks construction permits across the Seattle metro area — from commercial towers in South Lake Union to residential renovations in Ballard and Capitol Hill. Every permit issued by the Seattle Department of Construction and Inspections is collected, organized, and made searchable so you can track who's building what, where, and with whom.
+            </p>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
+                The Seattle construction market covers everything from tenant improvements and new residential construction to major commercial projects and demolitions. Whether you're a contractor scoping new work, a developer tracking competition, or a property owner researching permit timelines, Building Seattle gives you the real-time market intelligence you need.
+            </p>
+            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;">
+                Browse thousands of active permits by neighborhood, contractor, or project type. Monitor permit valuations, track review timelines, and discover which contractors are winning work in Seattle's most active development areas.
+            </p>
+        </div>
+    </section>
 
     <section class="live-data" id="use-cases" style="background:var(--bg-alt);">
         <div class="container">
@@ -2256,6 +2275,121 @@ async function renderPermitBrowser(request, env) {
   });
 }
 
+// Renders a permit's review journey as a stepped timeline card (pure: takes a
+// permit row, returns an HTML string, or "" when there is nothing to show).
+// Mirrors Seattle DCI's "Construction Permit Timeline" using fields we already
+// store: total_days_plan_review is the headline "Plan Review Days, Total", and
+// "City control" is that total minus the days the applicant held the permit for
+// corrections (days_out_corrections) — matching SDCI's own methodology.
+export function renderPermitTimeline(permit) {
+  const fmtDate = (d) =>
+    d ? new Date(d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : null;
+  const num = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const status = String(permit.status || "").toLowerCase();
+  const applied = fmtDate(permit.applied_date);
+  const reviewsDone = fmtDate(permit.plan_review_complete_date);
+  const readyToIssue = fmtDate(permit.ready_to_issue_date);
+  const issued = fmtDate(permit.issued_date);
+  const completed = fmtDate(permit.completed_date);
+  const expires = fmtDate(permit.expires_date);
+
+  const totalDays = num(permit.total_days_plan_review);
+  const corrections = num(permit.days_out_corrections);
+  const cycles = num(permit.number_review_cycles);
+  const cityDays =
+    totalDays !== null && corrections !== null && totalDays - corrections >= 0 ? totalDays - corrections : null;
+
+  const hasReview = totalDays !== null || corrections !== null || cycles !== null;
+  const hasAnyDate = !!(applied || reviewsDone || readyToIssue || issued || completed || expires);
+  if (!hasReview && !hasAnyDate) return "";
+
+  // Milestone nodes in chronological order; "reached" controls the fill color.
+  // "Reviews Done" / "Ready to Issue" are optional and only shown when SDCI has
+  // supplied the date, so the bar stays clean for permits that lack them.
+  const reviewDetail =
+    cycles !== null ? `${cycles} cycle${cycles === 1 ? "" : "s"}` : applied && !issued ? "In progress" : null;
+  const nodes = [
+    { label: "Applied", detail: applied, reached: !!applied },
+    { label: "In Review", detail: reviewDetail, reached: !!applied },
+    ...(reviewsDone ? [{ label: "Reviews Done", detail: reviewsDone, reached: true }] : []),
+    ...(readyToIssue ? [{ label: "Ready to Issue", detail: readyToIssue, reached: true }] : []),
+    { label: "Issued", detail: issued, reached: !!issued },
+    { label: "Completed", detail: completed, reached: !!completed },
+    { label: "Expires", detail: expires, reached: !!expires },
+  ];
+  const nodesHtml = nodes
+    .map((n) => {
+      const detail = n.detail
+        ? `<div class="timeline-date">${escapeHtml(n.detail)}</div>`
+        : `<div class="timeline-date muted">&mdash;</div>`;
+      return `<div class="timeline-node${n.reached ? " reached" : ""}"><div class="timeline-dot"></div><div class="timeline-label">${escapeHtml(
+        n.label,
+      )}</div>${detail}</div>`;
+    })
+    .join('<div class="timeline-bar"></div>');
+
+  // Metrics strip — only cells that actually have data (like enrichmentFields).
+  const metrics = [
+    ["Plan Review Days — Total", totalDays],
+    ["Plan Review Days — City Control", cityDays],
+    ["Days in Applicant Control", corrections],
+    ["Review Cycles", cycles],
+  ].filter(([, v]) => v !== null);
+  const metricsHtml = metrics.length
+    ? `<div class="timeline-metrics">${metrics
+        .map(
+          ([label, v]) =>
+            `<div class="timeline-metric"><div class="timeline-metric-value">${v.toLocaleString()}</div><div class="timeline-metric-label">${escapeHtml(
+              label,
+            )}</div></div>`,
+        )
+        .join("")}</div>`
+    : "";
+
+  // Conservative "next step" hint derived from status/dates (we do not have
+  // per-cycle City-vs-applicant ownership, so wording stays modest).
+  let nextStep = null;
+  if (completed || status === "completed") nextStep = "All reviews complete — permit closed out.";
+  else if (issued || status === "active") nextStep = "Permit issued — construction underway.";
+  else if (readyToIssue) nextStep = "Plan review complete — ready to issue, awaiting final fees/issuance.";
+  else if (applied) nextStep = "In City review — awaiting the next action.";
+  const nextStepHtml = nextStep
+    ? `<div class="timeline-next"><span class="timeline-next-label">Next step</span>${escapeHtml(nextStep)}</div>`
+    : "";
+
+  return `
+                <div class="card card-full timeline-card">
+                    <style>
+                      .timeline{display:flex;flex-wrap:wrap;align-items:flex-start;gap:0.25rem;margin-top:1rem}
+                      .timeline-node{display:flex;flex-direction:column;align-items:center;text-align:center;flex:1 1 90px;min-width:78px}
+                      .timeline-bar{flex:1 1 18px;min-width:14px;height:2px;background:var(--border);margin-top:7px}
+                      .timeline-dot{width:16px;height:16px;border-radius:50%;background:var(--bg-alt);border:2px solid var(--border)}
+                      .timeline-node.reached .timeline-dot{background:var(--accent);border-color:var(--accent)}
+                      .timeline-label{font-size:0.72rem;font-weight:700;margin-top:0.45rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.03em}
+                      .timeline-node.reached .timeline-label{color:var(--primary)}
+                      .timeline-date{font-size:0.8rem;color:var(--text);margin-top:0.15rem}
+                      .timeline-date.muted{color:var(--text-muted)}
+                      .timeline-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-top:1.5rem}
+                      .timeline-metric{background:var(--bg-alt);border:1px solid var(--border);border-radius:0.5rem;padding:0.85rem 1rem;text-align:center}
+                      .timeline-metric-value{font-size:1.5rem;font-weight:800;color:var(--accent);line-height:1.1}
+                      .timeline-metric-label{font-size:0.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-top:0.3rem}
+                      .timeline-next{margin-top:1.25rem;font-size:0.9rem;color:var(--text)}
+                      .timeline-next-label{display:inline-block;font-weight:700;color:var(--primary);margin-right:0.5rem;text-transform:uppercase;font-size:0.68rem;letter-spacing:0.05em}
+                      .timeline-foot{margin-top:1rem;font-size:0.72rem;color:var(--text-muted);line-height:1.5}
+                    </style>
+                    <div class="card-label">Construction Permit Timeline</div>
+                    <div class="timeline">${nodesHtml}</div>
+                    ${metricsHtml}
+                    ${nextStepHtml}
+                    <div class="timeline-foot">Plan-review data from Seattle DCI. &ldquo;City control&rdquo; is total plan-review days minus the days the applicant held the permit for corrections.</div>
+                </div>`;
+}
+
 async function renderPermitDetail(permitNumber, env, request) {
   const canonical = BASE_URL + "/permits/" + encodeURIComponent(permitNumber);
   // Prefer the entity-graph-enriched query; fall back gracefully if the graph
@@ -2497,12 +2631,13 @@ async function renderPermitDetail(permitNumber, env, request) {
       `
     : "";
   const primaryLeadLabel = "Email Me Permit Updates";
+  const timelineCard = renderPermitTimeline(permit);
 
   const permitType =
     typeMap[(permit.type || "").toLowerCase()] ||
     (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
-  const metaDesc = `${permit.address || "Seattle location"}: ${permitType} permit (${permit.status || "new"}) in ${neighborhood}. Project value: ${valueFormatted}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
+  const metaDesc = `See what's being built at ${permit.address || "Seattle"}: a ${permitType} project valued at ${valueFormatted}, currently ${permit.status || "under review"} in ${neighborhood}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
@@ -2553,10 +2688,10 @@ async function renderPermitDetail(permitNumber, env, request) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	    <title>Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle</title>
+	    <title>${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle</title>
 	    <meta name="description" content="${safeMetaDesc}">
 	    <link rel="canonical" href="${canonical}">
-	    <meta property="og:title" content="Permit ${safePermitNumber} — ${safeTitleAddress} | Building Seattle">
+	    <meta property="og:title" content="${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle">
 	    <meta property="og:description" content="${safeMetaDesc}">
     <meta property="og:type" content="article">
     <meta property="og:url" content="${canonical}">
@@ -2800,7 +2935,10 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </span>
             </div>
             <div class="detail-grid">
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Permit Timeline &amp; Status</h2>
+                ${timelineCard}
                 ${entityLinksCard}
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Project Overview</h2>
                 <div class="card">
                     <div class="card-label">Project Details</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem;">
@@ -2811,6 +2949,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     </div>
                 </div>
 
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Contractor Information</h2>
                 <div class="card">
                     <div class="card-label">Contractor</div>
                     ${
@@ -2830,6 +2969,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     ${peopleCards}
                 </div>
 
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Location &amp; Map</h2>
                 <div class="card" style="padding: 0; overflow: hidden;">
 	                    <iframe width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
                     <div style="padding: 0.75rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: center;">
@@ -2842,6 +2982,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     <div class="card-label">Project Description</div>
 	                    <div class="description-text">${safeDescription}</div>
                 </div>
+                <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Additional Details</h2>
                 ${enrichmentCards}
             </div>
 
@@ -3253,7 +3394,7 @@ async function renderContractorPage(slug, env, request) {
   const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
   const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
   const safeContractorMetaDescription = escapeHtml(
-    `${contractor.name} is a ${contractor.specialty || "construction"} contractor in Seattle with ${activeProjects} active projects and ${permits.results.length} total permits. View project history and contact information.`,
+    `Learn about ${contractor.name}, a ${contractor.specialty || "construction"} contractor serving Seattle, WA. View ${activeProjects} active projects, ${permits.results.length} total permits, permit timelines, and review cycles from Seattle DCI data.`,
   );
   const contractorWebsite = safeHttpUrl(contractor.website);
   const contractorJsonLd = JSON.stringify({
@@ -3351,6 +3492,20 @@ async function renderContractorPage(slug, env, request) {
     <div class="container" style="padding:3rem 1.5rem">
         <div class="grid">
             <div>
+                <div class="card">
+                    <h2>About ${safeContractorName}</h2>
+                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0 0 1rem 0;">
+                        ${safeContractorName} is ${contractor.specialty ? `a ${escapeHtml(contractor.specialty)}` : "a construction"} contractor operating in Seattle, Washington. 
+                        Based on Seattle DCI permit records, this contractor has been involved in ${permits.results.length} permit${permits.results.length !== 1 ? "s" : ""} 
+                        across Seattle's neighborhoods${activeProjects > 0 ? `, with ${activeProjects} currently active` : ""}. 
+                        ${metrics.total_count > 0 ? `Permits by this contractor average ${permitDays} days from application to issuance, with an average of ${reviewCycles} review cycle${reviewCycles === "1.0" ? "" : "s"}.` : ""}
+                    </p>
+                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0;">
+                        ${contractor.description 
+                          ? escapeHtml(contractor.description) 
+                          : `Track ${contractor.name}'s Seattle construction projects including permit valuations, review timelines, and building activity across the city. Contractors listed on Building Seattle are drawn from public SDCI permit data and may include general contractors, subcontractors, and specialty trades.`}
+                    </p>
+                </div>
                 <div class="card">
                     <h2>Projects (${permits.results.length})</h2>
                     ${permits.results
@@ -3796,6 +3951,68 @@ function entStat(label, value) {
   return `<div class="metric"><div style="font-size:1.4rem;font-weight:800;color:var(--primary);">${value}</div><div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(label)}</div></div>`;
 }
 
+// Aggregates plan-review metrics across a project's clustered permits into a
+// summary card (pure). Returns "" when no permit carries review data so the
+// project page is unchanged for projects without it.
+export function renderProjectReviewSummary(permits) {
+  const rows = Array.isArray(permits) ? permits : [];
+  const num = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  let totalDays = 0;
+  let corrections = 0;
+  let cycles = 0;
+  let hasDays = false;
+  let hasCorr = false;
+  let hasCycles = false;
+  let firstApplied = null;
+  let lastDone = null;
+  for (const p of rows) {
+    const td = num(p.total_days_plan_review);
+    if (td !== null) {
+      totalDays += td;
+      hasDays = true;
+    }
+    const dc = num(p.days_out_corrections);
+    if (dc !== null) {
+      corrections += dc;
+      hasCorr = true;
+    }
+    const cy = num(p.number_review_cycles);
+    if (cy !== null) {
+      cycles += cy;
+      hasCycles = true;
+    }
+    if (p.applied_date) {
+      const d = new Date(p.applied_date);
+      if (!Number.isNaN(d.getTime()) && (!firstApplied || d < firstApplied)) firstApplied = d;
+    }
+    for (const f of [p.completed_date, p.issued_date]) {
+      if (!f) continue;
+      const d = new Date(f);
+      if (!Number.isNaN(d.getTime()) && (!lastDone || d > lastDone)) lastDone = d;
+    }
+  }
+  if (!hasDays && !hasCorr && !hasCycles) return "";
+
+  const cityDays = hasDays && hasCorr && totalDays - corrections >= 0 ? totalDays - corrections : null;
+  const stats = [];
+  if (firstApplied && lastDone) stats.push(entStat("Review span", `${entDate(firstApplied)} &rarr; ${entDate(lastDone)}`));
+  if (hasDays) stats.push(entStat("Plan review days (total)", totalDays.toLocaleString()));
+  if (cityDays !== null) stats.push(entStat("City control days", cityDays.toLocaleString()));
+  if (hasCorr) stats.push(entStat("Applicant correction days", corrections.toLocaleString()));
+  if (hasCycles) stats.push(entStat("Review cycles", cycles.toLocaleString()));
+
+  return `
+        <div class="card">
+          <h2>Review timeline</h2>
+          <div class="stat-row">${stats.join("")}</div>
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0;">Plan-review metrics aggregated across this project's permits, from Seattle DCI. "City control days" is total plan-review days minus the days applicants held permits for corrections.</p>
+        </div>`;
+}
+
 function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType = "website", body, activeNav = "permits" }) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -4019,7 +4236,17 @@ function insightsStyles() {
       .ins-feature{display:block;text-decoration:none;color:inherit}
       .ins-feature .card{height:100%;margin:0;transition:box-shadow .2s ease,transform .2s ease}
       .ins-feature:hover .card{box-shadow:var(--shadow);transform:translateY(-2px)}
-      @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}}
+      .nb-contractor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1rem}
+      .nb-contractor-card{border:1px solid var(--border);border-radius:16px;background:var(--bg);padding:1rem}
+      .nb-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;border-bottom:1px solid var(--border);padding-bottom:0.75rem;margin-bottom:0.75rem}
+      .nb-card-head h3{margin:0;font-size:1rem;color:var(--text)}
+      .nb-card-head span{color:var(--text-muted);font-size:0.78rem;font-weight:700;white-space:nowrap}
+      .nb-contractor-card ol{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.55rem}
+      .nb-contractor-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:0.6rem;font-size:0.84rem}
+      .nb-rank{display:inline-flex;align-items:center;justify-content:center;width:1.45rem;height:1.45rem;border-radius:999px;background:rgba(59,130,246,0.12);color:var(--accent);font-weight:800;font-size:0.72rem}
+      .nb-count{color:var(--text-muted);font-size:0.76rem;font-weight:700;white-space:nowrap}
+      .nb-empty{color:var(--text-muted);font-size:0.84rem}
+      @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}.nb-contractor-grid{grid-template-columns:1fr}.nb-contractor-row{grid-template-columns:auto 1fr}.nb-count{grid-column:2;white-space:normal}}
   </style>`;
 }
 
@@ -4835,8 +5062,39 @@ async function getNetworkData(env) {
      FROM contractors c JOIN permits p ON p.contractor_id = c.id
      GROUP BY c.id ORDER BY permits DESC LIMIT 16`,
   );
+  const allNeighborhoods = await safeAll(
+    env,
+    `SELECT neighborhood AS name, COUNT(*) AS permits
+     FROM permits
+     WHERE neighborhood IS NOT NULL AND neighborhood != ''
+     GROUP BY neighborhood ORDER BY neighborhood ASC`,
+  );
+  const contractorRows = await safeAll(
+    env,
+    `SELECT p.neighborhood AS neighborhood, c.id AS contractor_id, c.name AS contractor_name, c.slug AS contractor_slug, COUNT(*) AS permits
+     FROM permits p JOIN contractors c ON c.id = p.contractor_id
+     WHERE p.neighborhood IS NOT NULL AND p.neighborhood != ''
+     GROUP BY p.neighborhood, c.id
+     ORDER BY p.neighborhood ASC, permits DESC, c.name ASC`,
+  );
+  const contractorsByNeighborhood = new Map();
+  for (const row of contractorRows) {
+    const name = row.neighborhood;
+    if (!contractorsByNeighborhood.has(name)) contractorsByNeighborhood.set(name, []);
+    contractorsByNeighborhood.get(name).push({
+      name: row.contractor_name,
+      slug: row.contractor_slug,
+      permits: Number(row.permits) || 0,
+    });
+  }
+  const neighborhoodContractors = allNeighborhoods.map((n) => ({
+    name: n.name,
+    permits: Number(n.permits) || 0,
+    contractors: (contractorsByNeighborhood.get(n.name) || []).slice(0, 5),
+  }));
+
   if (!topContractors.length) {
-    return { contractors: [], neighborhoods: [], edges: [] };
+    return { contractors: [], neighborhoods: [], edges: [], neighborhood_contractors: neighborhoodContractors };
   }
   const ids = topContractors.map((c) => Number(c.id));
   const placeholders = ids.map(() => "?").join(",");
@@ -4873,6 +5131,7 @@ async function getNetworkData(env) {
     contractors: topContractors.map((c) => ({ name: c.name, slug: c.slug, permits: Number(c.permits) || 0 })),
     neighborhoods,
     edges,
+    neighborhood_contractors: neighborhoodContractors,
   };
 }
 
@@ -4975,6 +5234,32 @@ async function renderNetworkPage(env) {
     })
     .join("");
 
+  // Every neighborhood's top contractors, independently calculated from all
+  // attributed permits instead of only the contractors shown in the SVG.
+  const neighborhoodContractorCards = (data.neighborhood_contractors || [])
+    .map((n) => {
+      const contractorRows = n.contractors.length
+        ? n.contractors
+            .map(
+              (c, index) =>
+                `<li class="nb-contractor-row">
+                  <span class="nb-rank">${index + 1}</span>
+                  <a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(c.name)}</a>
+                  <span class="nb-count">${Number(c.permits).toLocaleString()} permit${Number(c.permits) === 1 ? "" : "s"}</span>
+                </li>`,
+            )
+            .join("")
+        : `<li class="nb-empty">No attributed contractors yet</li>`;
+      return `<article class="nb-contractor-card">
+        <div class="nb-card-head">
+          <h3>${escapeHtml(n.name)}</h3>
+          <span>${Number(n.permits).toLocaleString()} permit${Number(n.permits) === 1 ? "" : "s"}</span>
+        </div>
+        <ol>${contractorRows}</ol>
+      </article>`;
+    })
+    .join("");
+
   const emptyState = `
     <div class="card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No network data yet</h2>
@@ -5001,6 +5286,11 @@ async function renderNetworkPage(env) {
     <div class="card">
       <h2>Top neighborhoods by contractor</h2>
       <ul class="ent-list">${adjacency}</ul>
+    </div>
+    <div class="card">
+      <h2>Top contractors by neighborhood</h2>
+      <p class="pr-note">Includes every neighborhood with permit activity. Contractor rankings are recalculated across all attributed permits for that neighborhood.</p>
+      <div class="nb-contractor-grid">${neighborhoodContractorCards}</div>
     </div>
     <p class="pr-note">Raw nodes and edges available as JSON at <a class="ent-link" href="/api/network">/api/network</a>.</p>
     `
@@ -5208,8 +5498,27 @@ async function renderAddressPage(slug, env, request) {
   const display = address.display_address;
   const noindex = permitCount === 0;
 
-  const title = `${display} Seattle Construction Permits & Project Activity`;
-  const description = `View construction permits, contractors, project history, estimated values, and recent activity for ${display} in Seattle.`;
+  // Build SEO title/description from actual permit data instead of a generic template.
+  // This helps match search intent for address queries ("what's being built at X?").
+  const latestPermit = permits[0];  // Already sorted by date DESC via SQL
+  const permitTypeLabel = latestPermit
+    ? ({ commercial: "Commercial Construction", residential: "Residential Construction",
+         industrial: "Industrial Construction", demolition: "Demolition" })[(latestPermit.type || "").toLowerCase()] ||
+      (latestPermit.type ? latestPermit.type.charAt(0).toUpperCase() + latestPermit.type.slice(1).toLowerCase() : "Construction")
+    : "Construction";
+  const valueStr = totalValue ? `$${parseInt(totalValue).toLocaleString()}` : "";
+  const latestContractor = latestPermit?.contractor_name || "";
+
+  const title = activePermits.length > 0
+    ? `${display} — Active ${permitTypeLabel} Project in Seattle | Building Seattle`
+    : `${display} — Latest ${permitTypeLabel} Activity in Seattle | Building Seattle`;
+
+  const descParts = [`See what's being built at ${display} in Seattle.`];
+  if (activePermits.length > 0) descParts.push(`${activePermits.length} active permit${activePermits.length !== 1 ? "s" : ""}.`);
+  if (valueStr) descParts.push(`Estimated value: ${valueStr}.`);
+  if (latestContractor) descParts.push(`Contractor: ${latestContractor}.`);
+  if (!activePermits.length && permits.length > 0) descParts.push(`${permits.length} total permit${permits.length !== 1 ? "s" : ""} on record.`);
+  const description = descParts.join(" ");
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -5412,6 +5721,7 @@ async function renderProjectPage(slug, env, request) {
           </div>
           ${project.description_summary ? `<p style="margin-top:0.5rem;">${escapeHtml(project.description_summary)}</p>` : ""}
         </div>
+        ${renderProjectReviewSummary(permits)}
         <div class="card">
           <h2>Permit records (${permits.length})</h2>
           ${entPermitRows(permits)}
@@ -5957,6 +6267,8 @@ function normalizeSdciPermits(rawPermits) {
       number_review_cycles: intOrNull(item.numberreviewcycles),
       total_days_plan_review: intOrNull(item.totaldaysplanreview),
       days_out_corrections: intOrNull(item.daysoutcorrections),
+      plan_review_complete_date: extractDate(item.planreviewcompletedate),
+      ready_to_issue_date: extractDate(item.readytoissuedate),
       applied_date: extractDate(item.applieddate),
       issued_date: extractDate(item.issueddate),
       completed_date: extractDate(item.completeddate),
@@ -6045,6 +6357,8 @@ async function upsertScheduledPermits(env, permits) {
         intOrNull(permit.number_review_cycles),
         intOrNull(permit.total_days_plan_review),
         intOrNull(permit.days_out_corrections),
+        dateOrNull(permit.plan_review_complete_date),
+        dateOrNull(permit.ready_to_issue_date),
       );
     });
 
@@ -6245,6 +6559,8 @@ async function ingestPermit(request, env) {
       intOrNull(data.number_review_cycles),
       intOrNull(data.total_days_plan_review),
       intOrNull(data.days_out_corrections),
+      dateOrNull(data.plan_review_complete_date),
+      dateOrNull(data.ready_to_issue_date),
     )
     .run();
 
@@ -6355,6 +6671,8 @@ async function ingestPermitBatch(request, env) {
           intOrNull(item.number_review_cycles),
           intOrNull(item.total_days_plan_review),
           intOrNull(item.days_out_corrections),
+          dateOrNull(item.plan_review_complete_date),
+          dateOrNull(item.ready_to_issue_date),
         ),
       );
     }
