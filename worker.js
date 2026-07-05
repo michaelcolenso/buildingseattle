@@ -172,6 +172,11 @@ export default {
         return secure(await renderNetworkPage(env));
       }
 
+      if (path === "/about" || path === "/about/") {
+        ctx.waitUntil(logPageView(request, env, "/about"));
+        return secure(renderAboutPage());
+      }
+
       if (path === "/api/admin/stats") {
         const authError = requireAdminAuth(request, env);
         if (authError) return secure(authError);
@@ -5593,6 +5598,15 @@ async function renderAddressPage(slug, env, request) {
       <h1>${escapeHtml(display)}</h1>
       ${neighborhood ? `<a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
     </div>
+    <div style="max-width:var(--container-max);margin:0 auto 2.5rem;padding:0 1.5rem;">
+      <div class="card" style="margin-bottom:0;">
+        <div style="font-size:1.05rem;line-height:1.85;color:var(--text-muted);">
+          <p style="margin:0 0 1rem;">${escapeHtml(display)} is a property in Seattle${neighborhood ? `'s <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a> neighborhood` : ""} with <strong style="color:var(--text);">${permitCount} construction permit${permitCount !== 1 ? "s" : ""}</strong> on record with the Seattle Department of Construction and Inspections${activePermits.length > 0 ? `, <strong style="color:var(--text);">${activePermits.length} of which ${activePermits.length === 1 ? "is" : "are"} currently active</strong>` : ""}.${totalValue > 0 ? ` The combined estimated project value across all permits is <strong style="color:var(--text);">$${parseInt(totalValue).toLocaleString()}</strong>.` : ""}</p>
+          <p style="margin:0 0 1rem;">Permit activity at this address spans from ${firstDate ? new Date(firstDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the earliest record"} to ${lastDate ? new Date(lastDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the present"}${latestPermit ? `, with the most recent permit being a ${(latestPermit.type || "construction").toLowerCase()} project filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(latestPermit.permit_number)}">${escapeHtml(latestPermit.permit_number)}</a>` : ""}.${latestContractor ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(latestPermit?.contractor_slug || "")}">${escapeHtml(latestContractor)}</a>.` : ""}</p>
+          <p style="margin:0;">Use the data below to review individual permit records, track project timelines, see which contractors and participants have been involved, and explore nearby construction activity. Each permit links to its own detail page with review cycles, status changes, and project descriptions.</p>
+        </div>
+      </div>
+    </div>
     <div class="ent-grid">
       <div>
         <div class="card">
@@ -8309,6 +8323,106 @@ function renderOgImage() {
       "Content-Type": "image/png",
       "Cache-Control": "public, max-age=86400",
     },
+  });
+}
+
+function renderAboutPage() {
+  const canonical = `${BASE_URL}/about`;
+  const title = "About Building Seattle — Construction Permit Intelligence";
+  const description = "Building Seattle tracks construction permits across the Seattle metro area, aggregating public SDCI records into searchable property, contractor, and neighborhood views.";
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}">
+    <meta name="robots" content="index,follow">
+    <link rel="canonical" href="${canonical}">
+    <meta property="og:title" content="About Building Seattle | Seattle Construction Intelligence">
+    <meta property="og:description" content="${escapeHtml(description)}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="${canonical}">
+    <meta name="twitter:card" content="summary">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.7; }
+        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        .hero { background: linear-gradient(135deg, var(--primary) 0%, #1e293b 100%); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
+        .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1rem; }
+        .hero p { font-size: 1.15rem; opacity: 0.85; max-width: 680px; }
+        .content { max-width: 780px; margin: 0 auto; padding-bottom: 4rem; }
+        .content h2 { font-size: 1.5rem; font-weight: 700; margin: 2.5rem 0 1rem; color: var(--primary); }
+        .content p { color: var(--text-muted); font-size: 1.05rem; margin-bottom: 1.25rem; }
+        .content ul { color: var(--text-muted); font-size: 1.05rem; margin: 0 0 1.5rem 1.5rem; }
+        .content li { margin-bottom: 0.5rem; }
+        .content strong { color: var(--text); }
+        .content a { color: var(--accent); font-weight: 600; text-decoration: none; }
+        .content a:hover { text-decoration: underline; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 2rem 0; }
+        .stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; text-align: center; }
+        .stat-card .num { font-size: 2rem; font-weight: 800; color: var(--accent); }
+        .stat-card .label { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+    </style>
+</head>
+<body>
+    ${renderNav("about")}
+    <main>
+        <section class="hero">
+            <div class="container">
+                <h1>About Building Seattle</h1>
+                <p>Construction permit intelligence for the Seattle metro area — tracking who's building what, where, and with whom.</p>
+            </div>
+        </section>
+        <section class="content">
+            <div class="container">
+                <h2>What Building Seattle does</h2>
+                <p>Building Seattle collects, organizes, and publishes construction permit data from the <strong>Seattle Department of Construction and Inspections</strong>. Every permit — from tenant improvements and residential additions to major commercial projects — is ingested, enriched, and made searchable through a fast, modern web interface.</p>
+                <p>The site connects permits to their <strong>addresses, contractors, projects, and neighborhoods</strong>, turning raw city records into structured, linkable pages that help you understand Seattle's construction market at a glance.</p>
+
+                <h2>How the data works</h2>
+                <p>Permit records are ingested from public SDCI data feeds and enriched through an automated pipeline that:</p>
+                <ul>
+                    <li>Normalizes addresses and links permits to property pages</li>
+                    <li>Identifies contractors and builds contractor profile pages with project histories</li>
+                    <li>Groups related permits into inferred projects</li>
+                    <li>Maps permits to Seattle neighborhoods</li>
+                    <li>Tracks permit timelines, review cycles, and status changes</li>
+                </ul>
+                <p>Data is refreshed regularly to reflect new permit applications, issuances, and status updates from SDCI.</p>
+
+                <h2>What you can do here</h2>
+                <ul>
+                    <li><strong>Search permits</strong> — Browse live permits by address, neighborhood, type, status, contractor, and project value</li>
+                    <li><strong>Research properties</strong> — See every permit filed at a specific address, with total values and active projects</li>
+                    <li><strong>Track contractors</strong> — View contractor profiles with permit histories, active projects, and review cycle data</li>
+                    <li><strong>Follow neighborhoods</strong> — See which neighborhoods have the most permit activity and which contractors are working there</li>
+                    <li><strong>Monitor the market</strong> — Use the <a href="/insights">Insights</a> pages for plan review timelines, permit pipelines, and housing activity</li>
+                    <li><strong>Access the API</strong> — Pull permit data programmatically via the <a href="/api-docs">public API</a></li>
+                </ul>
+
+                <h2>Coverage</h2>
+                <p>Building Seattle covers construction permits within the city of Seattle, Washington, sourced from the Seattle Department of Construction and Inspections public records. The data includes permits across all permit types — commercial, residential, industrial, demolition, and more — spanning from historical records to the most recently filed applications.</p>
+
+                <h2>Get in touch</h2>
+                <p>Building Seattle is an independent project. For questions, corrections, or data inquiries, reach out via the site or file an issue on the project repository.</p>
+
+                <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
+                    <a href="/permits" class="btn" style="display:inline-flex;align-items:center;justify-content:center;padding:0.75rem 1.5rem;border-radius:0.5rem;font-weight:600;text-decoration:none;background:var(--accent);color:white;">Browse Live Permits</a>
+                    <a href="/insights" class="btn" style="display:inline-flex;align-items:center;justify-content:center;padding:0.75rem 1.5rem;border-radius:0.5rem;font-weight:600;text-decoration:none;background:var(--bg);color:var(--text);border:1px solid var(--border);">View Insights</a>
+                </div>
+            </div>
+        </section>
+    </main>
+    ${renderFooter()}
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=86400" },
   });
 }
 
