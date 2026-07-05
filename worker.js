@@ -803,12 +803,12 @@ async function handleRoot(request, env) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Seattle Construction Permits & Contractor Intelligence | Building Seattle</title>
-    <meta name="description" content="Search Seattle construction permits, contractor activity, project values, neighborhoods, and status changes from public records. Find active building projects and development leads faster.">
+    <title>Seattle Construction Permits & Project Data | Building Seattle</title>
+    <meta name="description" content="Track Seattle construction: search permits, contractor profiles, project values, and neighborhood activity. Find active building projects and development leads faster.">
     <meta name="robots" content="index,follow,max-image-preview:large">
     <link rel="canonical" href="${canonical}">
-    <meta property="og:title" content="Building Seattle | Seattle Construction Intelligence & Lead Generation">
-    <meta property="og:description" content="Search Seattle construction permits, contractor profiles, project values, neighborhoods, and development opportunities from public records.">
+    <meta property="og:title" content="Seattle Construction Permits & Project Data | Building Seattle">
+    <meta property="og:description" content="Track Seattle construction: search permits, contractor profiles, project values, and neighborhood activity. Find active building projects and development leads faster.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary_large_image">
@@ -1505,7 +1505,7 @@ async function handleRoot(request, env) {
 </body>
 </html>`;
 
-  return new Response(html, { headers: { "Content-Type": "text/html" } });
+  return new Response(html, { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } });
 }
 
 async function handleLeadCapture(request, env) {
@@ -2271,7 +2271,7 @@ async function renderPermitBrowser(request, env) {
 </html>`;
 
   return new Response(html, {
-    headers: { "Content-Type": "text/html" },
+    headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=600" },
   });
 }
 
@@ -2637,7 +2637,7 @@ async function renderPermitDetail(permitNumber, env, request) {
     typeMap[(permit.type || "").toLowerCase()] ||
     (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
-  const metaDesc = `See what's being built at ${permit.address || "Seattle"}: a ${permitType} project valued at ${valueFormatted}, currently ${permit.status || "under review"} in ${neighborhood}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
+  const metaDesc = `See ${permit.address || "Seattle"}: a ${permitType} project in ${neighborhood}. Value: ${valueFormatted}. Status: ${permit.status || "under review"}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
@@ -3062,7 +3062,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 </html>`;
 
   return new Response(html, {
-    headers: { "Content-Type": "text/html" },
+    headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" },
   });
 }
 
@@ -3394,7 +3394,7 @@ async function renderContractorPage(slug, env, request) {
   const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
   const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
   const safeContractorMetaDescription = escapeHtml(
-    `Learn about ${contractor.name}, a ${contractor.specialty || "construction"} contractor serving Seattle, WA. View ${activeProjects} active projects, ${permits.results.length} total permits, permit timelines, and review cycles from Seattle DCI data.`,
+    `${contractor.name}: ${contractor.specialty || "Construction"} contractor in Seattle, WA. ${permits.results.length} permits, ${activeProjects} active. Permit timelines, review cycles & project history.`,
   );
   const contractorWebsite = safeHttpUrl(contractor.website);
   const contractorJsonLd = JSON.stringify({
@@ -3628,7 +3628,7 @@ async function renderContractorPage(slug, env, request) {
 </body>
 </html>`;
 
-  return new Response(html, { headers: { "Content-Type": "text/html" } });
+  return new Response(html, { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } });
 }
 
 // ===========================================================================
@@ -5510,15 +5510,17 @@ async function renderAddressPage(slug, env, request) {
   const latestContractor = latestPermit?.contractor_name || "";
 
   const title = activePermits.length > 0
-    ? `${display} — Active ${permitTypeLabel} Project in Seattle | Building Seattle`
-    : `${display} — Latest ${permitTypeLabel} Activity in Seattle | Building Seattle`;
+    ? `${display} — Active ${permitTypeLabel} | Building Seattle`
+    : `${display} — Construction Activity | Building Seattle`;
 
-  const descParts = [`See what's being built at ${display} in Seattle.`];
-  if (activePermits.length > 0) descParts.push(`${activePermits.length} active permit${activePermits.length !== 1 ? "s" : ""}.`);
-  if (valueStr) descParts.push(`Estimated value: ${valueStr}.`);
-  if (latestContractor) descParts.push(`Contractor: ${latestContractor}.`);
-  if (!activePermits.length && permits.length > 0) descParts.push(`${permits.length} total permit${permits.length !== 1 ? "s" : ""} on record.`);
-  const description = descParts.join(" ");
+  let description = `Construction permits & projects at ${display} in Seattle.`;
+  if (activePermits.length > 0) {
+    description += ` ${activePermits.length} active${valueStr ? `, ${valueStr}` : ""}.`;
+  } else if (permits.length > 0) {
+    description += ` ${permits.length} permits on record${valueStr ? `, ${valueStr}` : ""}.`;
+  }
+  if (latestContractor) description += ` Contractor: ${latestContractor}.`;
+  description += ` View full property history & nearby projects.`;
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -5623,7 +5625,7 @@ async function renderAddressPage(slug, env, request) {
 
   return new Response(
     renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType: "place", body }),
-    { headers: { "Content-Type": "text/html" } },
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } },
   );
 }
 
