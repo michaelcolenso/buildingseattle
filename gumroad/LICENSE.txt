@@ -1,0 +1,17 @@
+Seattle Construction Permit Intelligence Dataset
+Copyright (c) 2026 BuildingSeattle
+
+PERMITTED USE:
+- Personal analysis, research, and internal business use
+- Commercial use within your own organization
+- Inclusion in derivative reports, presentations, and analyses
+
+NOT PERMITTED:
+- Redistribution of the raw dataset as a standalone or competing product
+- Reselling the dataset on any marketplace or platform
+- Publishing the complete dataset publicly (excerpts for journalism are fine)
+
+The underlying data originates from public government sources (Seattle SDCI).
+The cleaning, structuring, and enrichment are proprietary work.
+
+Questions: contact via buildingseattle.com

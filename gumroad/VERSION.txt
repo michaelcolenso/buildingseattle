@@ -1,0 +1,7 @@
+BuildingSeattle Permit Intelligence Dataset
+Version: 2026-07-05
+Records: 13,379
+Columns: 32
+Total value: $11,780,361,150
+Source: Seattle SDCI (services.seattle.gov/portal)
+Export date: July 5, 2026

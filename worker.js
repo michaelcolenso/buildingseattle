@@ -2642,7 +2642,8 @@ async function renderPermitDetail(permitNumber, env, request) {
     typeMap[(permit.type || "").toLowerCase()] ||
     (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
-  const metaDesc = `See ${permit.address || "Seattle"}: a ${permitType} project in ${neighborhood}. Value: ${valueFormatted}. Status: ${permit.status || "under review"}.${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
+  const permitDescForMeta = permit.description ? ` ${String(permit.description).trim().replace(/\.$/, "")}.` : "";
+  const metaDesc = `See ${permit.address || "Seattle"}: a ${permitType} project in ${neighborhood}. Value: ${valueFormatted}. Status: ${permit.status || "under review"}.${permitDescForMeta}${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
   const safePermitNumber = escapeHtml(permit.permit_number);
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
