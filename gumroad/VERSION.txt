@@ -1,7 +1,13 @@
 BuildingSeattle Permit Intelligence Dataset
-Version: 2026-07-05
-Records: 13,379
+Version: 2026-07
+Records: 13,623
 Columns: 32
-Total value: $11,780,361,150
+Total value: $12,030,940,171
+Neighborhoods: 53
 Source: Seattle SDCI (services.seattle.gov/portal)
-Export date: July 5, 2026
+Export date: July 19, 2026
+
+SHA256:
+  buildingseattle_permits.csv  d7a2abbb0d69fbda5b7a8cc302a31d2d63ee433755d2466f1427551fca2480f5
+  buildingseattle_sample.csv  e0cf7f99f9864d0fe6fe683744992de982da32872b3763eb580b0a3a194196ea
+  contractors.csv  dc27ab170344cb0ad7c8e3c17a482678cf7934896c6251abc649946896751861
