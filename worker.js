@@ -1020,7 +1020,7 @@ async function handleRoot(request, env) {
     </section>
 
     ${graphSection}
-`,
+,
     <section class="live-data" id="use-cases" style="background:var(--bg-alt);">
         <div class="container">
             <div class="section-header">
