@@ -177,6 +177,11 @@ export default {
         return secure(renderAboutPage());
       }
 
+      if (path === "/data" || path === "/data/") {
+        ctx.waitUntil(logPageView(request, env, "/data"));
+        return secure(await renderDataPage(env));
+      }
+
       if (path === "/api/admin/stats") {
         const authError = requireAdminAuth(request, env);
         if (authError) return secure(authError);
@@ -666,6 +671,7 @@ function renderNav(activePage) {
           ${link("/", "Home", "home")}
           ${link("/permits", "Browse Permits", "permits")}
           ${link("/insights/plan-review", "Insights", "insights")}
+          ${link("/data", "Data", "data")}
           ${link("/api/permits", "API", "api")}
         </div>
       </div>
@@ -676,7 +682,7 @@ function renderFooter() {
   return `<footer class="global-footer">
       <div class="global-footer-row">
         <div>Building Seattle &mdash; Seattle construction intelligence</div>
-        <div><a href="mailto:hello@buildingseattle.com">hello@buildingseattle.com</a></div>
+        <div><a href="/data">Get the Dataset</a> &middot; <a href="mailto:hello@buildingseattle.com">hello@buildingseattle.com</a></div>
       </div>
     </footer>`;
 }
@@ -7574,6 +7580,7 @@ const SITEMAP_PAGE_SIZE = 45000;
 const SITEMAP_STATIC_PATHS = [
   "/",
   "/permits",
+  "/data",
   "/insights",
   "/insights/plan-review",
   "/insights/pipeline",
@@ -8424,6 +8431,158 @@ function renderAboutPage() {
 
   return new Response(html, {
     headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=86400" },
+  });
+}
+
+const GUMROAD_PRODUCT_URL = "https://buildingseattle.gumroad.com/l/seattle-permits";
+const GUMROAD_UTM = "utm_source=buildingseattle&utm_medium=site&utm_campaign=data_page";
+
+async function renderDataPage(env) {
+  const canonical = `${BASE_URL}/data`;
+  const title = "Seattle Construction Permit Dataset — CSV Download | Building Seattle";
+  const description =
+    "The complete Building Seattle permit dataset as a ready-to-use CSV: every Seattle construction permit, enriched with parcel numbers, review levels, and contractor licenses. Free 100-row sample.";
+
+  let stats = { permits: 0, contractors: 0, neighborhoods: 0, total_value: 0 };
+  try {
+    const row = await env.DB.prepare(
+      `
+      SELECT
+        COUNT(*) as permits,
+        SUM(value) as total_value,
+        COUNT(DISTINCT neighborhood) as neighborhoods,
+        COUNT(DISTINCT contractor_id) as contractors
+      FROM permits
+    `,
+    ).first();
+    if (row) stats = row;
+  } catch (error) {
+    console.warn("Data page stats unavailable:", error.message);
+  }
+
+  const billions = stats.total_value ? `$${(stats.total_value / 1e9).toFixed(2)}B` : "$12B+";
+  const permitCount = stats.permits ? Number(stats.permits).toLocaleString() : "13,000+";
+  const contractorCount = stats.contractors ? Number(stats.contractors).toLocaleString() : "2,000+";
+  const buyUrl = `${GUMROAD_PRODUCT_URL}?${GUMROAD_UTM}`;
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}">
+    <meta name="robots" content="index,follow">
+    <link rel="canonical" href="${canonical}">
+    <meta property="og:title" content="Seattle Construction Permit Dataset | Building Seattle">
+    <meta property="og:description" content="${escapeHtml(description)}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="${canonical}">
+    <meta name="twitter:card" content="summary">
+    <link rel="icon" href="/favicon.ico" type="image/png">
+    ${renderDesignTokens()}
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.7; }
+        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        .hero { background: linear-gradient(135deg, var(--primary) 0%, #1e293b 100%); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
+        .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1rem; }
+        .hero p { font-size: 1.15rem; opacity: 0.85; max-width: 680px; }
+        .content { max-width: 780px; margin: 0 auto; padding-bottom: 4rem; }
+        .content h2 { font-size: 1.5rem; font-weight: 700; margin: 2.5rem 0 1rem; color: var(--primary); }
+        .content p { color: var(--text-muted); font-size: 1.05rem; margin-bottom: 1.25rem; }
+        .content ul { color: var(--text-muted); font-size: 1.05rem; margin: 0 0 1.5rem 1.5rem; }
+        .content li { margin-bottom: 0.5rem; }
+        .content strong { color: var(--text); }
+        .content a { color: var(--accent); font-weight: 600; text-decoration: none; }
+        .content a:hover { text-decoration: underline; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
+        .stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; text-align: center; }
+        .stat-card .num { font-size: 2rem; font-weight: 800; color: var(--accent); }
+        .stat-card .label { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .tier-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin: 2rem 0; }
+        .tier-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 2rem; }
+        .tier-card.featured { border-color: var(--accent); box-shadow: 0 4px 24px rgba(0,0,0,0.06); }
+        .tier-card h3 { font-size: 1.25rem; font-weight: 700; color: var(--primary); }
+        .tier-card .price { font-size: 2.25rem; font-weight: 800; color: var(--text); margin: 0.5rem 0 1rem; }
+        .tier-card ul { margin-left: 1.25rem; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.85rem 1.75rem; border-radius: 0.5rem; font-weight: 600; text-decoration: none; font-size: 1rem; }
+        .btn-primary { background: var(--accent); color: white !important; }
+        .btn-secondary { background: var(--bg); color: var(--text) !important; border: 1px solid var(--border); }
+    </style>
+</head>
+<body>
+    ${renderNav("data")}
+    <main>
+        <section class="hero">
+            <div class="container">
+                <h1>The Seattle Permit Dataset</h1>
+                <p>Everything on this site — ${permitCount} enriched construction permits, ${billions} in project value — exported as a clean, ready-to-analyze CSV. Refreshed monthly, updates free for every buyer.</p>
+            </div>
+        </section>
+        <section class="content">
+            <div class="container">
+                <div class="stat-grid">
+                    <div class="stat-card"><div class="num">${permitCount}</div><div class="label">Permits</div></div>
+                    <div class="stat-card"><div class="num">${billions}</div><div class="label">Construction value</div></div>
+                    <div class="stat-card"><div class="num">${contractorCount}</div><div class="label">Contractors</div></div>
+                    <div class="stat-card"><div class="num">32</div><div class="label">Columns per record</div></div>
+                </div>
+
+                <h2>What's in it</h2>
+                <p>Every construction permit filed with Seattle SDCI, cleaned and deduplicated, then enriched with data the open data portal doesn't have: <strong>parcel numbers, review levels, full detail-page descriptions, contractor license numbers, review-cycle counts, and housing unit breakdowns</strong>. One UTF-8 CSV that opens in Excel, Google Sheets, pandas, or R — plus a full data dictionary.</p>
+
+                <h2>Try before you buy</h2>
+                <p>A <strong>free 100-row sample</strong> with the same 32 columns and real enriched data is available on the product page. If it doesn't have what you need, don't buy the full version. If you do buy and it isn't useful, there's a 14-day no-questions refund.</p>
+
+                <div class="tier-grid">
+                    <div class="tier-card">
+                        <h3>Foundation</h3>
+                        <div class="price">$49</div>
+                        <ul>
+                            <li>Full CSV — every permit, 32 columns</li>
+                            <li>Complete data dictionary</li>
+                            <li>Free monthly updates via Gumroad</li>
+                        </ul>
+                        <p style="margin-top:1.5rem;"><a class="btn btn-secondary" href="${buyUrl}&utm_content=foundation" rel="noopener">Get Foundation</a></p>
+                    </div>
+                    <div class="tier-card featured">
+                        <h3>Pro</h3>
+                        <div class="price">$89</div>
+                        <ul>
+                            <li>Everything in Foundation</li>
+                            <li>Python refresh script (stdlib-only)</li>
+                            <li>Contractor CSV — licenses, specialties, permit counts, total values</li>
+                            <li>Free monthly updates via Gumroad</li>
+                        </ul>
+                        <p style="margin-top:1.5rem;"><a class="btn btn-primary" href="${buyUrl}&utm_content=pro" rel="noopener">Get Pro</a></p>
+                    </div>
+                </div>
+
+                <h2>Who it's for</h2>
+                <ul>
+                    <li><strong>Material suppliers</strong> — find active job sites by neighborhood before your competitors do</li>
+                    <li><strong>General contractors</strong> — see who's winning bids and which subs are active</li>
+                    <li><strong>Developers</strong> — size the construction pipeline in any Seattle neighborhood</li>
+                    <li><strong>Underwriters, journalists, researchers</strong> — license data, project values, and processing times with a paper trail to the source</li>
+                </ul>
+
+                <h2>Why pay for public data?</h2>
+                <p>The raw records are public — the work isn't. The city publishes permits piecemeal through a clunky portal, without contractor licenses, parcel numbers, review levels, or detailed descriptions. Our pipeline scrapes, cleans, deduplicates, and enriches every record so you don't spend a weekend doing it yourself.</p>
+
+                <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
+                    <a href="${buyUrl}" class="btn btn-primary" rel="noopener">Get the Dataset</a>
+                    <a href="/permits" class="btn btn-secondary">Browse the Data Live</a>
+                </div>
+            </div>
+        </section>
+    </main>
+    ${renderFooter()}
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" },
   });
 }
 

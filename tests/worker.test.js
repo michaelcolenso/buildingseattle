@@ -243,6 +243,15 @@ function createEnv() {
             throw new Error(`Unhandled all() query: ${sql}`);
           },
           async first() {
+            if (sql.includes("COUNT(DISTINCT neighborhood) as neighborhoods")) {
+              return {
+                permits: permits.length,
+                total_value: permits.reduce((sum, permit) => sum + (permit.value || 0), 0),
+                neighborhoods: new Set(permits.map((permit) => permit.neighborhood).filter(Boolean)).size,
+                contractors: new Set(permits.map((permit) => permit.contractor_id).filter(Boolean)).size,
+              };
+            }
+
             if (sql.includes("SELECT permit_number, address, status FROM permits WHERE permit_number = ?")) {
               const permit = permits.find((item) => item.permit_number === params[0]);
               return permit
@@ -756,6 +765,21 @@ test("GET /sitemaps/permits-1.xml returns canonical URLs with accurate lastmod v
   assert.doesNotMatch(xml, /<priority>|<changefreq>/);
 });
 
+test("GET /data renders the dataset landing page with live stats", async () => {
+  const env = createEnv();
+  const response = await worker.fetch(new Request("http://example.com/data"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /The Seattle Permit Dataset/);
+  assert.match(html, /gumroad\.com\/l\/seattle-permits/);
+  assert.match(html, /utm_source=buildingseattle/);
+  assert.match(html, /\$49/);
+  assert.match(html, /\$89/);
+  // stats come from the mock DB: 2 permits totalling $63.8M
+  assert.match(html, /\$0\.06B/);
+});
+
 test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const env = createSitemapEnv({
     statsByType: {
@@ -767,8 +791,9 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 9);
+  assert.equal((xml.match(/<url>/g) || []).length, 10);
   assert.match(xml, /http:\/\/example\.com\/insights\/network/);
+  assert.match(xml, /http:\/\/example\.com\/data/);
   assert.match(xml, /<lastmod>2026-06-11<\/lastmod>/);
 });
 
