@@ -2,6 +2,13 @@
 
 *Generated 2026-05-30. Scope: every page rendered out of `worker.js`.*
 
+> **Historical document.** `worker.js` has grown substantially since this audit
+> was written (it was a fraction of today's ~8,600 lines) and its planned
+> module split (see the repo's implementation plan, Task B5) hasn't landed yet.
+> Line numbers, function names, and LOC counts below are **stale** — treat this
+> as a record of findings and recommendations at the time, not a current map
+> of the file. Re-verify locations before acting on anything here.
+
 The entire UI lives in six HTML render functions inside `worker.js`. Each
 defines its own `<style>` block with no shared tokens, helper, or imported
 CSS. This document catalogs the resulting inconsistencies and lists

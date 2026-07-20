@@ -39,24 +39,26 @@ Every column, its type, what it means, and a real example from the dataset.
 | 31 | `permit_detail_url` | url | 84% | Direct link to SDCI detail page | `https://services.seattle.gov/portal/...altId=7142260-CN` |
 | 32 | `record_status_detail` | string | 84% | SDCI status detail text | `Reviews In Process` |
 
+<!-- BEGIN GENERATED:STATS -->
 ## Status Values
 
 | Status | Description | Count |
 |--------|-------------|-------|
-| `active` | Under active review or construction | 5,632 |
-| `completed` | Work completed, permit closed | 5,156 |
-| `new` | Application submitted, not yet in review | 1,867 |
-| `pending` | Application pending processing | 456 |
+| `active` | Under active review or construction | 5,752 |
+| `completed` | Work completed, permit closed | 5,227 |
+| `new` | Application submitted, not yet in review | 1,919 |
+| `pending` | Application pending processing | 457 |
 | `expired` | Permit expired before completion | 268 |
 
 ## Permit Types
 
 | Type | Description | Count |
 |------|-------------|-------|
-| `residential` | Single-family, multifamily, ADU/DADU | 10,314 |
-| `commercial` | Office, retail, industrial, institutional | 2,848 |
-| `industrial` | Manufacturing, warehouse | 172 |
+| `residential` | Single-family, multifamily, ADU/DADU | 10,503 |
+| `commercial` | Office, retail, industrial, institutional | 2,898 |
+| `industrial` | Manufacturing, warehouse | 177 |
 | `land` | Vacant land, land use only | 45 |
+<!-- END GENERATED:STATS -->
 
 ## Data Source & Methodology
 
@@ -65,9 +67,12 @@ Every column, its type, what it means, and a real example from the dataset.
 
 Enrichment coverage: 84% of records have parcel numbers, review levels, primary property use, and detailed descriptions. Contractor license data covers 55-59% of records (contractors without WA LNI registration are blank). Timeline and housing breakdown fields are present for records where the city published them.
 
+<!-- BEGIN GENERATED:VERSION -->
 ## Version
 
-- Export date: July 5, 2026
-- Records: 13,379
+- Version: 2026-07
+- Export date: July 19, 2026
+- Records: 13,623
 - Columns: 32
-- Total construction value: $11.78 billion
+- Total construction value: $12.03 billion
+<!-- END GENERATED:VERSION -->

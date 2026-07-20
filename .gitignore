@@ -1,4 +1,45 @@
+# Local tooling / one-off helper scripts
 deploy_cf.py
 gen_mcp_js.py
+
+# Dependencies & environments
 node_modules/
 .venv/
+__pycache__/
+.pytest_cache/
+
+# Secrets — never commit (.dev.vars holds INGEST_API_TOKEN etc.)
+.dev.vars
+.env
+.env.*
+
+# Editor/agent state
+.antigravitycli/
+
+# Generated SQL import artifacts (regenerate via scripts; never commit)
+sql_chunk_*.sql
+sql_sml_*.sql
+sql_batch_*.sql
+sql_big_*.sql
+import.sql
+
+# Generated data exports (regenerate via scripts; never commit)
+buildingseattle_full_export.jsonl
+sdci_enrichment_*.jsonl
+sdci_permit_enrichments.jsonl
+sdci_detail_probe_results.jsonl
+unenriched_permits.json
+seattle_permits.jsonl
+seattle_contractors.jsonl
+test_batch.json
+test_enrich.jsonl
+/buildingseattle_permits.csv
+/buildingseattle_sample.csv
+buildingseattle_fresh.csv
+
+# Base64 image blobs (the .png versions are the source of truth)
+*.b64
+
+# Gumroad build outputs (built by gumroad/build_dataset.py)
+gumroad/dist/
+gumroad/releases/

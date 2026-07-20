@@ -2,7 +2,7 @@
 
 ## What You Get
 
-**13,379 building permits** — every construction project in Seattle, scraped from the city's SDCI portal and enriched with parcel numbers, review levels, detailed descriptions, and contractor license data.
+**13,623 building permits** — every construction project in Seattle, scraped from the city's SDCI portal and enriched with parcel numbers, review levels, detailed descriptions, and contractor license data.
 
 This is the dataset powering [buildingseattle.com](https://buildingseattle.com), exported as a ready-to-use CSV.
 
@@ -10,7 +10,7 @@ This is the dataset powering [buildingseattle.com](https://buildingseattle.com),
 
 ## Product Tier: Foundation ($49)
 
-A single CSV file with **13,379 records** and **32 columns** covering:
+A single CSV file with **13,623 records** and **32 columns** covering:
 
 | Category | Fields |
 |----------|--------|
@@ -27,12 +27,12 @@ A full data dictionary (`data-dictionary.md`) is included with every column docu
 
 ---
 
-## Product Tier: Pro ($79)
+## Product Tier: Pro ($89)
 
 Everything in Foundation, plus:
 
 - **Python refresh script** (`refresh.py`) — pull fresh data from the source whenever you need it
-- **Contractor-only CSV** — 2,072 contractors with license numbers, specialties, permit counts, and total project values
+- **Contractor-only CSV** — 2,077 contractors with license numbers, specialties, permit counts, and total project values
 - **30-day data refresh guarantee** — email us within 30 days and we'll send you the latest pull for free
 
 ---
@@ -47,15 +47,28 @@ Everything in Foundation, plus:
 
 **Insurance underwriters** — Contractor license numbers, project values, and permit statuses in one place.
 
-**Data journalists** — $11.78 billion in construction activity with a full paper trail to the source.
+**Data journalists** — $12.03 billion in construction activity with a full paper trail to the source.
 
 **Researchers** — Housing unit trends, permit processing times, and contractor performance metrics.
 
 ---
 
-## Data Freshness
+## Data Freshness & Update Policy
 
-Updated from the Seattle SDCI portal as of **July 5, 2026**. The included Python refresh script pulls fresh data on demand.
+Updated from the Seattle SDCI portal as of **July 19, 2026**. The included Python refresh script (Pro) pulls fresh data on demand.
+
+**Monthly updates, free for every buyer:**
+
+- The dataset is refreshed on the **first business day of each month**, versioned `YYYY-MM` (see `VERSION.txt` and `CHANGELOG.md` inside the download).
+- New files are pushed to existing buyers through Gumroad's file-update mechanism — you get an email notification and the new version appears in your Gumroad library at no extra cost.
+- Seattle files roughly **500 new permits per month**, so each refresh is a meaningful bump.
+- Pro's 30-day refresh guarantee is automatically satisfied by the monthly cadence; if you ever need an off-cycle pull, email us or run `refresh.py`.
+
+<!-- Maintainer note (not buyer-facing): rebuild all artifacts with
+     `python3 gumroad/build_dataset.py` (supersedes export_full.py /
+     generate_csv.py, now in scripts/legacy/). Current CSVs stay in git;
+     monthly release ZIPs live in gitignored gumroad/dist/. -->
+
 
 ---
 
@@ -63,15 +76,15 @@ Updated from the Seattle SDCI portal as of **July 5, 2026**. The included Python
 
 | Metric | Count |
 |--------|-------|
-| Total permits | 13,379 |
+| Total permits | 13,623 |
 | Active permits | 5,632 |
 | Completed permits | 5,156 |
 | Residential | 10,314 |
 | Commercial | 2,848 |
 | Industrial | 172 |
 | Neighborhoods | 53 |
-| Contractors | 2,072 |
-| Total construction value | **$11.78 billion** |
+| Contractors | 2,077 |
+| Total construction value | **$12.03 billion** |
 
 ---
 
@@ -87,7 +100,7 @@ Updated from the Seattle SDCI portal as of **July 5, 2026**. The included Python
 A: The Seattle SDCI (Seattle Department of Construction & Inspections) public portal at services.seattle.gov/portal. We scrape and structure it. The original source is public — we do the cleaning, deduplication, and enrichment.
 
 **Q: Is this the same data as buildingseattle.com?**
-A: Yes. This is a direct export of the same database powering that site. The site shows the latest data; this CSV is an export as of July 5, 2026.
+A: Yes. This is a direct export of the same database powering that site. The site shows the latest data; this CSV is an export as of July 19, 2026.
 
 **Q: How is this different from the Seattle Open Data Portal?**
 A: The open data portal doesn't include contractor license details, parcel numbers, detailed descriptions, review levels, or permit status changes. Our enrichment pipeline adds all of that.
