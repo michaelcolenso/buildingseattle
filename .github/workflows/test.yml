@@ -1,1 +1,40 @@
+name: Test
 
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check worker.js syntax
+        run: node --check worker.js
+
+      - name: Run node tests
+        run: node --test "tests/**/*.test.js"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Run pytest
+        run: uv run --extra dev pytest tests/ -q
+        
