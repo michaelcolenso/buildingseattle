@@ -29,10 +29,15 @@ CREATE TABLE IF NOT EXISTS alert_watches (
     unsubscribed_at DATETIME,
     last_notified_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (email, watch_type, target, radius_m)
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- SQLite treats NULL as distinct in a UNIQUE constraint, so a plain
+-- UNIQUE(email, watch_type, target, radius_m) would let the same exact-match
+-- watch (radius_m IS NULL) be inserted repeatedly. Coalesce to a sentinel so
+-- exact-match watches actually dedupe.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_watches_unique
+    ON alert_watches(email, watch_type, target, COALESCE(radius_m, -1));
 CREATE INDEX IF NOT EXISTS idx_alert_watches_status ON alert_watches(status);
 CREATE INDEX IF NOT EXISTS idx_alert_watches_type_target ON alert_watches(watch_type, target);
 CREATE INDEX IF NOT EXISTS idx_alert_watches_email ON alert_watches(email);
@@ -46,9 +51,13 @@ CREATE TABLE IF NOT EXISTS alert_notification_log (
     permit_number TEXT NOT NULL,
     change_id INTEGER,                  -- NULL for "new permit" notifications, set for status-change notifications
     sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (watch_id, permit_number, change_id),
     FOREIGN KEY (watch_id) REFERENCES alert_watches(id)
 );
 
+-- Same NULL-distinctness issue as alert_watches above: without the
+-- COALESCE, a retry could insert multiple "new permit" (change_id IS NULL)
+-- log rows for the same watch/permit and defeat the dedupe.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_notification_log_unique
+    ON alert_notification_log(watch_id, permit_number, COALESCE(change_id, -1));
 CREATE INDEX IF NOT EXISTS idx_alert_notification_log_watch
     ON alert_notification_log(watch_id);
