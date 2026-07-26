@@ -125,6 +125,10 @@ export default {
         return secure(await getHousingStats(env));
       }
 
+      if (path === "/api/adu-dadu") {
+        return secure(await getAduDaduStats(env));
+      }
+
       if (path === "/api/map") {
         return secure(await getMapStats(env));
       }
@@ -155,6 +159,11 @@ export default {
       if (path === "/insights/housing") {
         ctx.waitUntil(logPageView(request, env, "/insights/housing"));
         return secure(await renderHousingPage(env));
+      }
+
+      if (path === "/insights/adu-dadu") {
+        ctx.waitUntil(logPageView(request, env, "/insights/adu-dadu"));
+        return secure(await renderAduDaduPage(env));
       }
 
       if (path === "/insights/map") {
@@ -4463,6 +4472,7 @@ function insightsTabs(active) {
     { key: "plan-review", label: "Plan Review", href: "/insights/plan-review" },
     { key: "pipeline", label: "Pipeline", href: "/insights/pipeline" },
     { key: "housing", label: "Housing", href: "/insights/housing" },
+    { key: "adu-dadu", label: "ADU / DADU", href: "/insights/adu-dadu" },
     { key: "map", label: "Map", href: "/insights/map" },
     { key: "contractors", label: "Contractors", href: "/insights/contractors" },
     { key: "network", label: "Network", href: "/insights/network" },
@@ -4915,6 +4925,292 @@ async function renderHousingPage(env) {
     `
         : emptyState
     }`;
+
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
+
+const ADU_CLASSIFIED_CTE = `
+  WITH normalized AS (
+    SELECT p.*,
+           lower(
+             replace(replace(replace(replace(replace(replace(
+               COALESCE(p.detailed_description, '') || ' ' ||
+               COALESCE(p.description, '') || ' ' ||
+               COALESCE(p.primary_property_use, '') || ' ' ||
+               COALESCE(p.dwelling_unit_type, ''),
+               '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '), ')', ' ')
+           ) AS adu_search_text
+    FROM permits p
+  ),
+  classified AS (
+    SELECT normalized.*,
+           CASE
+             WHEN instr(' ' || adu_search_text || ' ', ' dadu ') > 0
+               OR adu_search_text LIKE '%detached accessory dwelling unit%'
+               OR adu_search_text LIKE '%detached accessory dwelling%'
+               OR adu_search_text LIKE '%backyard cottage%'
+             THEN 'DADU'
+             ELSE 'ADU'
+           END AS adu_type
+    FROM normalized
+    WHERE instr(' ' || adu_search_text || ' ', ' dadu ') > 0
+       OR instr(' ' || adu_search_text || ' ', ' adu ') > 0
+       OR adu_search_text LIKE '%accessory dwelling unit%'
+       OR adu_search_text LIKE '%accessory dwelling%'
+       OR adu_search_text LIKE '%backyard cottage%'
+  )
+`;
+
+async function getAduDaduData(env) {
+  const [totals, byYear, byNeighborhood, recent] = await Promise.all([
+    safeFirst(
+      env,
+      `/* adu-tracker:totals */
+      ${ADU_CLASSIFIED_CTE}
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
+             SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count,
+             SUM(COALESCE(value, 0)) AS total_value,
+             SUM(COALESCE(housing_units_added, 0)) AS units_added,
+             SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
+             SUM(CASE WHEN lower(COALESCE(status, '')) IN ('active', 'pending', 'new', 'in review', 'under review') THEN 1 ELSE 0 END) AS active
+      FROM classified`,
+    ),
+    safeAll(
+      env,
+      `/* adu-tracker:by-year */
+      ${ADU_CLASSIFIED_CTE}
+      SELECT substr(COALESCE(NULLIF(issued_date, ''), applied_date), 1, 4) AS yr,
+             COUNT(*) AS permits,
+             SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
+             SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count
+      FROM classified
+      WHERE COALESCE(NULLIF(issued_date, ''), applied_date) IS NOT NULL
+      GROUP BY yr
+      HAVING yr IS NOT NULL AND yr != ''
+      ORDER BY yr ASC`,
+    ),
+    safeAll(
+      env,
+      `/* adu-tracker:by-neighborhood */
+      ${ADU_CLASSIFIED_CTE}
+      SELECT COALESCE(NULLIF(neighborhood, ''), 'Unknown') AS label,
+             COUNT(*) AS permits,
+             SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
+             SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count,
+             SUM(COALESCE(value, 0)) AS total_value
+      FROM classified
+      GROUP BY label
+      ORDER BY permits DESC, total_value DESC
+      LIMIT 12`,
+    ),
+    safeAll(
+      env,
+      `/* adu-tracker:recent */
+      ${ADU_CLASSIFIED_CTE}
+      SELECT permit_number, address, neighborhood, status, value, housing_units_added,
+             COALESCE(NULLIF(issued_date, ''), applied_date) AS activity_date,
+             adu_type
+      FROM classified
+      ORDER BY COALESCE(NULLIF(issued_date, ''), applied_date, created_at) DESC
+      LIMIT 20`,
+    ),
+  ]);
+
+  const number = (value) => Number(value) || 0;
+  return {
+    totals: {
+      total: number(totals?.total),
+      adu_count: number(totals?.adu_count),
+      dadu_count: number(totals?.dadu_count),
+      total_value: number(totals?.total_value),
+      units_added: number(totals?.units_added),
+      issued: number(totals?.issued),
+      active: number(totals?.active),
+    },
+    by_year: byYear.map((row) => ({
+      year: row.yr,
+      permits: number(row.permits),
+      adu_count: number(row.adu_count),
+      dadu_count: number(row.dadu_count),
+    })),
+    by_neighborhood: byNeighborhood.map((row) => ({
+      label: row.label,
+      permits: number(row.permits),
+      adu_count: number(row.adu_count),
+      dadu_count: number(row.dadu_count),
+      total_value: number(row.total_value),
+    })),
+    recent: recent.map((row) => ({
+      ...row,
+      value: number(row.value),
+      housing_units_added: number(row.housing_units_added),
+    })),
+  };
+}
+
+async function getAduDaduStats(env) {
+  const data = await getAduDaduData(env);
+  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+async function renderAduDaduPage(env) {
+  const canonical = `${BASE_URL}/insights/adu-dadu`;
+  const data = await getAduDaduData(env);
+  const totals = data.totals;
+  const hasData = totals.total > 0;
+  const title = "Seattle ADU & DADU Permit Tracker | Building Seattle";
+  const description =
+    "Track Seattle ADU and DADU permits by year, neighborhood, status, declared value, and recent activity using public SDCI permit records.";
+
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Dataset",
+        name: "Seattle ADU and DADU Permit Tracker",
+        description,
+        url: canonical,
+        creator: { "@type": "Organization", name: "Building Seattle" },
+        spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
+        temporalCoverage: data.by_year.length
+          ? `${data.by_year[0].year}/${data.by_year[data.by_year.length - 1].year}`
+          : undefined,
+      },
+      {
+        "@type": "FAQPage",
+        mainEntity: [
+          {
+            "@type": "Question",
+            name: "What is the difference between an ADU and a DADU in Seattle?",
+            acceptedAnswer: {
+              "@type": "Answer",
+              text: "An ADU is an accessory dwelling unit associated with a primary home. A DADU is detached from the primary home and is often described as a backyard cottage.",
+            },
+          },
+          {
+            "@type": "Question",
+            name: "Does every permit in this tracker represent a completed home?",
+            acceptedAnswer: {
+              "@type": "Answer",
+              text: "No. The tracker includes matching public permit records at different stages, from application and review through issuance and completion.",
+            },
+          },
+          {
+            "@type": "Question",
+            name: "How are ADU and DADU permits identified?",
+            acceptedAnswer: {
+              "@type": "Answer",
+              text: "Building Seattle classifies permit records using explicit terms such as ADU, DADU, accessory dwelling unit, detached accessory dwelling unit, and backyard cottage in public permit descriptions.",
+            },
+          },
+        ],
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Insights", item: `${BASE_URL}/insights` },
+          { "@type": "ListItem", position: 3, name: "ADU and DADU Permit Tracker", item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+
+  const yearRows = data.by_year.map((row) => ({
+    label: row.year,
+    value: row.permits,
+    display: row.permits.toLocaleString(),
+    sub: `${row.adu_count} ADU · ${row.dadu_count} DADU`,
+  }));
+  const neighborhoodRows = data.by_neighborhood.map((row) => ({
+    label: row.label,
+    value: row.permits,
+    display: row.permits.toLocaleString(),
+    sub: `${row.dadu_count} detached · ${compactMoney(row.total_value)}`,
+  }));
+  const recentRows = data.recent
+    .map(
+      (permit) => `<tr>
+        <td><a class="ent-link" href="/permits/${encodeURIComponent(permit.permit_number)}">${escapeHtml(permit.permit_number)}</a></td>
+        <td>${escapeHtml(permit.adu_type)}</td>
+        <td>${escapeHtml(permit.address || "Address unavailable")}</td>
+        <td>${escapeHtml(permit.neighborhood || "Unknown")}</td>
+        <td>${escapeHtml(permit.status || "Unknown")}</td>
+        <td>${permit.value > 0 ? escapeHtml(compactMoney(permit.value)) : "Not reported"}</td>
+        <td>${escapeHtml(entDate(permit.activity_date))}</td>
+      </tr>`,
+    )
+    .join("");
+
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "ADU / DADU" }])}
+    ${insightsStyles()}
+    ${insightsTabs("adu-dadu")}
+    <div class="ent-hero">
+      <div class="ent-kicker">Seattle housing intelligence</div>
+      <h1>Seattle ADU &amp; DADU permit tracker</h1>
+      <p style="color:var(--text-muted);max-width:70ch;margin:0;">Follow accessory dwelling unit permits across Seattle, compare attached ADUs with detached backyard cottages, and see where new small-scale housing activity is concentrating.</p>
+    </div>
+    ${
+      hasData
+        ? `
+    <div class="card">
+      <div class="stat-row">
+        ${entStat("Matching permits", totals.total.toLocaleString())}
+        ${entStat("ADU records", totals.adu_count.toLocaleString())}
+        ${entStat("DADU records", totals.dadu_count.toLocaleString())}
+        ${entStat("Issued", totals.issued.toLocaleString())}
+        ${entStat("Active / in review", totals.active.toLocaleString())}
+        ${entStat("Declared value", compactMoney(totals.total_value))}
+      </div>
+      <p class="pr-note">These are matching permit records, not a count of guaranteed completed dwellings. One property or project can have multiple related permits.</p>
+    </div>
+    <div class="card">
+      <h2>ADU and DADU permits by year</h2>
+      ${prBarChart(yearRows, "var(--success)")}
+      <p class="pr-note">Grouped by issue date when available, otherwise application date.</p>
+    </div>
+    <div class="card">
+      <h2>Seattle neighborhoods with the most ADU activity</h2>
+      ${prBarChart(neighborhoodRows, "var(--accent)")}
+    </div>
+    <div class="card">
+      <h2>Recent Seattle ADU and DADU permits</h2>
+      <div style="overflow-x:auto;">
+        <table class="ent">
+          <thead><tr><th>Permit</th><th>Type</th><th>Address</th><th>Neighborhood</th><th>Status</th><th>Value</th><th>Date</th></tr></thead>
+          <tbody>${recentRows}</tbody>
+        </table>
+      </div>
+    </div>
+    `
+        : `<div class="card"><h2>ADU data is being classified</h2><p>The tracker will become indexable after matching Seattle permit records are available.</p></div>`
+    }
+    <div class="ent-grid" style="margin-top:1rem;">
+      <section class="card">
+        <h2>ADU vs. DADU</h2>
+        <p><strong>ADU</strong> is the broader term for an accessory dwelling unit associated with a primary home. It can be inside, attached to, or converted from part of an existing structure.</p>
+        <p><strong>DADU</strong> means detached accessory dwelling unit. In Seattle records it may also appear as a detached ADU or backyard cottage.</p>
+      </section>
+      <section class="card">
+        <h2>How the tracker works</h2>
+        <p>Building Seattle searches public permit descriptions for explicit ADU terminology, classifies detached projects separately, and aggregates results by year and neighborhood.</p>
+        <p>Declared permit values and housing-unit fields are presented as reported and may be incomplete or revised during review.</p>
+      </section>
+    </div>
+    <section class="card">
+      <h2>Using ADU permit activity</h2>
+      <p>Homeowners can see the kinds of projects moving through Seattle review. Contractors and designers can identify neighborhoods with sustained accessory-dwelling demand. Researchers can track how small-scale infill contributes to Seattle's housing pipeline.</p>
+      <p class="pr-note">Raw tracker data is available at <a class="ent-link" href="/api/adu-dadu">/api/adu-dadu</a>. Source records come from Seattle Department of Construction and Inspections permit data.</p>
+    </section>
+  `;
 
   return new Response(
     renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
@@ -5514,7 +5810,7 @@ async function renderNetworkPage(env) {
 
 async function renderInsightsIndex(env) {
   const canonical = `${BASE_URL}/insights`;
-  const [pr, pipe, house, mapAgg, contractorAgg] = await Promise.all([
+  const [pr, pipe, house, aduAgg, mapAgg, contractorAgg] = await Promise.all([
     safeFirst(
       env,
       `SELECT COUNT(*) AS cnt, AVG(total_days_plan_review) AS avg_days
@@ -5533,6 +5829,12 @@ async function renderInsightsIndex(env) {
     ),
     safeFirst(
       env,
+      `/* adu-tracker:index */
+       ${ADU_CLASSIFIED_CTE}
+       SELECT COUNT(*) AS total FROM classified`,
+    ),
+    safeFirst(
+      env,
       `SELECT COUNT(DISTINCT neighborhood) AS nbhds
        FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != ''`,
     ),
@@ -5548,12 +5850,13 @@ async function renderInsightsIndex(env) {
   const pipeTotal = Number(pipe?.total) || 0;
   const pipeIssued = Number(pipe?.issued) || 0;
   const houseNet = Number(house?.net) || 0;
+  const aduTotal = Number(aduAgg?.total) || 0;
   const mapNbhds = Number(mapAgg?.nbhds) || 0;
   const activeContractors = Number(contractorAgg?.active_contractors) || 0;
 
   const title = "Seattle Construction Insights — Permit Data Visualized";
   const description =
-    "Data-driven views of Seattle construction: plan-review times, the permit pipeline, net new housing, an activity map, contractor scorecards, and a contractor network.";
+    "Data-driven views of Seattle construction: permit timing, ADU and DADU activity, housing growth, neighborhood trends, contractors, and project connections.";
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
     "@type": "CollectionPage",
@@ -5601,6 +5904,13 @@ async function renderInsightsIndex(env) {
         "Housing units tracker",
         "Net new dwelling units permitted across Seattle and the neighborhoods adding the most homes.",
         house && house.net != null ? `${houseNet >= 0 ? "+" : ""}${houseNet.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">net units</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/adu-dadu",
+        "Small-scale housing",
+        "ADU & DADU permit tracker",
+        "Accessory dwelling unit permits by year, neighborhood, status, declared value, and recent activity.",
+        aduTotal ? `${aduTotal.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">matching permits</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
       ${feature(
         "/insights/map",
@@ -7786,6 +8096,7 @@ const SITEMAP_STATIC_PATHS = [
   "/insights/plan-review",
   "/insights/pipeline",
   "/insights/housing",
+  "/insights/adu-dadu",
   "/insights/map",
   "/insights/contractors",
   "/insights/network",
