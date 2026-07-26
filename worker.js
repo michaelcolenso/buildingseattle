@@ -330,8 +330,16 @@ export default {
         return secure(await checkAuth(request, env));
       }
 
-      if (path === "/og-image.png" || path === "/favicon.ico") {
+      if (path === "/og-image.png") {
         return secure(renderOgImage());
+      }
+
+      if (path === "/favicon.ico" || path === "/icons/icon-192.png") {
+        return secure(renderAppIcon(192));
+      }
+
+      if (path === "/icons/icon-512.png") {
+        return secure(renderAppIcon(512));
       }
 
       if (path === "/site.webmanifest") {
@@ -4938,10 +4946,12 @@ const ADU_CLASSIFIED_CTE = `
     SELECT p.*,
            lower(
              replace(replace(replace(replace(replace(replace(
+               replace(replace(replace(replace(
                COALESCE(p.detailed_description, '') || ' ' ||
                COALESCE(p.description, '') || ' ' ||
                COALESCE(p.primary_property_use, '') || ' ' ||
                COALESCE(p.dwelling_unit_type, ''),
+               '+', ' '), '&', ' '), ':', ' '), ';', ' '),
                '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '), ')', ' ')
            ) AS adu_search_text
     FROM permits p
@@ -4952,12 +4962,14 @@ const ADU_CLASSIFIED_CTE = `
              WHEN instr(' ' || adu_search_text || ' ', ' dadu ') > 0
                OR adu_search_text LIKE '%detached accessory dwelling unit%'
                OR adu_search_text LIKE '%detached accessory dwelling%'
+               OR adu_search_text LIKE '%detached adu%'
                OR adu_search_text LIKE '%backyard cottage%'
              THEN 'DADU'
              ELSE 'ADU'
            END AS adu_type
     FROM normalized
     WHERE instr(' ' || adu_search_text || ' ', ' dadu ') > 0
+       OR instr(' ' || adu_search_text || ' ', ' aadu ') > 0
        OR instr(' ' || adu_search_text || ' ', ' adu ') > 0
        OR adu_search_text LIKE '%accessory dwelling unit%'
        OR adu_search_text LIKE '%accessory dwelling%'
@@ -8383,7 +8395,10 @@ function renderWebManifest() {
       display: "standalone",
       background_color: "#ffffff",
       theme_color: "#0f172a",
-      icons: [{ src: "/favicon.ico", sizes: "any", type: "image/png" }],
+      icons: [
+        { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+        { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+      ],
     }),
     {
       headers: {
@@ -8392,6 +8407,25 @@ function renderWebManifest() {
       },
     },
   );
+}
+
+function renderAppIcon(size) {
+  const icons = {
+    192:
+      "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAACXklEQVR42u3dPU4CQRiAYXdjDx2cgZ/EgovoNeyoLa3tvIZehMIEvIOlR6DbSAwgOLMw8z1Phc1CmDfDurM/zWA0uYFztb4CBISAEBACAgEhIASEgEBACAgBISAQEAJCQAgIBISAEBACQkAgIASEgBAQCAgBISAEBAJCQAiIutz6Cvb5/vrsXg/HU1+IGQgBISAEBAJCQAgIASEgEBACQkAIiJ2V1N9/IiAEhIAQEAICASEgytN47Hfn7wd7nGMvoNOK0ZOAsqQjo1gB9bMiEaqkVj3lvpGAKqwnWkOtejQkoCsdyAgNVb4TvW8Ic+zn9vleZiAEBAJCQIdcfP+j+oOK9c9AFxzCCIekQ9zibjie9v8fdcJ6VutNjk+4mM/MQFc6GcRZDgu0E93boIZaTI11l9ZuaJ3OIaAEg+2EMgGlHHintAoo7w+cbkLvRCMgBISAQEAICAEhIAQEAkJACIhgyltMvX/5SL7N9+WdFMxACAgBISAQEAJCQOU5cGq9p4YJCAEhIKrhurDzPb+tk2/z6WFuBsJPGAgIASEgBAQCQkAICAGBgEgkzVrY7HGV48NtXhdGyAyEgEBACAgBISAQEALK4OiVXy4NExACQkAICASEgBAQAkJAICAERDncH2iHJ8ObgRAQAkJAICAEhIAQEAgIASEgBAQCQkAICAEhIBAQAkJACAgEhIAQEAICASEgBISA4IdmMJr8fyvu316iJLciMQMhIASEgBAQCAgBUYw0x4EwA4GAEBACQkAgIASEgBAQCAgBISAEBAJCQAgIASEgEBACQkAICE6wBUhBYQ0pqaiEAAAAAElFTkSuQmCC",
+    512:
+      "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIAAgMAAACJFjxpAAAADFBMVEUPFyr///87gvYAAABja/fMAAAClUlEQVR42u3dPXLTQACA0ZVHaqhUJJfgFDqCC2eGkqNwFEpmROEj+D5O4YrGHpSCDAShxPH+yMZ+XxFiKYQ3uytLspMhBEmSJEmSJEmSJEmSJEmSJEnSrVcl/vVV2K+TvsPi3CMAAAAAAPC/A+oQalMAAAAAAAAAAAAAAHDbgDb5hT5TAAAAAAAAAJAGaLoQwirpW6RczzTL50+G72cB3Hd/Pu/PAHj469F2M/cauH/zYXlA0402rOYFVMvjW4oC7ibGZE5A1U1sXM4IuJtcFjMCuhO2lgA0J4xLEUCb8UltkWsJxi7DGEB98o7MgDbniWWR7RiIPA4iAFXE2FzXJVkdtetiR6COPAj6ySu06jbWQBe5z50RAEA2wCZy3/WMwO71XcNtrIFD1K5rOh0P718ezcSFep8+ApuMR2EUYJfxIIgCHDKuwSjA8NpIr+c6F+zyzUAcYD+9+XGmwzCEsOke8hwDsU9EjyeMSxHA5DJczwiYGoK4AYgFDOvjW8qejPbjSYh9xT76bLh982HpwzCEEPo87xckXA9sf8/6EP/vJ/1w/r5vliHtDZvUK6JD7DnQnREAQC5AnfpUYgoAAAAAAAAAAAAAAFIBbQipv2ZjCt57Y7f4Nt7y85NFCAAAAAAAAAAAAHABgO7FR1MAAFD47vhIH76Ot/z4bAoAAAAAAAAAAGYAPL9b1JoCAAAAgKu6Pf/45Z8vyfQutSkAAAAAACgBqKdPaKYAAAAAAAAAAAAAAOCGAO2vPypTAAAAAACQUtJLbNveFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKQ3/sn4l/95aZl6UwAAAAAAAAAAAHBhAEmSJEmSJEmSJEmSngBzDUgMDdD3FgAAAABJRU5ErkJggg==",
+  };
+  const pngBase64 = icons[size];
+  if (!pngBase64) return new Response("Icon not found", { status: 404 });
+  const bytes = Uint8Array.from(atob(pngBase64), (character) => character.charCodeAt(0));
+  return new Response(bytes, {
+    headers: {
+      "Content-Type": "image/png",
+      "Content-Length": String(bytes.byteLength),
+      "Cache-Control": "public, max-age=604800, immutable",
+    },
+  });
 }
 
 function renderOgImage() {

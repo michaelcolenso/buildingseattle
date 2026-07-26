@@ -717,6 +717,37 @@ test("GET /favicon.ico returns the site icon", async () => {
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type") || "", /image\/png/);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert.equal(bytes.length, 663);
+  assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 192, 0, 0, 0, 192]);
+});
+
+test("GET /icons serves square install icons at their declared dimensions", async () => {
+  for (const [size, expectedLength] of [
+    [192, 663],
+    [512, 742],
+  ]) {
+    const response = await worker.fetch(
+      new Request(`http://example.com/icons/icon-${size}.png`),
+      createEnv(),
+      createCtx(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("Content-Type") || "", /image\/png/);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assert.equal(bytes.length, expectedLength);
+    assert.deepEqual([...bytes.slice(16, 24)], [
+      (size >>> 24) & 255,
+      (size >>> 16) & 255,
+      (size >>> 8) & 255,
+      size & 255,
+      (size >>> 24) & 255,
+      (size >>> 16) & 255,
+      (size >>> 8) & 255,
+      size & 255,
+    ]);
+  }
 });
 
 test("GET /sitemap.xml returns a category index and splits large sections", async () => {
@@ -909,7 +940,10 @@ test("robots policy disallows AI training and web manifest describes the app", a
   assert.equal(manifest.headers.get("Content-Type"), "application/manifest+json; charset=utf-8");
   const payload = await manifest.json();
   assert.equal(payload.name, "Building Seattle");
-  assert.equal(payload.icons[0].src, "/favicon.ico");
+  assert.deepEqual(payload.icons, [
+    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+  ]);
 });
 
 test("summarizePlanReview computes count, mean, median, p90, and day buckets", () => {
@@ -1080,6 +1114,9 @@ test("GET /api/adu-dadu returns classified permit aggregates", async () => {
   assert.equal(payload.by_neighborhood[0].label, "West Seattle");
   assert.equal(payload.recent[0].adu_type, "DADU");
   assert.ok(env._queries.some((sql) => sql.includes("detached accessory dwelling unit")));
+  assert.ok(env._queries.some((sql) => sql.includes("detached adu")));
+  assert.ok(env._queries.some((sql) => sql.includes("' aadu '")));
+  assert.ok(env._queries.some((sql) => sql.includes("'+', ' '")));
   assert.ok(env._queries.some((sql) => sql.includes("backyard cottage")));
 });
 
