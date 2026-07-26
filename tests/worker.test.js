@@ -800,8 +800,9 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 15);
+  assert.equal((xml.match(/<url>/g) || []).length, 16);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/network/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/data/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/contractors/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/neighborhoods/);
@@ -987,6 +988,133 @@ test("GET /api/housing returns a housing payload", async () => {
   assert.ok(Array.isArray(payload.by_neighborhood));
 });
 
+function createAduTrackerEnv({ empty = false } = {}) {
+  const queries = [];
+  return {
+    _queries: queries,
+    DB: {
+      prepare(sql) {
+        queries.push(sql);
+        const statement = {
+          bind() {
+            return statement;
+          },
+          async first() {
+            if (sql.includes("adu-tracker:totals")) {
+              return empty
+                ? { total: 0, adu_count: 0, dadu_count: 0, total_value: 0, units_added: 0, issued: 0, active: 0 }
+                : {
+                    total: 12,
+                    adu_count: 7,
+                    dadu_count: 5,
+                    total_value: 2400000,
+                    units_added: 9,
+                    issued: 8,
+                    active: 3,
+                  };
+            }
+            if (sql.includes("adu-tracker:index")) return { total: empty ? 0 : 12 };
+            return null;
+          },
+          async all() {
+            if (empty) return { results: [] };
+            if (sql.includes("adu-tracker:by-year")) {
+              return {
+                results: [
+                  { yr: "2025", permits: 5, adu_count: 3, dadu_count: 2 },
+                  { yr: "2026", permits: 7, adu_count: 4, dadu_count: 3 },
+                ],
+              };
+            }
+            if (sql.includes("adu-tracker:by-neighborhood")) {
+              return {
+                results: [
+                  { label: "West Seattle", permits: 6, adu_count: 3, dadu_count: 3, total_value: 1400000 },
+                ],
+              };
+            }
+            if (sql.includes("adu-tracker:recent")) {
+              return {
+                results: [
+                  {
+                    permit_number: "ADU-123",
+                    address: "1234 Test Ave SW",
+                    neighborhood: "West Seattle",
+                    status: "active",
+                    value: 350000,
+                    housing_units_added: 1,
+                    activity_date: "2026-07-20",
+                    adu_type: "DADU",
+                  },
+                ],
+              };
+            }
+            return { results: [] };
+          },
+          async run() {
+            return {};
+          },
+        };
+        return statement;
+      },
+    },
+  };
+}
+
+test("GET /api/adu-dadu returns classified permit aggregates", async () => {
+  const env = createAduTrackerEnv();
+  const response = await worker.fetch(new Request("http://example.com/api/adu-dadu"), env, createCtx());
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.totals, {
+    total: 12,
+    adu_count: 7,
+    dadu_count: 5,
+    total_value: 2400000,
+    units_added: 9,
+    issued: 8,
+    active: 3,
+  });
+  assert.equal(payload.by_year[1].year, "2026");
+  assert.equal(payload.by_neighborhood[0].label, "West Seattle");
+  assert.equal(payload.recent[0].adu_type, "DADU");
+  assert.ok(env._queries.some((sql) => sql.includes("detached accessory dwelling unit")));
+  assert.ok(env._queries.some((sql) => sql.includes("backyard cottage")));
+});
+
+test("GET /insights/adu-dadu renders an indexable tracker with methodology and recent permits", async () => {
+  const env = createAduTrackerEnv();
+  const response = await worker.fetch(new Request("http://example.com/insights/adu-dadu"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/insights\/adu-dadu">/);
+  assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
+  assert.match(html, /Seattle ADU &amp; DADU permit tracker/i);
+  assert.match(html, /12/);
+  assert.match(html, /West Seattle/);
+  assert.match(html, /href="\/permits\/ADU-123"/);
+  assert.match(html, /ADU vs\. DADU/);
+  assert.match(html, /matching permit records, not a count of guaranteed completed dwellings/i);
+  assert.match(html, /"@type":"Dataset"/);
+  assert.match(html, /"@type":"FAQPage"/);
+  assert.match(html, /href="\/api\/adu-dadu"/);
+});
+
+test("GET /insights/adu-dadu noindexes an empty classification result", async () => {
+  const response = await worker.fetch(
+    new Request("http://example.com/insights/adu-dadu"),
+    createAduTrackerEnv({ empty: true }),
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  assert.match(html, /ADU data is being classified/);
+});
+
 test("GET /insights renders the insights index with all three reports", async () => {
   const response = await worker.fetch(new Request("http://example.com/insights"), createEnv(), createCtx());
 
@@ -996,6 +1124,8 @@ test("GET /insights renders the insights index with all three reports", async ()
   assert.match(html, /Plan review times/i);
   assert.match(html, /permit pipeline/i);
   assert.match(html, /Housing units tracker/i);
+  assert.match(html, /ADU &amp; DADU permit tracker/i);
+  assert.match(html, /href="\/insights\/adu-dadu"/);
   assert.match(html, /href="\/insights\/pipeline"/);
 });
 
@@ -1054,13 +1184,14 @@ test("GET /api/network returns nodes and edges", async () => {
   assert.ok(Array.isArray(payload.edges));
 });
 
-test("GET /insights lists all six reports", async () => {
+test("GET /insights lists all seven reports", async () => {
   const response = await worker.fetch(new Request("http://example.com/insights"), createEnv(), createCtx());
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /Construction activity map/i);
   assert.match(html, /Contractor scorecards/i);
   assert.match(html, /Who builds where/i);
+  assert.match(html, /ADU &amp; DADU permit tracker/i);
   assert.match(html, /href="\/insights\/map"/);
   assert.match(html, /href="\/insights\/network"/);
 });
