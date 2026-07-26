@@ -2,6 +2,10 @@
 
 Audit date: 2026-07-24
 
+Implementation update: 2026-07-24
+
+The technical recommendations in this audit are now implemented: sitemap URLs use the canonical production host; entity templates have complete robots and social image metadata; dynamic descriptions are length-limited; permit pages expose `Report` structured data; crawlable entity hubs and a web manifest are available; and sitemap, hub, metadata, robots, and manifest behavior have automated coverage. The AI content signal now permits search and AI input while explicitly declining AI training. Editorial landing pages, distinct multi-size icon assets, and validation in external webmaster tools remain follow-up work.
+
 ## Executive summary
 
 Building Seattle has a strong SEO foundation for a data-heavy local search product: pages are server-rendered, crawlable routes include canonical tags, dynamic entity pages expose structured data, and XML sitemaps cover large permit/address/project/contractor/neighborhood inventories. The biggest opportunities are to reduce duplicate/thin indexed URLs, normalize production sitemap hosts, improve image/social metadata consistency, and add stronger internal-linking hubs for high-intent local searches.
