@@ -636,6 +636,14 @@ async function subscribeAndConfirm(env, permitNumber = "PERM123", email = "reade
   assert.equal(confirmResponse.status, 200);
 }
 
+test("GET / links the web manifest from the primary entry page", async () => {
+  const response = await worker.fetch(new Request("http://example.com/"), createEnv(), createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<link rel="manifest" href="\/site\.webmanifest">/);
+});
+
 test("GET /permits renders a public permit browser instead of returning 404", async () => {
   const response = await worker.fetch(
     new Request("http://example.com/permits?neighborhood=Ballard&type=residential"),
@@ -647,6 +655,7 @@ test("GET /permits renders a public permit browser instead of returning 404", as
   assert.match(response.headers.get("Content-Type") || "", /text\/html/);
 
   const html = await response.text();
+  assert.match(html, /<link rel="manifest" href="\/site\.webmanifest">/);
   assert.match(html, /Browse Seattle permits/i);
   assert.match(html, /action="\/permits"/);
   assert.match(html, /option value="Ballard" selected/);
@@ -879,6 +888,10 @@ test("entity hub pages use the entity-graph schema, expose links, and safely ser
     assert.match(html, /<meta name="twitter:image" content="https:\/\/buildingseattle\.com\/og-image\.png">/);
     assert.ok(html.includes('href="' + testCase.pathPrefix + 'dangerous"'));
     assert.match(html, /"@type":"ItemList"/);
+    if (testCase.type === "projects") {
+      assert.match(html, /Seattle Construction Projects by Permit Activity/);
+      assert.doesNotMatch(html, /Active Seattle Construction Projects/);
+    }
     assert.ok(html.includes("\\u003c/script>\\u003cscript>alert"));
     assert.doesNotMatch(html, /<\/script><script>alert\("hub"\)<\/script>/);
 
@@ -1274,6 +1287,7 @@ test("GET /permits/:permit_number safely serializes JSON-LD and uses the officia
 
   assert.equal(response.status, 200);
   assert.match(html, /Permit Intelligence/);
+  assert.match(html, /<link rel="manifest" href="\/site\.webmanifest">/);
   assert.match(html, /https:\/\/services\.seattle\.gov\/detail\/PERM123/);
   assert.ok(html.includes('"isBasedOn":"https://services.seattle.gov/detail/PERM123"'));
   assert.ok(html.includes("\\u003c/script>\\u003cscript>alert"));
