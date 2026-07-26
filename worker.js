@@ -172,6 +172,11 @@ export default {
         return secure(await renderNetworkPage(env));
       }
 
+      if (["/contractors", "/neighborhoods", "/projects", "/addresses"].includes(path)) {
+        ctx.waitUntil(logPageView(request, env, path));
+        return secure(await renderEntityHubPage(path.slice(1), env));
+      }
+
       if (path === "/about" || path === "/about/") {
         ctx.waitUntil(logPageView(request, env, "/about"));
         return secure(renderAboutPage());
@@ -320,6 +325,10 @@ export default {
         return secure(renderOgImage());
       }
 
+      if (path === "/site.webmanifest") {
+        return secure(renderWebManifest());
+      }
+
       if (path === "/robots.txt") {
         return secure(renderRobotsTxt());
       }
@@ -425,6 +434,15 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function truncateMetaDescription(value, maxLength = 165) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  const candidate = text.slice(0, maxLength - 1);
+  const lastSpace = candidate.lastIndexOf(" ");
+  const shortened = lastSpace >= Math.floor(maxLength * 0.7) ? candidate.slice(0, lastSpace) : candidate;
+  return shortened.replace(/[,:;.!?\s]+$/, "") + "…";
 }
 
 function safeHttpUrl(value) {
@@ -670,6 +688,7 @@ function renderNav(activePage) {
         <div class="global-nav-links">
           ${link("/", "Home", "home")}
           ${link("/permits", "Browse Permits", "permits")}
+          ${link("/neighborhoods", "Explore", "explore")}
           ${link("/insights/plan-review", "Insights", "insights")}
           ${link("/data", "Data", "data")}
           ${link("/api/permits", "API", "api")}
@@ -682,7 +701,7 @@ function renderFooter() {
   return `<footer class="global-footer">
       <div class="global-footer-row">
         <div>Building Seattle &mdash; Seattle construction intelligence</div>
-        <div><a href="/data">Get the Dataset</a> &middot; <a href="mailto:hello@buildingseattle.com">hello@buildingseattle.com</a></div>
+        <div><a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/data">Dataset</a></div>
       </div>
     </footer>`;
 }
@@ -2294,7 +2313,14 @@ async function renderPermitBrowser(request, env) {
 // corrections (days_out_corrections) — matching SDCI's own methodology.
 export function renderPermitTimeline(permit) {
   const fmtDate = (d) =>
-    d ? new Date(d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : null;
+    d
+      ? new Date(d).toLocaleDateString("en-US", {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+          timeZone: "UTC",
+        })
+      : null;
   const num = (v) => {
     if (v === null || v === undefined || v === "") return null;
     const n = Number(v);
@@ -2649,7 +2675,7 @@ async function renderPermitDetail(permitNumber, env, request) {
     (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
   const permitDescForMeta = permit.description ? ` ${String(permit.description).trim().replace(/\.$/, "")}.` : "";
-  const metaDesc = `See ${permit.address || "Seattle"}: a ${permitType} project in ${neighborhood}. Value: ${valueFormatted}. Status: ${permit.status || "under review"}.${permitDescForMeta}${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`;
+  const metaDesc = truncateMetaDescription(`See ${permit.address || "Seattle"}: a ${permitType} project in ${neighborhood}. Value: ${valueFormatted}. Status: ${permit.status || "under review"}.${permitDescForMeta}${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`);
   const safePermitNumber = escapeHtml(permit.permit_number);
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
@@ -2662,6 +2688,40 @@ async function renderPermitDetail(permitNumber, env, request) {
     permit.detailed_description || permit.description || "No description available for this permit.",
   );
   const mapsQuery = encodeURIComponent(permit.address || "Seattle, WA");
+  const permitJsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Report",
+        name: `Seattle construction permit ${permit.permit_number}`,
+        headline: `${permitType} permit at ${permit.address || "Seattle"}`,
+        description: metaDesc,
+        url: canonical,
+        identifier: permit.permit_number,
+        dateCreated: dateOrNull(permit.applied_date) || undefined,
+        datePublished: dateOrNull(permit.issued_date) || undefined,
+        dateModified: dateOrNull(permit.updated_at || permit.last_enriched_at) || undefined,
+        spatialCoverage: {
+          "@type": "Place",
+          name: permit.address || neighborhood || "Seattle, Washington",
+          address: permit.address
+            ? { "@type": "PostalAddress", streetAddress: permit.address, addressLocality: "Seattle", addressRegion: "WA" }
+            : undefined,
+        },
+        about: [permitType, permit.status, neighborhood].filter(Boolean),
+        isBasedOn: safeHttpUrl(permit.permit_detail_url || permit.source_url || permit.url) || "https://www.seattle.gov/sdci",
+        provider: { "@type": "Organization", name: "Seattle Department of Construction and Inspections" },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+          { "@type": "ListItem", position: 3, name: `Permit ${permit.permit_number}`, item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
 
   // Links up into the entity graph (address / project / contractor / neighborhood).
   const neighborhoodSlug = permit.neighborhood ? makeSlug(permit.neighborhood) : makeSlug(neighborhood);
@@ -2702,6 +2762,7 @@ async function renderPermitDetail(permitNumber, env, request) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 	    <title>${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle</title>
 	    <meta name="description" content="${safeMetaDesc}">
+	    <meta name="robots" content="index,follow,max-image-preview:large">
 	    <link rel="canonical" href="${canonical}">
 	    <meta property="og:title" content="${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle">
 	    <meta property="og:description" content="${safeMetaDesc}">
@@ -2926,7 +2987,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 	        .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--bg); color: var(--text); font-size: 1rem; }
 	        .hidden { display: none; }
 	    </style>
-	    <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"},{"@type":"ListItem","position":2,"name":"Permits","item":"https://buildingseattle.com/permits"},{"@type":"ListItem","position":3,"name":"Permit ${safePermitNumber}","item":"https://buildingseattle.com/permits/${encodeURIComponent(permit.permit_number)}"}]}</script>
+	    <script type="application/ld+json">${permitJsonLd}</script>
 </head>
 <body>
     ${renderNav("permits")}
@@ -4026,22 +4087,27 @@ export function renderProjectReviewSummary(permits) {
 }
 
 function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType = "website", body, activeNav = "permits" }) {
+  const metaDescription = truncateMetaDescription(description);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(title)}</title>
-    <meta name="description" content="${escapeHtml(description)}">
-    ${noindex ? '<meta name="robots" content="noindex,follow">' : ""}
+    <meta name="description" content="${escapeHtml(metaDescription)}">
+    <meta name="robots" content="${noindex ? "noindex,follow" : "index,follow,max-image-preview:large"}">
     <link rel="canonical" href="${escapeHtml(canonical)}">
     <meta property="og:title" content="${escapeHtml(title)}">
-    <meta property="og:description" content="${escapeHtml(description)}">
+    <meta property="og:description" content="${escapeHtml(metaDescription)}">
     <meta property="og:type" content="${ogType}">
     <meta property="og:url" content="${escapeHtml(canonical)}">
-    <meta name="twitter:card" content="summary">
+    <meta name="twitter:card" content="summary_large_image">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
     <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     ${entStyles()}
     ${jsonLd ? `<script type="application/ld+json">${jsonLd}</script>` : ""}
@@ -4074,6 +4140,131 @@ function entPermitRows(permits) {
     )
     .join("");
   return `<table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+const ENTITY_HUBS = {
+  contractors: {
+    title: "Seattle Contractors by Permit Activity",
+    description: "Explore Seattle contractors ranked by public construction permit activity, project value, specialties, and active work.",
+    intro: "Find contractors connected to Seattle construction permits and compare their recent public project activity.",
+    itemLabel: "contractors",
+    pathPrefix: "/contractor/",
+    sql: `/* seo-hub:contractors */
+      SELECT o.slug, o.name AS label, COALESCE(NULLIF(o.type_guess, 'unknown'), 'Contractor') AS detail,
+             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+      FROM people_orgs o
+      JOIN permit_participants pp ON pp.people_org_id = o.id AND pp.role = 'contractor'
+      JOIN permits p ON p.id = pp.permit_id
+      GROUP BY o.id, o.slug, o.name, o.type_guess
+      ORDER BY permit_count DESC, total_value DESC LIMIT 100`,
+  },
+  neighborhoods: {
+    title: "Seattle Neighborhood Construction Permits",
+    description: "Compare Seattle neighborhoods by construction permit count, declared project value, housing activity, and current development.",
+    intro: "Browse neighborhood-level construction activity and follow the properties, projects, and permits shaping Seattle.",
+    itemLabel: "neighborhoods",
+    pathPrefix: "/neighborhood/",
+    sql: `/* seo-hub:neighborhoods */
+      SELECT n.slug, n.name AS label, 'Seattle neighborhood' AS detail,
+             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+      FROM neighborhoods n
+      JOIN address_neighborhoods an ON an.neighborhood_id = n.id
+      JOIN permits p ON p.address_id = an.address_id
+      GROUP BY n.id, n.slug, n.name
+      ORDER BY permit_count DESC, total_value DESC LIMIT 100`,
+  },
+  projects: {
+    title: "Active Seattle Construction Projects",
+    description: "Explore recent and high-value Seattle construction projects grouped from related public building permit records.",
+    intro: "See related permits grouped into Seattle construction projects, with total value and permit activity in one place.",
+    itemLabel: "projects",
+    pathPrefix: "/project/",
+    sql: `/* seo-hub:projects */
+      SELECT pr.slug, pr.name AS label, COALESCE(a.display_address, 'Seattle project') AS detail,
+             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+      FROM projects pr
+      JOIN project_permits pp ON pp.project_id = pr.id
+      JOIN permits p ON p.id = pp.permit_id
+      LEFT JOIN addresses a ON a.id = pr.address_id
+      GROUP BY pr.id, pr.slug, pr.name, a.display_address
+      ORDER BY total_value DESC, permit_count DESC LIMIT 100`,
+  },
+  addresses: {
+    title: "Seattle Properties with Construction Activity",
+    description: "Discover high-activity Seattle addresses ranked by public building permit count and declared construction value.",
+    intro: "Explore Seattle properties with notable permit histories, from active developments to frequently renovated buildings.",
+    itemLabel: "addresses",
+    pathPrefix: "/address/",
+    sql: `/* seo-hub:addresses */
+      SELECT a.slug, a.display_address AS label, 'Seattle property' AS detail,
+             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+      FROM addresses a
+      JOIN permits p ON p.address_id = a.id
+      GROUP BY a.id, a.slug, a.display_address
+      ORDER BY permit_count DESC, total_value DESC LIMIT 100`,
+  },
+};
+
+async function renderEntityHubPage(type, env) {
+  const config = ENTITY_HUBS[type];
+  if (!config) return render404();
+
+  let items = [];
+  try {
+    const result = await env.DB.prepare(config.sql).all();
+    items = result.results || [];
+  } catch {
+    // Graph migrations may briefly lag a deployment; keep the route available
+    // but prevent an empty fallback from entering the index.
+  }
+
+  const canonical = `${BASE_URL}/${type}`;
+  const itemList = items.map((item, index) => ({
+    "@type": "ListItem",
+    position: index + 1,
+    name: item.label,
+    url: `${BASE_URL}${config.pathPrefix}${encodeURIComponent(item.slug)}`,
+  }));
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "CollectionPage", name: config.title, description: config.description, url: canonical },
+      { "@type": "ItemList", numberOfItems: items.length, itemListElement: itemList },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: config.title, item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+  const cards = items
+    .map((item) => {
+      const value = Number(item.total_value) > 0 ? entMoney(item.total_value) : "Value not reported";
+      return `<article class="card">
+        <h2 style="font-size:1.05rem;margin:0 0 0.4rem;"><a class="ent-link" href="${config.pathPrefix}${encodeURIComponent(item.slug)}">${escapeHtml(item.label)}</a></h2>
+        <p style="margin:0 0 0.75rem;color:var(--text-muted);font-size:0.875rem;">${escapeHtml(item.detail || "Seattle construction activity")}</p>
+        <div style="display:flex;gap:1rem;font-size:0.8rem;font-weight:650;"><span>${Number(item.permit_count || 0).toLocaleString()} permits</span><span>${value}</span></div>
+      </article>`;
+    })
+    .join("");
+  const body = `<nav aria-label="Breadcrumb" style="font-size:0.8125rem;margin-bottom:1.25rem;"><a class="ent-link" href="/">Home</a> / ${escapeHtml(config.title)}</nav>
+    <header style="max-width:800px;margin-bottom:2rem;"><p class="eyebrow">Explore Seattle construction</p><h1>${escapeHtml(config.title)}</h1><p style="font-size:1.08rem;color:var(--text-muted);line-height:1.7;">${escapeHtml(config.intro)}</p></header>
+    ${items.length ? `<p style="color:var(--text-muted);">Showing ${items.length} leading ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>` : '<div class="card"><h2>Data is being refreshed</h2><p>This index will appear after the latest entity graph refresh.</p></div>'}`;
+
+  return new Response(
+    renderEntityDoc({
+      title: `${config.title} | Building Seattle`,
+      description: config.description,
+      canonical,
+      jsonLd,
+      noindex: items.length === 0,
+      body,
+      activeNav: "explore",
+    }),
+    { headers: { "Content-Type": "text/html; charset=utf-8" } },
+  );
 }
 
 // ===========================================================================
@@ -7561,7 +7752,7 @@ function renderWebMcpScript() {
 
 function renderRobotsTxt() {
   const body = `User-agent: *
-Content-Signal: search=yes, ai-train=yes, ai-input=yes
+Content-Signal: search=yes, ai-train=no, ai-input=yes
 Allow: /
 Disallow: /admin
 Disallow: /api/admin/
@@ -7581,6 +7772,11 @@ const SITEMAP_STATIC_PATHS = [
   "/",
   "/permits",
   "/data",
+  "/about",
+  "/contractors",
+  "/neighborhoods",
+  "/projects",
+  "/addresses",
   "/insights",
   "/insights/plan-review",
   "/insights/pipeline",
@@ -7776,7 +7972,7 @@ function sitemapNotFound() {
 }
 
 async function renderSitemapXml(env, request) {
-  const origin = new URL(request.url).origin;
+  const origin = BASE_URL;
   const sectionTypes = Object.keys(SITEMAP_SECTIONS);
   const statsEntries = await Promise.all(sectionTypes.map(async (type) => [type, await getSitemapStats(env, type)]));
   const statsByType = Object.fromEntries(statsEntries);
@@ -7813,7 +8009,7 @@ async function renderChildSitemapXml(path, env, request) {
   }
 
   const [, type, pageText] = match;
-  const origin = new URL(request.url).origin;
+  const origin = BASE_URL;
 
   if (type === "static") {
     if (pageText) return sitemapNotFound();
@@ -7859,6 +8055,27 @@ ${entries.map((entry) => renderSitemapUrlEntry(entry.loc, entry.lastmod)).join("
 </urlset>`;
 
   return sitemapXmlResponse(xml);
+}
+
+function renderWebManifest() {
+  return new Response(
+    JSON.stringify({
+      name: "Building Seattle",
+      short_name: "Building Seattle",
+      description: "Seattle construction permits, projects, contractors, and neighborhood activity.",
+      start_url: "/",
+      display: "standalone",
+      background_color: "#ffffff",
+      theme_color: "#0f172a",
+      icons: [{ src: "/favicon.ico", sizes: "any", type: "image/png" }],
+    }),
+    {
+      headers: {
+        "Content-Type": "application/manifest+json; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+      },
+    },
+  );
 }
 
 function renderOgImage() {
