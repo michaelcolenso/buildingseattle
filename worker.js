@@ -847,6 +847,7 @@ async function handleRoot(request, env) {
     <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         :root { --primary: #0f172a; --accent: #3b82f6; --bg: #ffffff; --bg-alt: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; --steel: #475569; --amber: #f59e0b; --success: #10b981; --danger: #ef4444; --shadow: 0 22px 60px rgba(15,23,42,0.14); }
@@ -2185,6 +2186,7 @@ async function renderPermitBrowser(request, env) {
 	    <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <link rel="manifest" href="/site.webmanifest">
 	    ${renderDesignTokens()}
 	    <style>
         * { box-sizing: border-box; }
@@ -2774,6 +2776,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 	    <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         :root {
@@ -3520,6 +3523,7 @@ async function renderContractorPage(slug, env, request) {
 	    <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
 	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:var(--bg-alt);color:var(--text)}
@@ -4174,8 +4178,8 @@ const ENTITY_HUBS = {
       ORDER BY permit_count DESC, total_value DESC LIMIT 100`,
   },
   projects: {
-    title: "Active Seattle Construction Projects",
-    description: "Explore recent and high-value Seattle construction projects grouped from related public building permit records.",
+    title: "Seattle Construction Projects by Permit Activity",
+    description: "Explore Seattle construction projects ranked by public building permit activity and declared project value.",
     intro: "See related permits grouped into Seattle construction projects, with total value and permit activity in one place.",
     itemLabel: "projects",
     pathPrefix: "/project/",
@@ -7450,6 +7454,7 @@ function renderApiDocs() {
     <meta name="description" content="Public read-only API for Seattle construction permit and contractor data.">
     <link rel="canonical" href="${BASE_URL}/api-docs">
     <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -8571,6 +8576,7 @@ function renderAboutPage() {
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary">
     <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -8697,6 +8703,7 @@ async function renderDataPage(env) {
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary">
     <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -8818,6 +8825,7 @@ function render404(options) {
     <meta name="robots" content="noindex">
     <link rel="canonical" href="${BASE_URL}/">
     <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
