@@ -636,6 +636,14 @@ async function subscribeAndConfirm(env, permitNumber = "PERM123", email = "reade
   assert.equal(confirmResponse.status, 200);
 }
 
+test("GET / links the web manifest from the primary entry page", async () => {
+  const response = await worker.fetch(new Request("http://example.com/"), createEnv(), createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<link rel="manifest" href="\/site\.webmanifest">/);
+});
+
 test("GET /permits renders a public permit browser instead of returning 404", async () => {
   const response = await worker.fetch(
     new Request("http://example.com/permits?neighborhood=Ballard&type=residential"),
@@ -647,6 +655,7 @@ test("GET /permits renders a public permit browser instead of returning 404", as
   assert.match(response.headers.get("Content-Type") || "", /text\/html/);
 
   const html = await response.text();
+  assert.match(html, /<link rel="manifest" href="\/site\.webmanifest">/);
   assert.match(html, /Browse Seattle permits/i);
   assert.match(html, /action="\/permits"/);
   assert.match(html, /option value="Ballard" selected/);
@@ -727,12 +736,12 @@ test("GET /sitemap.xml returns a category index and splits large sections", asyn
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type") || "", /application\/xml/);
   assert.match(xml, /<sitemapindex/);
-  assert.match(xml, /http:\/\/example\.com\/sitemaps\/static\.xml/);
-  assert.match(xml, /http:\/\/example\.com\/sitemaps\/permits-1\.xml/);
-  assert.match(xml, /http:\/\/example\.com\/sitemaps\/permits-2\.xml/);
-  assert.match(xml, /http:\/\/example\.com\/sitemaps\/addresses-1\.xml/);
-  assert.match(xml, /http:\/\/example\.com\/sitemaps\/contractors-1\.xml/);
-  assert.match(xml, /http:\/\/example\.com\/sitemaps\/neighborhoods\.xml/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/sitemaps\/static\.xml/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/sitemaps\/permits-1\.xml/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/sitemaps\/permits-2\.xml/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/sitemaps\/addresses-1\.xml/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/sitemaps\/contractors-1\.xml/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/sitemaps\/neighborhoods\.xml/);
   assert.doesNotMatch(xml, /projects-1\.xml/);
   assert.doesNotMatch(xml, /<priority>|<changefreq>/);
 });
@@ -759,7 +768,7 @@ test("GET /sitemaps/permits-1.xml returns canonical URLs with accurate lastmod v
 
   assert.equal(response.status, 200);
   assert.match(xml, /<urlset/);
-  assert.match(xml, /http:\/\/example\.com\/permits\/PERM%201%20%26%20A/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/permits\/PERM%201%20%26%20A/);
   assert.match(xml, /<lastmod>2026-06-12<\/lastmod>/);
   assert.equal((xml.match(/<url>/g) || []).length, 2);
   assert.doesNotMatch(xml, /<priority>|<changefreq>/);
@@ -791,9 +800,11 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 10);
-  assert.match(xml, /http:\/\/example\.com\/insights\/network/);
-  assert.match(xml, /http:\/\/example\.com\/data/);
+  assert.equal((xml.match(/<url>/g) || []).length, 15);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/network/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/data/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/contractors/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/neighborhoods/);
   assert.match(xml, /<lastmod>2026-06-11<\/lastmod>/);
 });
 
@@ -811,6 +822,93 @@ test("out-of-range sitemap pages return 404", async () => {
   );
 
   assert.equal(response.status, 404);
+});
+
+test("entity hub pages use the entity-graph schema, expose links, and safely serialize JSON-LD", async () => {
+  const cases = [
+    {
+      type: "contractors",
+      pathPrefix: "/contractor/",
+      sqlFragments: ["FROM people_orgs o", "JOIN permit_participants pp", "JOIN permits p", "pp.role = 'contractor'"],
+    },
+    {
+      type: "neighborhoods",
+      pathPrefix: "/neighborhood/",
+      sqlFragments: ["FROM neighborhoods n", "JOIN address_neighborhoods an", "JOIN permits p"],
+    },
+    {
+      type: "projects",
+      pathPrefix: "/project/",
+      sqlFragments: ["FROM projects pr", "JOIN project_permits pp", "JOIN permits p", "LEFT JOIN addresses a"],
+    },
+    {
+      type: "addresses",
+      pathPrefix: "/address/",
+      sqlFragments: ["FROM addresses a", "JOIN permits p"],
+    },
+  ];
+
+  for (const testCase of cases) {
+    let seenSql = "";
+    const items = [
+      {
+        slug: "dangerous",
+        label: 'Dangerous </script><script>alert("hub")</script>',
+        detail: "Seattle construction activity",
+        permit_count: 27,
+        total_value: 12000000,
+      },
+    ];
+    const env = {
+      DB: {
+        prepare(sql) {
+          seenSql = sql;
+          return {
+            async all() {
+              if (sql.includes("seo-hub:" + testCase.type)) return { results: items };
+              throw new Error("unexpected hub query");
+            },
+            bind() { return this; },
+            async run() { return {}; },
+          };
+        },
+      },
+    };
+
+    const response = await worker.fetch(new Request("http://example.com/" + testCase.type), env, createCtx());
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(
+      html,
+      new RegExp('<link rel="canonical" href="https:\\/\\/buildingseattle\\.com\\/' + testCase.type + '">'),
+    );
+    assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
+    assert.match(html, /<meta property="og:image:width" content="1200">/);
+    assert.match(html, /<meta name="twitter:image" content="https:\/\/buildingseattle\.com\/og-image\.png">/);
+    assert.ok(html.includes('href="' + testCase.pathPrefix + 'dangerous"'));
+    assert.match(html, /"@type":"ItemList"/);
+    if (testCase.type === "projects") {
+      assert.match(html, /Seattle Construction Projects by Permit Activity/);
+      assert.doesNotMatch(html, /Active Seattle Construction Projects/);
+    }
+    assert.ok(html.includes("\\u003c/script>\\u003cscript>alert"));
+    assert.doesNotMatch(html, /<\/script><script>alert\("hub"\)<\/script>/);
+
+    assert.ok(seenSql.includes("seo-hub:" + testCase.type));
+    for (const fragment of testCase.sqlFragments) assert.ok(seenSql.includes(fragment));
+  }
+});
+
+test("robots policy disallows AI training and web manifest describes the app", async () => {
+  const robots = await worker.fetch(new Request("http://example.com/robots.txt"), createEnv(), createCtx());
+  assert.match(await robots.text(), /ai-train=no/);
+
+  const manifest = await worker.fetch(new Request("http://example.com/site.webmanifest"), createEnv(), createCtx());
+  assert.equal(manifest.headers.get("Content-Type"), "application/manifest+json; charset=utf-8");
+  const payload = await manifest.json();
+  assert.equal(payload.name, "Building Seattle");
+  assert.equal(payload.icons[0].src, "/favicon.ico");
 });
 
 test("summarizePlanReview computes count, mean, median, p90, and day buckets", () => {
@@ -1175,12 +1273,13 @@ test("permit status changes email confirmed subscribers and advance the delivery
   assert.equal(env._state.alertSubscriptions[0].last_notified_change_id, 2);
 });
 
-test("GET /permits/:permit_number renders enriched permit fields safely", async () => {
+test("GET /permits/:permit_number safely serializes JSON-LD and uses the official detail URL", async () => {
   const env = createEnv();
   Object.assign(env._state.permits[0], {
+    address: '407 Stewart St </script><script>alert("jsonld")</script>',
     review_level: "Field",
     permit_detail_url: "https://services.seattle.gov/detail/PERM123",
-    detailed_description: `<script>alert("detail")</script>`,
+    detailed_description: '<script>alert("detail")</script>',
   });
 
   const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), env, createCtx());
@@ -1188,7 +1287,11 @@ test("GET /permits/:permit_number renders enriched permit fields safely", async 
 
   assert.equal(response.status, 200);
   assert.match(html, /Permit Intelligence/);
+  assert.match(html, /<link rel="manifest" href="\/site\.webmanifest">/);
   assert.match(html, /https:\/\/services\.seattle\.gov\/detail\/PERM123/);
+  assert.ok(html.includes('"isBasedOn":"https://services.seattle.gov/detail/PERM123"'));
+  assert.ok(html.includes("\\u003c/script>\\u003cscript>alert"));
+  assert.doesNotMatch(html, /<\/script><script>alert\("jsonld"\)<\/script>/);
   assert.doesNotMatch(html, /<script>alert\("detail"\)<\/script>/);
   assert.match(html, /&lt;script&gt;alert\(&quot;detail&quot;\)&lt;\/script&gt;/);
 });
