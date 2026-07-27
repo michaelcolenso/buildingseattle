@@ -495,6 +495,93 @@ function cleanFeedText(value) {
   return text;
 }
 
+export const ADU_CLASSIFICATION_VERSION = 2;
+
+export function classifyAduPermit(permit) {
+  const searchText = [
+    permit?.detailed_description,
+    permit?.description,
+    permit?.primary_property_use,
+    permit?.dwelling_unit_type,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+  if (!searchText) return null;
+
+  const isDadu =
+    /\bdadu(?:\s*\d+)?\b/.test(searchText) ||
+    /\bdetached\b.*\b(?:accessory\s+dwelling|adu)\b/.test(searchText) ||
+    /\bbackyard\s+cottage\b/.test(searchText);
+  if (isDadu) return "DADU";
+
+  const isAdu =
+    /\ba?adu(?:\s*\d+)?\b/.test(searchText) ||
+    /\baccessory\s+dwelling(?:\s+unit)?s?\b/.test(searchText);
+  return isAdu ? "ADU" : null;
+}
+
+const ADU_NORMALIZED_TEXT_SQL = `
+  lower(
+    replace(replace(replace(replace(replace(replace(
+      replace(replace(replace(replace(replace(
+      COALESCE(detailed_description, '') || ' ' ||
+      COALESCE(description, '') || ' ' ||
+      COALESCE(primary_property_use, '') || ' ' ||
+      COALESCE(dwelling_unit_type, ''),
+      '#', ' '), '+', ' '), '&', ' '), ':', ' '), ';', ' '),
+      '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '), ')', ' ')
+  )
+`;
+
+const ADU_DADU_SQL = `
+  instr(' ' || adu_search_text || ' ', ' dadu ') > 0
+  OR (' ' || adu_search_text || ' ') GLOB '* dadu[0-9]*'
+  OR adu_search_text LIKE '%detached%accessory dwelling%'
+  OR adu_search_text LIKE '%detached%adu%'
+  OR adu_search_text LIKE '%backyard cottage%'
+`;
+
+const ADU_MATCH_SQL = `
+  ${ADU_DADU_SQL}
+  OR instr(' ' || adu_search_text || ' ', ' aadu ') > 0
+  OR (' ' || adu_search_text || ' ') GLOB '* aadu[0-9]*'
+  OR instr(' ' || adu_search_text || ' ', ' adu ') > 0
+  OR (' ' || adu_search_text || ' ') GLOB '* adu[0-9]*'
+  OR adu_search_text LIKE '%accessory dwelling unit%'
+  OR adu_search_text LIKE '%accessory dwelling%'
+`;
+
+function buildAduReclassificationStatement(env, permitNumbers) {
+  const uniquePermitNumbers = [...new Set(permitNumbers.filter(Boolean))];
+  if (!uniquePermitNumbers.length) return null;
+  const placeholders = uniquePermitNumbers.map(() => "?").join(",");
+  return env.DB.prepare(
+    `/* adu-materialize:reclassify */
+     WITH normalized AS (
+       SELECT id, ${ADU_NORMALIZED_TEXT_SQL} AS adu_search_text
+       FROM permits
+       WHERE permit_number IN (${placeholders})
+     ),
+     classified AS (
+       SELECT id,
+              CASE
+                WHEN ${ADU_DADU_SQL} THEN 'DADU'
+                WHEN ${ADU_MATCH_SQL} THEN 'ADU'
+                ELSE NULL
+              END AS adu_type
+       FROM normalized
+     )
+     UPDATE permits
+     SET adu_type = (SELECT classified.adu_type FROM classified WHERE classified.id = permits.id),
+         adu_classification_version = ${ADU_CLASSIFICATION_VERSION}
+     WHERE id IN (SELECT id FROM classified)`,
+  ).bind(...uniquePermitNumbers);
+}
+
 // Upserts permits by permit_number while preserving enrichment-only columns
 // (parcel_number, contractor_license, review_level, inspections, owner_name,
 // last_enriched_at, etc.). Only base-feed columns are overwritten; contractor_id
@@ -4941,51 +5028,13 @@ async function renderHousingPage(env) {
 }
 
 
-export const ADU_CLASSIFIED_CTE = `
-  WITH normalized AS (
-    SELECT p.*,
-           lower(
-             replace(replace(replace(replace(replace(replace(
-               replace(replace(replace(replace(
-               COALESCE(p.detailed_description, '') || ' ' ||
-               COALESCE(p.description, '') || ' ' ||
-               COALESCE(p.primary_property_use, '') || ' ' ||
-               COALESCE(p.dwelling_unit_type, ''),
-               '+', ' '), '&', ' '), ':', ' '), ';', ' '),
-               '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '), ')', ' ')
-           ) AS adu_search_text
-    FROM permits p
-  ),
-  classified AS (
-    SELECT normalized.*,
-           CASE
-             WHEN instr(' ' || adu_search_text || ' ', ' dadu ') > 0
-               OR (' ' || adu_search_text || ' ') GLOB '* dadu[0-9]*'
-               OR adu_search_text LIKE '%detached accessory dwelling unit%'
-               OR adu_search_text LIKE '%detached accessory dwelling%'
-               OR adu_search_text LIKE '%detached adu%'
-               OR adu_search_text LIKE '%backyard cottage%'
-             THEN 'DADU'
-             ELSE 'ADU'
-           END AS adu_type
-    FROM normalized
-    WHERE instr(' ' || adu_search_text || ' ', ' dadu ') > 0
-       OR (' ' || adu_search_text || ' ') GLOB '* dadu[0-9]*'
-       OR instr(' ' || adu_search_text || ' ', ' aadu ') > 0
-       OR (' ' || adu_search_text || ' ') GLOB '* aadu[0-9]*'
-       OR instr(' ' || adu_search_text || ' ', ' adu ') > 0
-       OR (' ' || adu_search_text || ' ') GLOB '* adu[0-9]*'
-       OR adu_search_text LIKE '%accessory dwelling unit%'
-       OR adu_search_text LIKE '%accessory dwelling%'
-       OR adu_search_text LIKE '%backyard cottage%'
-  )
-`;
-
 async function hasAduDaduData(env) {
   const row = await env.DB.prepare(
     `/* adu-tracker:availability */
-     ${ADU_CLASSIFIED_CTE}
-     SELECT 1 AS has_data FROM classified LIMIT 1`,
+     SELECT 1 AS has_data
+     FROM permits
+     WHERE adu_type IN ('ADU', 'DADU')
+     LIMIT 1`,
   ).first();
   return Boolean(row?.has_data);
 }
@@ -4994,7 +5043,6 @@ async function getAduDaduData(env) {
   const [totals, byYear, byNeighborhood, recent] = await Promise.all([
     env.DB.prepare(
       `/* adu-tracker:totals */
-      ${ADU_CLASSIFIED_CTE}
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
              SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count,
@@ -5003,41 +5051,42 @@ async function getAduDaduData(env) {
              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
              SUM(CASE WHEN lower(COALESCE(status, '')) IN ('active', 'pending', 'new', 'in review', 'under review') THEN 1 ELSE 0 END) AS active,
              MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS data_updated_through
-      FROM classified`,
+      FROM permits
+      WHERE adu_type IN ('ADU', 'DADU')`,
     ).first(),
     env.DB.prepare(
       `/* adu-tracker:by-year */
-      ${ADU_CLASSIFIED_CTE}
       SELECT substr(COALESCE(NULLIF(issued_date, ''), applied_date), 1, 4) AS yr,
              COUNT(*) AS permits,
              SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
              SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count
-      FROM classified
-      WHERE COALESCE(NULLIF(issued_date, ''), applied_date) IS NOT NULL
+      FROM permits
+      WHERE adu_type IN ('ADU', 'DADU')
+        AND COALESCE(NULLIF(issued_date, ''), applied_date) IS NOT NULL
       GROUP BY yr
       HAVING yr IS NOT NULL AND yr != ''
       ORDER BY yr ASC`,
     ).all(),
     env.DB.prepare(
       `/* adu-tracker:by-neighborhood */
-      ${ADU_CLASSIFIED_CTE}
       SELECT COALESCE(NULLIF(neighborhood, ''), 'Unknown') AS label,
              COUNT(*) AS permits,
              SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
              SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count,
              SUM(COALESCE(value, 0)) AS total_value
-      FROM classified
+      FROM permits
+      WHERE adu_type IN ('ADU', 'DADU')
       GROUP BY label
       ORDER BY permits DESC, total_value DESC
       LIMIT 12`,
     ).all(),
     env.DB.prepare(
       `/* adu-tracker:recent */
-      ${ADU_CLASSIFIED_CTE}
       SELECT permit_number, address, neighborhood, status, value, housing_units_added,
              COALESCE(NULLIF(issued_date, ''), applied_date) AS activity_date,
              adu_type
-      FROM classified
+      FROM permits
+      WHERE adu_type IN ('ADU', 'DADU')
       ORDER BY COALESCE(NULLIF(issued_date, ''), applied_date, created_at) DESC
       LIMIT 20`,
     ).all(),
@@ -5916,8 +5965,9 @@ async function renderInsightsIndex(env) {
     safeFirst(
       env,
       `/* adu-tracker:index */
-       ${ADU_CLASSIFIED_CTE}
-       SELECT COUNT(*) AS total FROM classified`,
+       SELECT COUNT(*) AS total
+       FROM permits
+       WHERE adu_type IN ('ADU', 'DADU')`,
     ),
     safeFirst(
       env,
@@ -6976,6 +7026,8 @@ async function upsertScheduledPermits(env, permits) {
       );
     });
 
+    const reclassifyStatement = buildAduReclassificationStatement(env, permitNumbers);
+    if (reclassifyStatement) statements.push(reclassifyStatement);
     statements.push(...buildStatusChangeStatements(env, statusChanges));
 
     if (statements.length) {
@@ -7178,6 +7230,9 @@ async function ingestPermit(request, env) {
     )
     .run();
 
+  const reclassifyStatement = buildAduReclassificationStatement(env, [data.permit_number]);
+  if (reclassifyStatement) await reclassifyStatement.run();
+
   if (existingPermit) {
     const previousStatus = normalizeStoredStatus(existingPermit.status);
     if (previousStatus !== incomingStatus) {
@@ -7291,6 +7346,8 @@ async function ingestPermitBatch(request, env) {
       );
     }
 
+    const reclassifyStatement = buildAduReclassificationStatement(env, permitNumbers);
+    if (reclassifyStatement) statements.push(reclassifyStatement);
     statements.push(...buildStatusChangeStatements(env, statusChanges));
 
     await env.DB.batch(statements);
@@ -7504,7 +7561,11 @@ async function ingestPermitEnrichmentBatch(request, env) {
     });
 
     for (let i = 0; i < permitStatements.length; i += 100) {
-      await env.DB.batch(permitStatements.slice(i, i + 100));
+      const statementChunk = permitStatements.slice(i, i + 100);
+      const permitNumbers = normalizedItems.slice(i, i + 100).map((item) => item.permit_number);
+      const reclassifyStatement = buildAduReclassificationStatement(env, permitNumbers);
+      if (reclassifyStatement) statementChunk.push(reclassifyStatement);
+      await env.DB.batch(statementChunk);
     }
 
     await logIngest(env, {

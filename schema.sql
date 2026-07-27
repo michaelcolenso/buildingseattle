@@ -80,8 +80,11 @@ CREATE TABLE IF NOT EXISTS permits (
     ready_to_issue_date DATE,
     has_required_inspections INTEGER DEFAULT 0,
     has_completed_inspections INTEGER DEFAULT 0,
+    adu_type TEXT CHECK (adu_type IN ('ADU', 'DADU') OR adu_type IS NULL),
+    adu_classification_version INTEGER NOT NULL DEFAULT 0,
     last_enriched_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (contractor_id) REFERENCES contractors(id)
 );
 
@@ -122,6 +125,8 @@ CREATE INDEX IF NOT EXISTS idx_permits_status ON permits(status);
 CREATE INDEX IF NOT EXISTS idx_permits_contractor_id ON permits(contractor_id);
 CREATE INDEX IF NOT EXISTS idx_permits_contractor_license ON permits(contractor_license);
 CREATE INDEX IF NOT EXISTS idx_permits_last_enriched_at ON permits(last_enriched_at);
+CREATE INDEX IF NOT EXISTS idx_permits_adu_type_activity ON permits(adu_type, issued_date, applied_date);
+CREATE INDEX IF NOT EXISTS idx_permits_adu_type_neighborhood ON permits(adu_type, neighborhood);
 CREATE INDEX IF NOT EXISTS idx_permit_status_changes_changed_at ON permit_status_changes(changed_at);
 CREATE INDEX IF NOT EXISTS idx_permit_status_changes_permit_number ON permit_status_changes(permit_number);
 CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_status ON permit_alert_subscriptions(status);

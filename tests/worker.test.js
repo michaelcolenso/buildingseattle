@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import worker, {
-  ADU_CLASSIFIED_CTE,
+  ADU_CLASSIFICATION_VERSION,
+  classifyAduPermit,
   summarizePlanReview,
   percentileSorted,
   summarizeDays,
@@ -507,6 +509,16 @@ function createEnv() {
                 contractors[existingIndex] = { ...contractors[existingIndex], ...contractor };
               } else {
                 contractors.push(contractor);
+              }
+              return { success: true };
+            }
+
+            if (sql.includes("adu-materialize:reclassify")) {
+              for (const permitNumber of params) {
+                const permit = permits.find((item) => item.permit_number === permitNumber);
+                if (!permit) continue;
+                permit.adu_type = classifyAduPermit(permit);
+                permit.adu_classification_version = ADU_CLASSIFICATION_VERSION;
               }
               return { success: true };
             }
@@ -1137,19 +1149,20 @@ test("GET /api/adu-dadu returns classified permit aggregates", async () => {
   assert.equal(payload.by_year[1].year, "2026");
   assert.equal(payload.by_neighborhood[0].label, "West Seattle");
   assert.equal(payload.recent[0].adu_type, "DADU");
-  assert.ok(env._queries.some((sql) => sql.includes("detached accessory dwelling unit")));
-  assert.ok(env._queries.some((sql) => sql.includes("detached adu")));
-  assert.ok(env._queries.some((sql) => sql.includes("' aadu '")));
-  assert.ok(env._queries.some((sql) => sql.includes("'+', ' '")));
-  assert.ok(env._queries.some((sql) => sql.includes("backyard cottage")));
+  assert.ok(env._queries.every((sql) => sql.includes("adu_type")));
+  assert.ok(env._queries.every((sql) => !sql.includes("detailed_description")));
   assert.equal(response.headers.get("X-Robots-Tag"), "noindex");
 });
 
-test("ADU classifier executes against realistic permit descriptions", () => {
+test("ADU classification migration backfills realistic permit descriptions", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE permits (
-      permit_number TEXT PRIMARY KEY,
+      id INTEGER PRIMARY KEY,
+      permit_number TEXT UNIQUE,
+      neighborhood TEXT,
+      issued_date TEXT,
+      applied_date TEXT,
       detailed_description TEXT,
       description TEXT,
       primary_property_use TEXT,
@@ -1158,23 +1171,36 @@ test("ADU classifier executes against realistic permit descriptions", () => {
   `);
   const insert = db.prepare(`
     INSERT INTO permits (
-      permit_number, detailed_description, description, primary_property_use, dwelling_unit_type
-    ) VALUES (?, ?, ?, ?, ?)
+      permit_number, neighborhood, issued_date, applied_date,
+      detailed_description, description, primary_property_use, dwelling_unit_type
+    ) VALUES (?, 'Seattle', '2026-01-01', '2025-12-01', ?, ?, ?, ?)
   `);
   const fixtures = [
     ["AADU", "", "SFR & AADU", "", ""],
     ["PLUS", "", "SFR+AADU+DADU", "", ""],
     ["DETACHED", "Construct detached ADU behind existing home", "", "", ""],
+    ["DETACHED_INTERRUPTED", "", "Detached and attached accessory dwelling units", "", ""],
+    ["DETACHED_TWO_UNIT", "", "Detached two-unit accessory dwelling", "", ""],
     ["ADU1", "", "Construct stacked ADU1 and ADU2", "", ""],
     ["DADU2", "", "Construct DADU2", "", ""],
+    ["DADU_HASH", "", "Construct DADU#2", "", ""],
     ["EXPANDED", "", "New accessory dwelling unit", "", ""],
     ["COTTAGE", "", "New backyard cottage", "", ""],
     ["CONTROL", "", "Graduate studies tenant improvement", "", ""],
   ];
   for (const fixture of fixtures) insert.run(...fixture);
 
+  const migration = readFileSync(
+    new URL("../migration_permit_adu_classification.sql", import.meta.url),
+    "utf8",
+  );
+  db.exec(migration);
   const rows = db
-    .prepare(`${ADU_CLASSIFIED_CTE} SELECT permit_number, adu_type FROM classified ORDER BY permit_number`)
+    .prepare(
+      `SELECT permit_number, adu_type, adu_classification_version
+       FROM permits
+       ORDER BY permit_number`,
+    )
     .all();
   assert.deepEqual(
     Object.fromEntries(rows.map((row) => [row.permit_number, row.adu_type])),
@@ -1183,12 +1209,39 @@ test("ADU classifier executes against realistic permit descriptions", () => {
       ADU1: "ADU",
       COTTAGE: "DADU",
       DADU2: "DADU",
+      DADU_HASH: "DADU",
       DETACHED: "DADU",
+      DETACHED_INTERRUPTED: "DADU",
+      DETACHED_TWO_UNIT: "DADU",
       EXPANDED: "ADU",
       PLUS: "DADU",
+      CONTROL: null,
     },
   );
+  assert.ok(rows.every((row) => row.adu_classification_version === ADU_CLASSIFICATION_VERSION));
+  assert.deepEqual(
+    db
+      .prepare(`EXPLAIN QUERY PLAN SELECT * FROM permits WHERE adu_type = 'DADU'`)
+      .all()
+      .some((row) => String(row.detail).includes("idx_permits_adu_type")),
+    true,
+  );
   db.close();
+});
+
+test("Worker ADU classifier matches migration edge cases", () => {
+  const fixtures = [
+    ["ADU", "SFR & AADU"],
+    ["DADU", "SFR+AADU+DADU"],
+    ["DADU", "Detached and attached accessory dwelling units"],
+    ["DADU", "Detached two-unit accessory dwelling"],
+    ["DADU", "Construct DADU#2"],
+    ["ADU", "Construct stacked ADU1 and ADU2"],
+    [null, "Graduate studies tenant improvement"],
+  ];
+  for (const [expected, description] of fixtures) {
+    assert.equal(classifyAduPermit({ description }), expected, description);
+  }
 });
 
 test("GET /insights/adu-dadu renders an indexable tracker with methodology and recent permits", async () => {
@@ -1584,6 +1637,7 @@ test("POST /ingest/permit/batch links permits to imported contractors", async ()
             permit_number: "PERM999",
             contractor_name: "Seattle Construction Group",
             address: "123 Test St, Seattle, WA",
+            description: "Construct DADU#2 behind existing home",
           },
         ],
       }),
@@ -1593,7 +1647,10 @@ test("POST /ingest/permit/batch links permits to imported contractors", async ()
   );
 
   assert.equal(response.status, 200);
-  assert.equal(env._state.permits.find((permit) => permit.permit_number === "PERM999").contractor_id, 9);
+  const permit = env._state.permits.find((item) => item.permit_number === "PERM999");
+  assert.equal(permit.contractor_id, 9);
+  assert.equal(permit.adu_type, "DADU");
+  assert.equal(permit.adu_classification_version, ADU_CLASSIFICATION_VERSION);
 });
 
 test("POST /ingest/permit/batch records status changes for existing permits", async () => {
@@ -1690,7 +1747,7 @@ test("POST /ingest/permit/enrichment/batch links permits from contractor license
             review_level: "Field",
             primary_property_use: "Single Family/Duplex",
             parcel_number: "DV1200889",
-            detailed_description: "Detailed SDCI project description",
+            detailed_description: "Detached two-unit accessory dwelling behind existing home",
             record_status_detail: "Issued",
             expires_date: "12/26/2026",
             housing_units_existing: "1",
@@ -1719,9 +1776,11 @@ test("POST /ingest/permit/enrichment/batch links permits from contractor license
   const permit = env._state.permits.find((item) => item.permit_number === "PERM456");
   assert.equal(permit.contractor_id, contractor.id);
   assert.equal(permit.contractor_license, "GREENBN861QE");
+  assert.equal(permit.adu_type, "DADU");
+  assert.equal(permit.adu_classification_version, ADU_CLASSIFICATION_VERSION);
   assert.equal(permit.review_level, "Field");
   assert.equal(permit.parcel_number, "DV1200889");
-  assert.equal(permit.detailed_description, "Detailed SDCI project description");
+  assert.equal(permit.detailed_description, "Detached two-unit accessory dwelling behind existing home");
   assert.equal(permit.expires_date, "2026-12-26");
   assert.equal(permit.sleeping_rooms, 3);
   assert.equal(permit.has_required_inspections, 1);
