@@ -166,6 +166,21 @@ export default {
         return secure(await renderAduDaduPage(env));
       }
 
+      if (path === "/insights/commercial-projects") {
+        ctx.waitUntil(logPageView(request, env, "/insights/commercial-projects"));
+        return secure(await renderMarketSegmentPage(env, "commercial"));
+      }
+
+      if (path === "/insights/multifamily-pipeline") {
+        ctx.waitUntil(logPageView(request, env, "/insights/multifamily-pipeline"));
+        return secure(await renderMarketSegmentPage(env, "multifamily"));
+      }
+
+      if (path === "/insights/tenant-improvements") {
+        ctx.waitUntil(logPageView(request, env, "/insights/tenant-improvements"));
+        return secure(await renderMarketSegmentPage(env, "tenant-improvements"));
+      }
+
       if (path === "/insights/map") {
         ctx.waitUntil(logPageView(request, env, "/insights/map"));
         return secure(await renderMapPage(env));
@@ -183,12 +198,17 @@ export default {
 
       if (["/contractors", "/neighborhoods", "/projects", "/addresses"].includes(path)) {
         ctx.waitUntil(logPageView(request, env, path));
-        return secure(await renderEntityHubPage(path.slice(1), env));
+        return secure(await renderEntityHubPage(path.slice(1), env, request));
       }
 
       if (path === "/about" || path === "/about/") {
         ctx.waitUntil(logPageView(request, env, "/about"));
         return secure(renderAboutPage());
+      }
+
+      if (path === "/methodology" || path === "/methodology/") {
+        ctx.waitUntil(logPageView(request, env, "/methodology"));
+        return secure(await renderMethodologyPage(env));
       }
 
       if (path === "/data" || path === "/data/") {
@@ -830,7 +850,7 @@ function renderFooter() {
   return `<footer class="global-footer">
       <div class="global-footer-row">
         <div>Building Seattle &mdash; Seattle construction intelligence</div>
-        <div><a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/data">Dataset</a></div>
+        <div><a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/data">Dataset</a> &middot; <a href="/methodology">Methodology</a></div>
       </div>
     </footer>`;
 }
@@ -2047,7 +2067,8 @@ async function getPermits(request, env) {
   const type = url.searchParams.get("type");
   const status = url.searchParams.get("status");
   const q = url.searchParams.get("q");
-  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const requestedPage = Number.parseInt(url.searchParams.get("page") || "1", 10);
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.min(requestedPage, 1000) : 1;
   const requestedPerPage = parseInt(url.searchParams.get("per_page") || "50", 10);
   const perPage = Math.max(1, Math.min(100, Number.isFinite(requestedPerPage) ? requestedPerPage : 50));
   const offset = (page - 1) * perPage;
@@ -2260,6 +2281,15 @@ async function renderPermitBrowser(request, env) {
     .join("");
   const activeFilterDesc =
     [q ? `search: "${q}"` : null, neighborhood, type, status].filter(Boolean).join(", ") || "All permits";
+  const approvedPermitParams = new Set(["page", "neighborhood", "type", "status", "q"]);
+  const hasUnknownPermitParams = [...url.searchParams.keys()].some((key) => !approvedPermitParams.has(key));
+  const rawPermitPage = url.searchParams.get("page");
+  const hasInvalidPermitPage = rawPermitPage !== null && rawPermitPage !== String(page);
+  const hasPermitFilters = Boolean(
+    q || neighborhood || type || status || hasUnknownPermitParams || hasInvalidPermitPage,
+  );
+  const permitCanonical =
+    !hasPermitFilters && page > 1 ? `${BASE_URL}/permits?page=${page}` : `${BASE_URL}/permits`;
   const recentChangeCards = renderStatusChangeCards(recentStatusChanges);
   const cards = permits
     .map((permit) => {
@@ -2304,11 +2334,12 @@ async function renderPermitBrowser(request, env) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Browse Seattle Construction Permits | Building Seattle</title>
     <meta name="description" content="Browse active Seattle construction permits by neighborhood and permit type. Real-time intelligence for the Greater Seattle metro area.">
-    <link rel="canonical" href="${BASE_URL}/permits">
+    <meta name="robots" content="${hasPermitFilters || total === 0 ? "noindex,follow" : "index,follow,max-image-preview:large"}">
+    <link rel="canonical" href="${permitCanonical}">
     <meta property="og:title" content="Browse Seattle Construction Permits | Building Seattle">
     <meta property="og:description" content="Browse active Seattle construction permits by neighborhood and permit type.">
     <meta property="og:type" content="website">
-    <meta property="og:url" content="${BASE_URL}/permits">
+    <meta property="og:url" content="${permitCanonical}">
     <meta name="twitter:card" content="summary">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
 	    <meta property="og:image:width" content="1200">
@@ -3641,6 +3672,7 @@ async function renderContractorPage(slug, env, request) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 	    <title>${safeContractorName} — ${safeContractorSpecialty} | Seattle | Building Seattle</title>
 	    <meta name="description" content="${safeContractorMetaDescription}">
+	    <meta name="robots" content="index,follow,max-image-preview:large">
 	    <link rel="canonical" href="${canonical}">
 	    <meta property="og:title" content="${safeContractorName} — ${safeContractorSpecialty} | Seattle | Building Seattle">
 	    <meta property="og:description" content="${safeContractorMetaDescription}">
@@ -4275,6 +4307,9 @@ function entPermitRows(permits) {
   return `<table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+const ENTITY_HUB_PAGE_SIZE = 48;
+const ACTIVE_PERMIT_SQL =
+  "lower(COALESCE(p.status, '')) IN ('active', 'pending', 'new', 'in review', 'under review')";
 const ENTITY_HUBS = {
   contractors: {
     title: "Seattle Contractors by Permit Activity",
@@ -4282,14 +4317,16 @@ const ENTITY_HUBS = {
     intro: "Find contractors connected to Seattle construction permits and compare their recent public project activity.",
     itemLabel: "contractors",
     pathPrefix: "/contractor/",
-    sql: `/* seo-hub:contractors */
+    selectSql: `/* seo-hub:contractors */
       SELECT o.slug, o.name AS label, COALESCE(NULLIF(o.type_guess, 'unknown'), 'Contractor') AS detail,
-             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM people_orgs o
       JOIN permit_participants pp ON pp.people_org_id = o.id AND pp.role = 'contractor'
-      JOIN permits p ON p.id = pp.permit_id
-      GROUP BY o.id, o.slug, o.name, o.type_guess
-      ORDER BY permit_count DESC, total_value DESC LIMIT 100`,
+      JOIN permits p ON p.id = pp.permit_id`,
+    groupSql: "GROUP BY o.id, o.slug, o.name, o.type_guess",
+    sortOptions: { permits: "permit_count DESC, total_value DESC", value: "total_value DESC, permit_count DESC", recent: "latest_activity DESC, permit_count DESC" },
+    defaultSort: "permits",
   },
   neighborhoods: {
     title: "Seattle Neighborhood Construction Permits",
@@ -4297,14 +4334,16 @@ const ENTITY_HUBS = {
     intro: "Browse neighborhood-level construction activity and follow the properties, projects, and permits shaping Seattle.",
     itemLabel: "neighborhoods",
     pathPrefix: "/neighborhood/",
-    sql: `/* seo-hub:neighborhoods */
+    selectSql: `/* seo-hub:neighborhoods */
       SELECT n.slug, n.name AS label, 'Seattle neighborhood' AS detail,
-             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM neighborhoods n
       JOIN address_neighborhoods an ON an.neighborhood_id = n.id
-      JOIN permits p ON p.address_id = an.address_id
-      GROUP BY n.id, n.slug, n.name
-      ORDER BY permit_count DESC, total_value DESC LIMIT 100`,
+      JOIN permits p ON p.address_id = an.address_id`,
+    groupSql: "GROUP BY n.id, n.slug, n.name",
+    sortOptions: { permits: "permit_count DESC, total_value DESC", value: "total_value DESC, permit_count DESC", recent: "latest_activity DESC, permit_count DESC" },
+    defaultSort: "permits",
   },
   projects: {
     title: "Seattle Construction Projects by Permit Activity",
@@ -4312,15 +4351,17 @@ const ENTITY_HUBS = {
     intro: "See related permits grouped into Seattle construction projects, with total value and permit activity in one place.",
     itemLabel: "projects",
     pathPrefix: "/project/",
-    sql: `/* seo-hub:projects */
+    selectSql: `/* seo-hub:projects */
       SELECT pr.slug, pr.name AS label, COALESCE(a.display_address, 'Seattle project') AS detail,
-             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM projects pr
       JOIN project_permits pp ON pp.project_id = pr.id
       JOIN permits p ON p.id = pp.permit_id
-      LEFT JOIN addresses a ON a.id = pr.address_id
-      GROUP BY pr.id, pr.slug, pr.name, a.display_address
-      ORDER BY total_value DESC, permit_count DESC LIMIT 100`,
+      LEFT JOIN addresses a ON a.id = pr.address_id`,
+    groupSql: "GROUP BY pr.id, pr.slug, pr.name, a.display_address",
+    sortOptions: { value: "total_value DESC, permit_count DESC", permits: "permit_count DESC, total_value DESC", recent: "latest_activity DESC, total_value DESC" },
+    defaultSort: "value",
   },
   addresses: {
     title: "Seattle Properties with Construction Activity",
@@ -4328,30 +4369,148 @@ const ENTITY_HUBS = {
     intro: "Explore Seattle properties with notable permit histories, from active developments to frequently renovated buildings.",
     itemLabel: "addresses",
     pathPrefix: "/address/",
-    sql: `/* seo-hub:addresses */
+    selectSql: `/* seo-hub:addresses */
       SELECT a.slug, a.display_address AS label, 'Seattle property' AS detail,
-             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value
+             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM addresses a
-      JOIN permits p ON p.address_id = a.id
-      GROUP BY a.id, a.slug, a.display_address
-      ORDER BY permit_count DESC, total_value DESC LIMIT 100`,
+      JOIN permits p ON p.address_id = a.id`,
+    groupSql: "GROUP BY a.id, a.slug, a.display_address",
+    sortOptions: { permits: "permit_count DESC, total_value DESC", recent: "latest_activity DESC, permit_count DESC", value: "total_value DESC, permit_count DESC" },
+    defaultSort: "permits",
   },
 };
 
-async function renderEntityHubPage(type, env) {
+function boundedHubChoice(value, allowed, fallback) {
+  return allowed.includes(value) ? value : fallback;
+}
+
+function buildEntityHubState(type, request) {
+  const config = ENTITY_HUBS[type];
+  const url = new URL(request.url);
+  const rawPage = url.searchParams.get("page");
+  const parsedPage = Number.parseInt(rawPage || "1", 10);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? Math.min(parsedPage, 1000) : 1;
+  const sort = boundedHubChoice(url.searchParams.get("sort"), Object.keys(config.sortOptions), config.defaultSort);
+  const activity = type === "contractors"
+    ? boundedHubChoice(url.searchParams.get("activity"), ["all", "active"], "all")
+    : "all";
+  const view = type === "projects"
+    ? boundedHubChoice(url.searchParams.get("view"), ["all", "active", "recent"], "all")
+    : "all";
+  const permitType = type === "contractors" ? String(url.searchParams.get("permit_type") || "").trim().slice(0, 80) : "";
+  const neighborhood = ["contractors", "addresses"].includes(type)
+    ? String(url.searchParams.get("neighborhood") || "").trim().slice(0, 80)
+    : "";
+  const minValue = boundedHubChoice(url.searchParams.get("min_value"), ["", "100000", "500000", "1000000", "5000000"], "");
+  const minPermits = type === "addresses"
+    ? boundedHubChoice(url.searchParams.get("min_permits"), ["", "2", "5", "10"], "")
+    : "";
+  const hasNonPaginationParams = [...url.searchParams.keys()].some((key) => key !== "page");
+  const hasInvalidPage = rawPage !== null && rawPage !== String(page);
+  const hasFilters = hasNonPaginationParams || hasInvalidPage;
+  return { url, page, sort, activity, view, permitType, neighborhood, minValue, minPermits, hasFilters };
+}
+
+function buildEntityHubQuery(type, state) {
+  const config = ENTITY_HUBS[type];
+  const where = [];
+  const havingParts = [];
+  const binds = [];
+  if (state.neighborhood) {
+    where.push("p.neighborhood = ?");
+    binds.push(state.neighborhood);
+  }
+  if (state.permitType) {
+    where.push("p.type = ?");
+    binds.push(state.permitType);
+  }
+  if (state.activity === "active" || state.view === "active") where.push(ACTIVE_PERMIT_SQL);
+  if (state.view === "recent") {
+    where.push("date(COALESCE(p.issued_date, p.applied_date, p.created_at)) >= date('now', '-365 days')");
+  }
+  if (state.minValue) {
+    havingParts.push("COALESCE(SUM(p.value), 0) >= ?");
+    binds.push(Number(state.minValue));
+  }
+  if (state.minPermits) {
+    havingParts.push("COUNT(DISTINCT p.id) >= ?");
+    binds.push(Number(state.minPermits));
+  }
+  const offset = (state.page - 1) * ENTITY_HUB_PAGE_SIZE;
+  return {
+    sql: `${config.selectSql}
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ${config.groupSql}
+      ${havingParts.length ? `HAVING ${havingParts.join(" AND ")}` : ""}
+      ORDER BY ${config.sortOptions[state.sort]}, slug ASC
+      LIMIT ${ENTITY_HUB_PAGE_SIZE + 1} OFFSET ${offset}`,
+    binds,
+  };
+}
+
+function hubUrl(type, state, page) {
+  const params = new URLSearchParams();
+  if (page > 1) params.set("page", String(page));
+  if (state.sort !== ENTITY_HUBS[type].defaultSort) params.set("sort", state.sort);
+  if (state.activity !== "all") params.set("activity", state.activity);
+  if (state.view !== "all") params.set("view", state.view);
+  if (state.permitType) params.set("permit_type", state.permitType);
+  if (state.neighborhood) params.set("neighborhood", state.neighborhood);
+  if (state.minValue) params.set("min_value", state.minValue);
+  if (state.minPermits) params.set("min_permits", state.minPermits);
+  const query = params.toString();
+  return `/${type}${query ? `?${query}` : ""}`;
+}
+
+function renderEntityHubFilters(type, state) {
+  const selected = (actual, expected) => actual === expected ? " selected" : "";
+  const sortOptions = Object.keys(ENTITY_HUBS[type].sortOptions)
+    .map((value) => `<option value="${value}"${selected(state.sort, value)}>${escapeHtml(value === "permits" ? "Permit count" : value === "value" ? "Declared value" : "Latest activity")}</option>`)
+    .join("");
+  const contractorFilters = type === "contractors" ? `
+      <label>Activity<select name="activity"><option value="all">All activity</option><option value="active"${selected(state.activity, "active")}>Active only</option></select></label>
+      <label>Neighborhood<input name="neighborhood" value="${escapeHtml(state.neighborhood)}" maxlength="80" placeholder="e.g. Ballard"></label>
+      <label>Permit type<input name="permit_type" value="${escapeHtml(state.permitType)}" maxlength="80" placeholder="Exact public type"></label>` : "";
+  const projectFilters = type === "projects" ? `
+      <label>View<select name="view"><option value="all">All time</option><option value="active"${selected(state.view, "active")}>Active</option><option value="recent"${selected(state.view, "recent")}>Recent 12 months</option></select></label>` : "";
+  const addressFilters = type === "addresses" ? `
+      <label>Neighborhood<input name="neighborhood" value="${escapeHtml(state.neighborhood)}" maxlength="80" placeholder="e.g. Ballard"></label>
+      <label>Minimum permits<select name="min_permits"><option value="">Any</option><option value="2"${selected(state.minPermits, "2")}>2+</option><option value="5"${selected(state.minPermits, "5")}>5+</option><option value="10"${selected(state.minPermits, "10")}>10+</option></select></label>` : "";
+  const valueFilter = ["contractors", "addresses"].includes(type) ? `
+      <label>Minimum value<select name="min_value"><option value="">Any</option><option value="100000"${selected(state.minValue, "100000")}>$100K+</option><option value="500000"${selected(state.minValue, "500000")}>$500K+</option><option value="1000000"${selected(state.minValue, "1000000")}>$1M+</option><option value="5000000"${selected(state.minValue, "5000000")}>$5M+</option></select></label>` : "";
+  return `<form method="get" action="/${type}" class="hub-filters">
+      <label>Sort<select name="sort">${sortOptions}</select></label>
+      ${contractorFilters}${projectFilters}${addressFilters}${valueFilter}
+      <button type="submit">Apply</button>
+      <a class="ent-link" href="/${type}">Reset</a>
+    </form>`;
+}
+
+async function renderEntityHubPage(type, env, request) {
   const config = ENTITY_HUBS[type];
   if (!config) return render404();
 
+  const state = buildEntityHubState(type, request);
+  const query = buildEntityHubQuery(type, state);
   let items = [];
   try {
-    const result = await env.DB.prepare(config.sql).all();
+    const result = await env.DB.prepare(query.sql).bind(...query.binds).all();
     items = result.results || [];
   } catch {
     // Graph migrations may briefly lag a deployment; keep the route available
     // but prevent an empty fallback from entering the index.
   }
 
-  const canonical = `${BASE_URL}/${type}`;
+  const hasNext = items.length > ENTITY_HUB_PAGE_SIZE;
+  items = items.slice(0, ENTITY_HUB_PAGE_SIZE);
+  const updatedThrough = items
+    .map((item) => item.latest_activity)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const canonicalPath = state.hasFilters ? `/${type}` : hubUrl(type, state, state.page);
+  const canonical = `${BASE_URL}${canonicalPath}`;
   const itemList = items.map((item, index) => ({
     "@type": "ListItem",
     position: index + 1,
@@ -4382,9 +4541,21 @@ async function renderEntityHubPage(type, env) {
       </article>`;
     })
     .join("");
-  const body = `<nav aria-label="Breadcrumb" style="font-size:0.8125rem;margin-bottom:1.25rem;"><a class="ent-link" href="/">Home</a> / ${escapeHtml(config.title)}</nav>
+  const pagination = `<nav aria-label="Pagination" style="display:flex;justify-content:space-between;gap:1rem;margin-top:1.5rem;">
+      ${state.page > 1 ? `<a class="ent-link" rel="prev" href="${escapeHtml(hubUrl(type, state, state.page - 1))}">&larr; Previous</a>` : "<span></span>"}
+      ${hasNext ? `<a class="ent-link" rel="next" href="${escapeHtml(hubUrl(type, state, state.page + 1))}">Next &rarr;</a>` : "<span></span>"}
+    </nav>`;
+  const body = `<style>
+      .hub-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.8rem;align-items:end;background:var(--surface);border:1px solid var(--border);border-radius:1rem;padding:1rem;margin:1.25rem 0}
+      .hub-filters label{display:grid;gap:0.35rem;font-size:0.72rem;font-weight:750;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+      .hub-filters select,.hub-filters input,.hub-filters button{width:100%;border:1px solid var(--border);border-radius:.65rem;padding:.65rem;background:var(--bg);color:var(--text);font:inherit;text-transform:none;letter-spacing:normal}
+      .hub-filters button{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:750;cursor:pointer}
+    </style>
+    <nav aria-label="Breadcrumb" style="font-size:0.8125rem;margin-bottom:1.25rem;"><a class="ent-link" href="/">Home</a> / ${escapeHtml(config.title)}</nav>
     <header style="max-width:800px;margin-bottom:2rem;"><p class="eyebrow">Explore Seattle construction</p><h1>${escapeHtml(config.title)}</h1><p style="font-size:1.08rem;color:var(--text-muted);line-height:1.7;">${escapeHtml(config.intro)}</p></header>
-    ${items.length ? `<p style="color:var(--text-muted);">Showing ${items.length} leading ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>` : '<div class="card"><h2>Data is being refreshed</h2><p>This index will appear after the latest entity graph refresh.</p></div>'}`;
+    ${renderEntityHubFilters(type, state)}
+    ${items.length ? `<p style="color:var(--text-muted);">Page ${state.page}: showing ${items.length} ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>${pagination}` : '<div class="card"><h2>No matching records</h2><p>Try removing a filter or return to the unfiltered index.</p></div>'}
+    ${renderDataTrustNote(updatedThrough, "Hub rankings aggregate public permit records; declared value is not verified project cost.")}`;
 
   return new Response(
     renderEntityDoc({
@@ -4392,7 +4563,7 @@ async function renderEntityHubPage(type, env) {
       description: config.description,
       canonical,
       jsonLd,
-      noindex: items.length === 0,
+      noindex: items.length === 0 || state.hasFilters,
       body,
       activeNav: "explore",
     }),
@@ -4593,6 +4764,9 @@ function insightsTabs(active) {
     { key: "pipeline", label: "Pipeline", href: "/insights/pipeline" },
     { key: "housing", label: "Housing", href: "/insights/housing" },
     { key: "adu-dadu", label: "ADU / DADU", href: "/insights/adu-dadu" },
+    { key: "multifamily", label: "Multifamily", href: "/insights/multifamily-pipeline" },
+    { key: "commercial", label: "Commercial", href: "/insights/commercial-projects" },
+    { key: "tenant-improvements", label: "Tenant Improvements", href: "/insights/tenant-improvements" },
     { key: "map", label: "Map", href: "/insights/map" },
     { key: "contractors", label: "Contractors", href: "/insights/contractors" },
     { key: "network", label: "Network", href: "/insights/network" },
@@ -4626,7 +4800,7 @@ function prBarChart(rows, accent = "var(--accent)") {
 
 async function renderPlanReviewPage(env) {
   const canonical = `${BASE_URL}/insights/plan-review`;
-  const data = await getPlanReviewData(env);
+  const [data, freshness] = await Promise.all([getPlanReviewData(env), getDataFreshness(env)]);
   const s = data.summary;
   const hasData = s.count > 0;
 
@@ -4739,7 +4913,15 @@ async function renderPlanReviewPage(env) {
     }`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex: !hasData,
+      body: `${body}${renderDataTrustNote(freshness?.updated_through, "Review durations use SDCI-reported timing fields and exclude missing or negative values.")}`,
+      activeNav: "insights",
+    }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
   );
 }
@@ -4807,7 +4989,7 @@ async function getPipelineStats(env) {
 
 async function renderPipelinePage(env) {
   const canonical = `${BASE_URL}/insights/pipeline`;
-  const data = await getPipelineData(env);
+  const [data, freshness] = await Promise.all([getPipelineData(env), getDataFreshness(env)]);
   const st = data.stages;
   const hasData = st.applied > 0 || st.issued > 0;
 
@@ -4913,7 +5095,15 @@ async function renderPipelinePage(env) {
     }`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex: !hasData,
+      body: `${body}${renderDataTrustNote(freshness?.updated_through, "Pipeline stages are permit-record states, not guaranteed completed projects.")}`,
+      activeNav: "insights",
+    }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
   );
 }
@@ -4975,7 +5165,7 @@ async function getHousingStats(env) {
 
 async function renderHousingPage(env) {
   const canonical = `${BASE_URL}/insights/housing`;
-  const data = await getHousingData(env);
+  const [data, freshness] = await Promise.all([getHousingData(env), getDataFreshness(env)]);
   const t = data.totals;
   const hasData = (t.added || 0) > 0 || (t.removed || 0) > 0;
 
@@ -5047,7 +5237,15 @@ async function renderHousingPage(env) {
     }`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex: !hasData,
+      body: `${body}${renderDataTrustNote(freshness?.updated_through, "Housing-unit fields are shown as reported and can be incomplete or revised.")}`,
+      activeNav: "insights",
+    }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
   );
 }
@@ -5378,6 +5576,249 @@ async function renderAduDaduPage(env) {
   );
 }
 
+const MARKET_SEGMENTS = {
+  multifamily: {
+    title: "Seattle Multifamily Construction Pipeline",
+    heading: "Seattle multifamily construction pipeline",
+    description:
+      "Track Seattle multifamily construction permits by year, neighborhood, status, declared value, housing units, and recent activity.",
+    kicker: "Multifamily housing",
+    methodology:
+      "Includes permits reporting at least two added housing units or explicit multifamily, apartment, condominium, or townhouse language in public permit fields.",
+    where: `(
+      COALESCE(housing_units_added, 0) >= 2
+      OR lower(COALESCE(type, '')) LIKE '%multifamily%'
+      OR lower(COALESCE(description, '')) LIKE '%multifamily%'
+      OR lower(COALESCE(detailed_description, '')) LIKE '%multifamily%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%multifamily%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%apartment%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%condominium%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%townhouse%'
+    )`,
+    path: "/insights/multifamily-pipeline",
+  },
+  commercial: {
+    title: "High-Value Seattle Commercial Construction Projects",
+    heading: "High-value commercial construction in Seattle",
+    description:
+      "Track Seattle commercial permits valued at $1 million or more, including offices, retail, hospitality, industrial, institutional, and mixed-use work.",
+    kicker: "Commercial construction",
+    methodology:
+      "Includes permits with at least $1 million in declared value and commercial, office, retail, hotel, industrial, warehouse, institutional, hospital, school, or mixed-use language in public permit fields.",
+    where: `COALESCE(value, 0) >= 1000000 AND (
+      lower(COALESCE(type, '')) LIKE '%commercial%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%commercial%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%office%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%retail%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%hotel%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%industrial%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%warehouse%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%institutional%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%hospital%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%school%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%mixed use%'
+    )`,
+    path: "/insights/commercial-projects",
+  },
+  "tenant-improvements": {
+    title: "Seattle Tenant-Improvement Permit Activity",
+    heading: "Seattle tenant-improvement permit activity",
+    description:
+      "Follow Seattle tenant-improvement and tenant-alteration permits by year, neighborhood, status, declared value, and recent activity.",
+    kicker: "Tenant improvements",
+    methodology:
+      "Includes permits whose type, description, detailed description, or primary-use field explicitly contains tenant improvement or tenant alteration language.",
+    where: `(
+      lower(COALESCE(type, '')) LIKE '%tenant improvement%'
+      OR lower(COALESCE(type, '')) LIKE '%tenant alteration%'
+      OR lower(COALESCE(description, '')) LIKE '%tenant improvement%'
+      OR lower(COALESCE(description, '')) LIKE '%tenant alteration%'
+      OR lower(COALESCE(detailed_description, '')) LIKE '%tenant improvement%'
+      OR lower(COALESCE(detailed_description, '')) LIKE '%tenant alteration%'
+      OR lower(COALESCE(primary_property_use, '')) LIKE '%tenant improvement%'
+    )`,
+    path: "/insights/tenant-improvements",
+  },
+};
+
+async function getDataFreshness(env) {
+  return safeFirst(
+    env,
+    `/* data-freshness */
+     SELECT MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS updated_through,
+            COUNT(*) AS permit_count
+     FROM permits`,
+  );
+}
+
+function renderDataTrustNote(updatedThrough, extra = "") {
+  const freshness = updatedThrough
+    ? `Source records updated through ${escapeHtml(entDate(updatedThrough))}.`
+    : "Freshness is shown when the source record provides a usable update date.";
+  return `<aside class="card" aria-label="Data source and methodology" style="font-size:.82rem;color:var(--text-muted);">
+      <strong style="color:var(--text);">Source and methodology.</strong>
+      ${freshness} ${extra}
+      <a class="ent-link" href="/methodology">Read the full methodology and limitations.</a>
+    </aside>`;
+}
+
+async function getMarketSegmentData(env, segment) {
+  const config = MARKET_SEGMENTS[segment];
+  if (!config) return null;
+  const where = config.where;
+  const [totals, byYear, byNeighborhood, recent] = await Promise.all([
+    safeFirst(
+      env,
+      `/* market-segment:${segment}:totals */
+       SELECT COUNT(*) AS total, COALESCE(SUM(value), 0) AS total_value,
+              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
+              SUM(CASE WHEN ${ACTIVE_PERMIT_SQL} THEN 1 ELSE 0 END) AS active,
+              MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS updated_through
+       FROM permits p WHERE ${where}`,
+    ),
+    safeAll(
+      env,
+      `/* market-segment:${segment}:year */
+       SELECT substr(COALESCE(NULLIF(issued_date, ''), applied_date), 1, 4) AS year,
+              COUNT(*) AS permits, COALESCE(SUM(value), 0) AS total_value
+       FROM permits p WHERE ${where}
+         AND COALESCE(NULLIF(issued_date, ''), applied_date) IS NOT NULL
+       GROUP BY year HAVING year IS NOT NULL AND year != '' ORDER BY year ASC`,
+    ),
+    safeAll(
+      env,
+      `/* market-segment:${segment}:neighborhood */
+       SELECT COALESCE(NULLIF(neighborhood, ''), 'Unknown') AS label,
+              COUNT(*) AS permits, COALESCE(SUM(value), 0) AS total_value
+       FROM permits p WHERE ${where}
+       GROUP BY label ORDER BY permits DESC, total_value DESC LIMIT 12`,
+    ),
+    safeAll(
+      env,
+      `/* market-segment:${segment}:recent */
+       SELECT permit_number, address, neighborhood, status, type, value,
+              COALESCE(NULLIF(issued_date, ''), applied_date) AS activity_date
+       FROM permits p WHERE ${where}
+       ORDER BY COALESCE(NULLIF(issued_date, ''), applied_date, created_at) DESC LIMIT 20`,
+    ),
+  ]);
+  const number = (value) => Number(value) || 0;
+  return {
+    totals: {
+      total: number(totals?.total),
+      total_value: number(totals?.total_value),
+      issued: number(totals?.issued),
+      active: number(totals?.active),
+      updated_through: totals?.updated_through || null,
+    },
+    by_year: byYear.map((row) => ({ ...row, permits: number(row.permits), total_value: number(row.total_value) })),
+    by_neighborhood: byNeighborhood.map((row) => ({ ...row, permits: number(row.permits), total_value: number(row.total_value) })),
+    recent,
+  };
+}
+
+async function renderMarketSegmentPage(env, segment) {
+  const config = MARKET_SEGMENTS[segment];
+  if (!config) return render404();
+  const data = await getMarketSegmentData(env, segment);
+  const hasData = data.totals.total > 0;
+  const canonical = `${BASE_URL}${config.path}`;
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Dataset",
+        name: config.title,
+        description: config.description,
+        url: canonical,
+        creator: { "@type": "Organization", name: "Building Seattle", url: BASE_URL },
+        dateModified: dateOrNull(data.totals.updated_through) || undefined,
+        spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
+      },
+      {
+        "@type": "Article",
+        headline: config.title,
+        description: config.description,
+        mainEntityOfPage: canonical,
+        author: { "@type": "Organization", name: "Building Seattle" },
+        dateModified: dateOrNull(data.totals.updated_through) || undefined,
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Insights", item: `${BASE_URL}/insights` },
+          { "@type": "ListItem", position: 3, name: config.heading, item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+  const yearRows = data.by_year.map((row) => ({
+    label: row.year,
+    value: row.permits,
+    display: row.permits.toLocaleString(),
+    sub: compactMoney(row.total_value),
+  }));
+  const neighborhoodRows = data.by_neighborhood.map((row) => ({
+    label: row.label,
+    value: row.permits,
+    display: row.permits.toLocaleString(),
+    sub: compactMoney(row.total_value),
+  }));
+  const recentRows = data.recent
+    .map(
+      (permit) => `<tr>
+        <td><a class="ent-link" href="/permits/${encodeURIComponent(permit.permit_number)}">${escapeHtml(permit.permit_number)}</a></td>
+        <td>${escapeHtml(permit.address || "Address unavailable")}</td>
+        <td>${escapeHtml(permit.neighborhood || "Unknown")}</td>
+        <td>${escapeHtml(permit.status || "Unknown")}</td>
+        <td>${escapeHtml(permit.type || "Not reported")}</td>
+        <td>${permit.value > 0 ? escapeHtml(compactMoney(permit.value)) : "Not reported"}</td>
+        <td>${escapeHtml(entDate(permit.activity_date))}</td>
+      </tr>`,
+    )
+    .join("");
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: config.heading }])}
+    ${insightsStyles()}
+    ${insightsTabs(segment)}
+    <div class="ent-hero">
+      <div class="ent-kicker">${escapeHtml(config.kicker)}</div>
+      <h1>${escapeHtml(config.heading)}</h1>
+      <p style="color:var(--text-muted);max-width:70ch;margin:0;">${escapeHtml(config.description)}</p>
+    </div>
+    ${
+      hasData
+        ? `<div class="card"><div class="stat-row">
+            ${entStat("Matching permits", data.totals.total.toLocaleString())}
+            ${entStat("Issued", data.totals.issued.toLocaleString())}
+            ${entStat("Active / in review", data.totals.active.toLocaleString())}
+            ${entStat("Declared value", compactMoney(data.totals.total_value))}
+          </div></div>
+          <div class="card"><h2>Permit activity by year</h2>${prBarChart(yearRows, "var(--success)")}</div>
+          <div class="card"><h2>Leading Seattle neighborhoods</h2>${prBarChart(neighborhoodRows)}</div>
+          <div class="card"><h2>Recent matching permits</h2><div style="overflow-x:auto;"><table class="ent">
+            <thead><tr><th>Permit</th><th>Address</th><th>Neighborhood</th><th>Status</th><th>Type</th><th>Value</th><th>Date</th></tr></thead>
+            <tbody>${recentRows}</tbody>
+          </table></div></div>`
+        : `<div class="card"><h2>Supporting data is unavailable</h2><p>This page will become indexable when matching permit records are available.</p></div>`
+    }
+    ${renderDataTrustNote(data.totals.updated_through, `${escapeHtml(config.methodology)} Declared value is not verified project cost.`)}
+  `;
+  return new Response(
+    renderEntityDoc({
+      title: `${config.title} | Building Seattle`,
+      description: config.description,
+      canonical,
+      jsonLd,
+      noindex: !hasData,
+      body,
+      activeNav: "insights",
+    }),
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" } },
+  );
+}
+
 // --- Shared chart helpers for map / network (server-rendered SVG) -----------
 
 // Compact money formatter for dense labels ($1.2M, $340K).
@@ -5488,7 +5929,7 @@ function svgBubbleMap(mapped) {
 
 async function renderMapPage(env) {
   const canonical = `${BASE_URL}/insights/map`;
-  const data = await getMapData(env);
+  const [data, freshness] = await Promise.all([getMapData(env), getDataFreshness(env)]);
   const mapped = data.neighborhoods.filter((n) => n.mapped);
   const hasData = mapped.length > 0;
 
@@ -5553,7 +5994,15 @@ async function renderMapPage(env) {
     }`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex: !hasData,
+      body: `${body}${renderDataTrustNote(freshness?.updated_through, "Neighborhood assignment is derived from normalized permit addresses.")}`,
+      activeNav: "insights",
+    }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
   );
 }
@@ -5620,7 +6069,7 @@ async function getContractorScorecardStats(env) {
 
 async function renderContractorsPage(env) {
   const canonical = `${BASE_URL}/insights/contractors`;
-  const data = await getContractorScorecards(env);
+  const [data, freshness] = await Promise.all([getContractorScorecards(env), getDataFreshness(env)]);
   const hasData = data.top_by_permits.length > 0;
 
   const title = "Seattle's Most Active Contractors — Permit Scorecards";
@@ -5711,7 +6160,15 @@ async function renderContractorsPage(env) {
     }`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex: !hasData,
+      body: `${body}${renderDataTrustNote(freshness?.updated_through, "Contractor attribution follows public permit participants and may include general, specialty, or subcontractor roles.")}`,
+      activeNav: "insights",
+    }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
   );
 }
@@ -5868,7 +6325,7 @@ function svgBipartiteNetwork(contractors, neighborhoods, edges) {
 
 async function renderNetworkPage(env) {
   const canonical = `${BASE_URL}/insights/network`;
-  const data = await getNetworkData(env);
+  const [data, freshness] = await Promise.all([getNetworkData(env), getDataFreshness(env)]);
   const hasData = data.contractors.length > 0 && data.edges.length > 0;
 
   const title = "Who Builds Where — Seattle Contractor & Neighborhood Network";
@@ -5961,7 +6418,15 @@ async function renderNetworkPage(env) {
     }`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex: !hasData, body, activeNav: "insights" }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex: !hasData,
+      body: `${body}${renderDataTrustNote(freshness?.updated_through, "Network edges aggregate attributed permits; they do not establish contractual relationships beyond the source records.")}`,
+      activeNav: "insights",
+    }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=300" } },
   );
 }
@@ -6074,6 +6539,27 @@ async function renderInsightsIndex(env) {
         aduTotal ? `${aduTotal.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">matching permits</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
       ${feature(
+        "/insights/multifamily-pipeline",
+        "Multifamily",
+        "Multifamily construction pipeline",
+        "Seattle apartment, condominium, townhouse, and multi-unit permit activity by stage and neighborhood.",
+        `<span style="font-size:1.1rem;">Explore multifamily activity &rarr;</span>`,
+      )}
+      ${feature(
+        "/insights/commercial-projects",
+        "Commercial",
+        "High-value commercial projects",
+        "Seattle commercial permits valued at $1 million or more, with neighborhoods, status, and recent activity.",
+        `<span style="font-size:1.1rem;">Explore commercial activity &rarr;</span>`,
+      )}
+      ${feature(
+        "/insights/tenant-improvements",
+        "Interiors",
+        "Tenant-improvement activity",
+        "Tenant-improvement and tenant-alteration permits by year, neighborhood, value, and recent activity.",
+        `<span style="font-size:1.1rem;">Explore TI activity &rarr;</span>`,
+      )}
+      ${feature(
         "/insights/map",
         "Geography",
         "Construction activity map",
@@ -6094,7 +6580,8 @@ async function renderInsightsIndex(env) {
         "A network linking Seattle's busiest contractors to the neighborhoods they build in.",
         activeContractors ? `<span style="font-size:1.1rem;">Explore the network &rarr;</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
-    </div>`;
+    </div>
+    ${renderDataTrustNote(null, "Each report prints its inclusion rules and suppresses indexing when the supporting dataset is unavailable.")}`;
 
   return new Response(
     renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "insights" }),
@@ -8260,6 +8747,7 @@ const SITEMAP_STATIC_PATHS = [
   "/permits",
   "/data",
   "/about",
+  "/methodology",
   "/contractors",
   "/neighborhoods",
   "/projects",
@@ -8269,6 +8757,9 @@ const SITEMAP_STATIC_PATHS = [
   "/insights/pipeline",
   "/insights/housing",
   "/insights/adu-dadu",
+  "/insights/multifamily-pipeline",
+  "/insights/commercial-projects",
+  "/insights/tenant-improvements",
   "/insights/map",
   "/insights/contractors",
   "/insights/network",
@@ -8566,7 +9057,7 @@ function renderWebManifest() {
       theme_color: "#0f172a",
       icons: [
         { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-        { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+        { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
       ],
     }),
     {
@@ -9070,6 +9561,85 @@ function renderOgImage() {
   });
 }
 
+async function renderMethodologyPage(env) {
+  const canonical = `${BASE_URL}/methodology`;
+  const freshness = await getDataFreshness(env);
+  const updatedThrough = freshness?.updated_through || null;
+  const permitCount = Number(freshness?.permit_count) || 0;
+  const title = "Building Seattle Data Methodology & Sources";
+  const description =
+    "How Building Seattle collects, enriches, groups, and presents public Seattle construction permit data, including refresh timing and known limitations.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "AboutPage",
+        name: title,
+        description,
+        url: canonical,
+        about: { "@type": "Dataset", name: "Building Seattle construction permit data" },
+        dateModified: dateOrNull(updatedThrough) || undefined,
+      },
+      {
+        "@type": "Organization",
+        name: "Building Seattle",
+        url: BASE_URL,
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Methodology", item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Methodology" }])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Data trust</div>
+      <h1>Methodology, sources, and limitations</h1>
+      <p style="color:var(--text-muted);max-width:72ch;margin:0;">How raw Seattle permit records become the searchable permits, properties, contractors, projects, neighborhoods, and analytical reports published on Building Seattle.</p>
+    </div>
+    <div class="card"><div class="stat-row">
+      ${entStat("Permit records", permitCount ? permitCount.toLocaleString() : "Refreshing")}
+      ${entStat("Updated through", updatedThrough ? entDate(updatedThrough) : "Unavailable")}
+      ${entStat("Scheduled base ingest", "Daily")}
+    </div></div>
+    <section class="card">
+      <h2>Primary source</h2>
+      <p>The base feed is the Seattle Department of Construction and Inspections public building-permit dataset published through Seattle Open Data. Building Seattle reads the official machine-readable feed at <a class="ent-link" href="https://data.seattle.gov/resource/k44w-2dcq.json" rel="external">data.seattle.gov</a>.</p>
+      <p>Where SDCI publishes a record-level detail URL, the corresponding permit page links directly to that official record.</p>
+    </section>
+    <section class="card">
+      <h2>Ingest and enrichment</h2>
+      <p>A scheduled daily ingest upserts base permit fields. A separate enrichment job retrieves detail-page fields that are not consistently available in the open-data feed, including parcel number, review level, review milestones, contractor license details, housing-unit changes, and fuller descriptions.</p>
+      <p>Dates and statuses may change as SDCI reviewers update a record. Page-level “updated through” labels report the newest source-record timestamp included in that result, not the time a reader opened the page.</p>
+    </section>
+    <section class="card">
+      <h2>Derived entities and matching confidence</h2>
+      <p>Permits are the evidence records. Address pages come from normalized street addresses. Projects group permits that share an address and have related timing and work signals. Contractor and participant pages use names and license information published on permits.</p>
+      <p>Entity grouping is deterministic but inferred. Similar names, shared addresses, incomplete licenses, or changed project descriptions can split one real-world entity into several pages or combine records that later need correction.</p>
+    </section>
+    <section class="card">
+      <h2>Values, units, and completion</h2>
+      <p><strong>Declared permit value is not verified project cost.</strong> It can omit land, design, financing, owner-provided work, later changes, or portions filed under related permits.</p>
+      <p><strong>A permit record is not a completed project or dwelling.</strong> One property can have several related permits, and applied, issued, active, expired, and completed records represent different stages. Housing-unit fields are presented as reported and can be incomplete or revised.</p>
+    </section>
+    <section class="card">
+      <h2>Analytical classifications</h2>
+      <p>Insight pages use documented, reproducible rules over public permit fields. ADU/DADU classifications look for explicit accessory-dwelling language. Commercial and tenant-improvement reports use the inclusion rules printed on each page. These are research views, not official SDCI classifications.</p>
+    </section>
+    <section class="card">
+      <h2>Corrections and reuse</h2>
+      <p>Use the official SDCI detail link when a decision depends on a single permit. For bulk research, the <a class="ent-link" href="/data">dataset page</a> and <a class="ent-link" href="/api-docs">public API documentation</a> describe reusable access paths.</p>
+    </section>`;
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "data" }),
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
+  );
+}
+
 function renderAboutPage() {
   const canonical = `${BASE_URL}/about`;
   const title = "About Building Seattle — Construction Permit Intelligence";
@@ -9137,7 +9707,7 @@ function renderAboutPage() {
                     <li>Maps permits to Seattle neighborhoods</li>
                     <li>Tracks permit timelines, review cycles, and status changes</li>
                 </ul>
-                <p>Data is refreshed regularly to reflect new permit applications, issuances, and status updates from SDCI.</p>
+                <p>Data is refreshed regularly to reflect new permit applications, issuances, and status updates from SDCI. The <a href="/methodology">methodology and sources page</a> documents refresh timing, entity matching, classifications, and known limitations.</p>
 
                 <h2>What you can do here</h2>
                 <ul>

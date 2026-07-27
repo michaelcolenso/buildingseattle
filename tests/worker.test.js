@@ -684,6 +684,8 @@ test("GET /permits renders a public permit browser instead of returning 404", as
   assert.match(html, /Recently changed status/);
   assert.match(html, /pending/);
   assert.match(html, /active/);
+  assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits">/);
 });
 
 test("GET /admin rejects public requests before reading dashboard data", async () => {
@@ -850,9 +852,13 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 16);
+  assert.equal((xml.match(/<url>/g) || []).length, 20);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/network/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/commercial-projects/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/multifamily-pipeline/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/tenant-improvements/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/methodology/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/data/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/contractors/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/neighborhoods/);
@@ -871,7 +877,7 @@ test("GET /sitemaps/static.xml omits the ADU tracker while its page is noindex",
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 15);
+  assert.equal((xml.match(/<url>/g) || []).length, 19);
   assert.doesNotMatch(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
 });
 
@@ -967,6 +973,184 @@ test("entity hub pages use the entity-graph schema, expose links, and safely ser
   }
 });
 
+test("entity hubs paginate deterministically and noindex bounded filter states", async () => {
+  let seenSql = "";
+  let seenBinds = [];
+  const items = Array.from({ length: 49 }, (_, index) => ({
+    slug: `contractor-${index}`,
+    label: `Contractor ${index}`,
+    detail: "organization",
+    permit_count: 10,
+    total_value: 2000000,
+    latest_activity: "2026-07-20",
+  }));
+  const env = {
+    DB: {
+      prepare(sql) {
+        seenSql = sql;
+        return {
+          bind(...binds) {
+            seenBinds = binds;
+            return this;
+          },
+          async all() {
+            return { results: items };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(
+    new Request(
+      "http://example.com/contractors?page=3&sort=value&activity=active&neighborhood=Ballard&permit_type=Construction&min_value=1000000",
+    ),
+    env,
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/contractors">/);
+  assert.match(html, /rel="prev"/);
+  assert.match(html, /rel="next"/);
+  assert.match(seenSql, /p\.neighborhood = \?/);
+  assert.match(seenSql, /p\.type = \?/);
+  assert.match(seenSql, /lower\(COALESCE\(p\.status/);
+  assert.match(seenSql, /HAVING COALESCE\(SUM\(p\.value\), 0\) >= \?/);
+  assert.match(seenSql, /ORDER BY total_value DESC, permit_count DESC, slug ASC/);
+  assert.match(seenSql, /LIMIT 49 OFFSET 96/);
+  assert.deepEqual(seenBinds, ["Ballard", "Construction", 1000000]);
+});
+
+test("project views expose explicit active, recent, and all-time criteria", async () => {
+  const queries = [];
+  const env = {
+    DB: {
+      prepare(sql) {
+        queries.push(sql);
+        return {
+          bind() {
+            return this;
+          },
+          async all() {
+            return {
+              results: [{
+                slug: "project-one",
+                label: "Project One",
+                detail: "1 Main St",
+                permit_count: 2,
+                total_value: 4000000,
+                latest_activity: "2026-07-20",
+              }],
+            };
+          },
+        };
+      },
+    },
+  };
+  for (const view of ["active", "recent", "all"]) {
+    const response = await worker.fetch(
+      new Request(`http://example.com/projects?view=${view}`),
+      env,
+      createCtx(),
+    );
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  }
+  const defaultResponse = await worker.fetch(new Request("http://example.com/projects"), env, createCtx());
+  assert.match(await defaultResponse.text(), /<meta name="robots" content="index,follow,max-image-preview:large">/);
+  assert.ok(queries.some((sql) => sql.includes("lower(COALESCE(p.status")));
+  assert.ok(queries.some((sql) => sql.includes("date('now', '-365 days')")));
+});
+
+test("market-segment landing pages render source-backed reports", async () => {
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() {
+            return this;
+          },
+          async first() {
+            if (sql.includes(":totals")) {
+              return {
+                total: 12,
+                total_value: 42000000,
+                issued: 8,
+                active: 5,
+                updated_through: "2026-07-26",
+              };
+            }
+            return null;
+          },
+          async all() {
+            if (sql.includes(":year")) return { results: [{ year: "2026", permits: 12, total_value: 42000000 }] };
+            if (sql.includes(":neighborhood")) return { results: [{ label: "Downtown", permits: 8, total_value: 38000000 }] };
+            if (sql.includes(":recent")) {
+              return {
+                results: [{
+                  permit_number: "TEST-CN",
+                  address: "1 Main St",
+                  neighborhood: "Downtown",
+                  status: "active",
+                  type: "Commercial",
+                  value: 5000000,
+                  activity_date: "2026-07-26",
+                }],
+              };
+            }
+            return { results: [] };
+          },
+        };
+      },
+    },
+  };
+
+  for (const path of [
+    "/insights/multifamily-pipeline",
+    "/insights/commercial-projects",
+    "/insights/tenant-improvements",
+  ]) {
+    const response = await worker.fetch(new Request(`http://example.com${path}`), env, createCtx());
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
+    assert.match(html, /"@type":"Dataset"/);
+    assert.match(html, /"@type":"Article"/);
+    assert.match(html, /TEST-CN/);
+    assert.match(html, /Read the full methodology and limitations/);
+  }
+});
+
+test("methodology page documents source, freshness, matching, and cost limitations", async () => {
+  const env = {
+    DB: {
+      prepare(sql) {
+        assert.match(sql, /data-freshness/);
+        return {
+          bind() {
+            return this;
+          },
+          async first() {
+            return { updated_through: "2026-07-26", permit_count: 13623 };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(new Request("http://example.com/methodology"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /13,623/);
+  assert.match(html, /Declared permit value is not verified project cost/);
+  assert.match(html, /Entity grouping is deterministic but inferred/);
+  assert.match(html, /data\.seattle\.gov\/resource\/k44w-2dcq\.json/);
+  assert.match(html, /"@type":"AboutPage"/);
+});
+
 test("robots policy disallows AI training and web manifest describes the app", async () => {
   const robots = await worker.fetch(new Request("http://example.com/robots.txt"), createEnv(), createCtx());
   assert.match(await robots.text(), /ai-train=no/);
@@ -977,7 +1161,7 @@ test("robots policy disallows AI training and web manifest describes the app", a
   assert.equal(payload.name, "Building Seattle");
   assert.deepEqual(payload.icons, [
     { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
   ]);
 });
 

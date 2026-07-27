@@ -1,0 +1,31 @@
+name: Production SEO Health
+
+on:
+  schedule:
+    - cron: "30 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check production SEO and crawl health
+        run: node scripts/check_seo_health.mjs
+
+      - name: Upload historical report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seo-health-${{ github.run_id }}
+          path: seo-health-report.json
+          retention-days: 90
