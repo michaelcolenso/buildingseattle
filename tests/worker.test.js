@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import worker, {
+  ADU_CLASSIFIED_CTE,
   summarizePlanReview,
   percentileSorted,
   summarizeDays,
@@ -583,7 +585,7 @@ function createCtx() {
   };
 }
 
-function createSitemapEnv({ statsByType = {}, rowsByType = {} } = {}) {
+function createSitemapEnv({ statsByType = {}, rowsByType = {}, aduAvailable = true } = {}) {
   return {
     DB: {
       prepare(query) {
@@ -597,6 +599,9 @@ function createSitemapEnv({ statsByType = {}, rowsByType = {} } = {}) {
             return statement;
           },
           async first() {
+            if (sql.includes("adu-tracker:availability")) {
+              return aduAvailable ? { has_data: 1 } : null;
+            }
             if (!marker || marker[1] !== "stats") {
               throw new Error(`Unhandled sitemap first() query: ${sql}`);
             }
@@ -840,6 +845,22 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   assert.match(xml, /<lastmod>2026-06-11<\/lastmod>/);
 });
 
+test("GET /sitemaps/static.xml omits the ADU tracker while its page is noindex", async () => {
+  const env = createSitemapEnv({
+    statsByType: {
+      permits: { total: 2, lastmod: "2026-06-11" },
+    },
+    aduAvailable: false,
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/sitemaps/static.xml"), env, createCtx());
+  const xml = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.equal((xml.match(/<url>/g) || []).length, 15);
+  assert.doesNotMatch(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
+});
+
 test("out-of-range sitemap pages return 404", async () => {
   const env = createSitemapEnv({
     statsByType: {
@@ -1022,12 +1043,13 @@ test("GET /api/housing returns a housing payload", async () => {
   assert.ok(Array.isArray(payload.by_neighborhood));
 });
 
-function createAduTrackerEnv({ empty = false } = {}) {
+function createAduTrackerEnv({ empty = false, failure = false } = {}) {
   const queries = [];
   return {
     _queries: queries,
     DB: {
       prepare(sql) {
+        if (failure) throw new Error("D1 unavailable");
         queries.push(sql);
         const statement = {
           bind() {
@@ -1045,6 +1067,7 @@ function createAduTrackerEnv({ empty = false } = {}) {
                     units_added: 9,
                     issued: 8,
                     active: 3,
+                    data_updated_through: "2026-07-25",
                   };
             }
             if (sql.includes("adu-tracker:index")) return { total: empty ? 0 : 12 };
@@ -1109,6 +1132,7 @@ test("GET /api/adu-dadu returns classified permit aggregates", async () => {
     units_added: 9,
     issued: 8,
     active: 3,
+    data_updated_through: "2026-07-25",
   });
   assert.equal(payload.by_year[1].year, "2026");
   assert.equal(payload.by_neighborhood[0].label, "West Seattle");
@@ -1118,6 +1142,53 @@ test("GET /api/adu-dadu returns classified permit aggregates", async () => {
   assert.ok(env._queries.some((sql) => sql.includes("' aadu '")));
   assert.ok(env._queries.some((sql) => sql.includes("'+', ' '")));
   assert.ok(env._queries.some((sql) => sql.includes("backyard cottage")));
+  assert.equal(response.headers.get("X-Robots-Tag"), "noindex");
+});
+
+test("ADU classifier executes against realistic permit descriptions", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE permits (
+      permit_number TEXT PRIMARY KEY,
+      detailed_description TEXT,
+      description TEXT,
+      primary_property_use TEXT,
+      dwelling_unit_type TEXT
+    )
+  `);
+  const insert = db.prepare(`
+    INSERT INTO permits (
+      permit_number, detailed_description, description, primary_property_use, dwelling_unit_type
+    ) VALUES (?, ?, ?, ?, ?)
+  `);
+  const fixtures = [
+    ["AADU", "", "SFR & AADU", "", ""],
+    ["PLUS", "", "SFR+AADU+DADU", "", ""],
+    ["DETACHED", "Construct detached ADU behind existing home", "", "", ""],
+    ["ADU1", "", "Construct stacked ADU1 and ADU2", "", ""],
+    ["DADU2", "", "Construct DADU2", "", ""],
+    ["EXPANDED", "", "New accessory dwelling unit", "", ""],
+    ["COTTAGE", "", "New backyard cottage", "", ""],
+    ["CONTROL", "", "Graduate studies tenant improvement", "", ""],
+  ];
+  for (const fixture of fixtures) insert.run(...fixture);
+
+  const rows = db
+    .prepare(`${ADU_CLASSIFIED_CTE} SELECT permit_number, adu_type FROM classified ORDER BY permit_number`)
+    .all();
+  assert.deepEqual(
+    Object.fromEntries(rows.map((row) => [row.permit_number, row.adu_type])),
+    {
+      AADU: "ADU",
+      ADU1: "ADU",
+      COTTAGE: "DADU",
+      DADU2: "DADU",
+      DETACHED: "DADU",
+      EXPANDED: "ADU",
+      PLUS: "DADU",
+    },
+  );
+  db.close();
 });
 
 test("GET /insights/adu-dadu renders an indexable tracker with methodology and recent permits", async () => {
@@ -1136,6 +1207,9 @@ test("GET /insights/adu-dadu renders an indexable tracker with methodology and r
   assert.match(html, /matching permit records, not a count of guaranteed completed dwellings/i);
   assert.match(html, /"@type":"Dataset"/);
   assert.match(html, /"@type":"FAQPage"/);
+  assert.match(html, /"dateModified":"2026-07-25"/);
+  assert.match(html, /Source data updated through/);
+  assert.match(html, /mentioning both attached and detached units is classified as DADU/);
   assert.match(html, /href="\/api\/adu-dadu"/);
 });
 
@@ -1150,6 +1224,19 @@ test("GET /insights/adu-dadu noindexes an empty classification result", async ()
   assert.equal(response.status, 200);
   assert.match(html, /<meta name="robots" content="noindex,follow">/);
   assert.match(html, /ADU data is being classified/);
+});
+
+test("ADU tracker failures return uncached 503 responses instead of transient noindex pages", async () => {
+  for (const path of ["/api/adu-dadu", "/insights/adu-dadu"]) {
+    const response = await worker.fetch(
+      new Request(`http://example.com${path}`),
+      createAduTrackerEnv({ failure: true }),
+      createCtx(),
+    );
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.equal(response.headers.get("Retry-After"), "300");
+  }
 });
 
 test("GET /insights renders the insights index with all three reports", async () => {

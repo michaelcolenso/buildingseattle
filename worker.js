@@ -4941,7 +4941,7 @@ async function renderHousingPage(env) {
 }
 
 
-const ADU_CLASSIFIED_CTE = `
+export const ADU_CLASSIFIED_CTE = `
   WITH normalized AS (
     SELECT p.*,
            lower(
@@ -4960,6 +4960,7 @@ const ADU_CLASSIFIED_CTE = `
     SELECT normalized.*,
            CASE
              WHEN instr(' ' || adu_search_text || ' ', ' dadu ') > 0
+               OR (' ' || adu_search_text || ' ') GLOB '* dadu[0-9]*'
                OR adu_search_text LIKE '%detached accessory dwelling unit%'
                OR adu_search_text LIKE '%detached accessory dwelling%'
                OR adu_search_text LIKE '%detached adu%'
@@ -4969,18 +4970,29 @@ const ADU_CLASSIFIED_CTE = `
            END AS adu_type
     FROM normalized
     WHERE instr(' ' || adu_search_text || ' ', ' dadu ') > 0
+       OR (' ' || adu_search_text || ' ') GLOB '* dadu[0-9]*'
        OR instr(' ' || adu_search_text || ' ', ' aadu ') > 0
+       OR (' ' || adu_search_text || ' ') GLOB '* aadu[0-9]*'
        OR instr(' ' || adu_search_text || ' ', ' adu ') > 0
+       OR (' ' || adu_search_text || ' ') GLOB '* adu[0-9]*'
        OR adu_search_text LIKE '%accessory dwelling unit%'
        OR adu_search_text LIKE '%accessory dwelling%'
        OR adu_search_text LIKE '%backyard cottage%'
   )
 `;
 
+async function hasAduDaduData(env) {
+  const row = await env.DB.prepare(
+    `/* adu-tracker:availability */
+     ${ADU_CLASSIFIED_CTE}
+     SELECT 1 AS has_data FROM classified LIMIT 1`,
+  ).first();
+  return Boolean(row?.has_data);
+}
+
 async function getAduDaduData(env) {
   const [totals, byYear, byNeighborhood, recent] = await Promise.all([
-    safeFirst(
-      env,
+    env.DB.prepare(
       `/* adu-tracker:totals */
       ${ADU_CLASSIFIED_CTE}
       SELECT COUNT(*) AS total,
@@ -4989,11 +5001,11 @@ async function getAduDaduData(env) {
              SUM(COALESCE(value, 0)) AS total_value,
              SUM(COALESCE(housing_units_added, 0)) AS units_added,
              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
-             SUM(CASE WHEN lower(COALESCE(status, '')) IN ('active', 'pending', 'new', 'in review', 'under review') THEN 1 ELSE 0 END) AS active
+             SUM(CASE WHEN lower(COALESCE(status, '')) IN ('active', 'pending', 'new', 'in review', 'under review') THEN 1 ELSE 0 END) AS active,
+             MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS data_updated_through
       FROM classified`,
-    ),
-    safeAll(
-      env,
+    ).first(),
+    env.DB.prepare(
       `/* adu-tracker:by-year */
       ${ADU_CLASSIFIED_CTE}
       SELECT substr(COALESCE(NULLIF(issued_date, ''), applied_date), 1, 4) AS yr,
@@ -5005,9 +5017,8 @@ async function getAduDaduData(env) {
       GROUP BY yr
       HAVING yr IS NOT NULL AND yr != ''
       ORDER BY yr ASC`,
-    ),
-    safeAll(
-      env,
+    ).all(),
+    env.DB.prepare(
       `/* adu-tracker:by-neighborhood */
       ${ADU_CLASSIFIED_CTE}
       SELECT COALESCE(NULLIF(neighborhood, ''), 'Unknown') AS label,
@@ -5019,9 +5030,8 @@ async function getAduDaduData(env) {
       GROUP BY label
       ORDER BY permits DESC, total_value DESC
       LIMIT 12`,
-    ),
-    safeAll(
-      env,
+    ).all(),
+    env.DB.prepare(
       `/* adu-tracker:recent */
       ${ADU_CLASSIFIED_CTE}
       SELECT permit_number, address, neighborhood, status, value, housing_units_added,
@@ -5030,10 +5040,13 @@ async function getAduDaduData(env) {
       FROM classified
       ORDER BY COALESCE(NULLIF(issued_date, ''), applied_date, created_at) DESC
       LIMIT 20`,
-    ),
+    ).all(),
   ]);
 
   const number = (value) => Number(value) || 0;
+  const byYearRows = byYear.results || [];
+  const byNeighborhoodRows = byNeighborhood.results || [];
+  const recentRows = recent.results || [];
   return {
     totals: {
       total: number(totals?.total),
@@ -5043,21 +5056,22 @@ async function getAduDaduData(env) {
       units_added: number(totals?.units_added),
       issued: number(totals?.issued),
       active: number(totals?.active),
+      data_updated_through: totals?.data_updated_through || null,
     },
-    by_year: byYear.map((row) => ({
+    by_year: byYearRows.map((row) => ({
       year: row.yr,
       permits: number(row.permits),
       adu_count: number(row.adu_count),
       dadu_count: number(row.dadu_count),
     })),
-    by_neighborhood: byNeighborhood.map((row) => ({
+    by_neighborhood: byNeighborhoodRows.map((row) => ({
       label: row.label,
       permits: number(row.permits),
       adu_count: number(row.adu_count),
       dadu_count: number(row.dadu_count),
       total_value: number(row.total_value),
     })),
-    recent: recent.map((row) => ({
+    recent: recentRows.map((row) => ({
       ...row,
       value: number(row.value),
       housing_units_added: number(row.housing_units_added),
@@ -5066,15 +5080,68 @@ async function getAduDaduData(env) {
 }
 
 async function getAduDaduStats(env) {
-  const data = await getAduDaduData(env);
-  return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
-  });
+  try {
+    const data = await getAduDaduData(env);
+    return new Response(JSON.stringify({ ...data, timestamp: new Date().toISOString() }), {
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=300",
+        "X-Robots-Tag": "noindex",
+      },
+    });
+  } catch (error) {
+    console.error("ADU tracker query failed:", error);
+    return new Response(JSON.stringify({ error: "ADU tracker data is temporarily unavailable" }), {
+      status: 503,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Retry-After": "300",
+        "X-Robots-Tag": "noindex",
+      },
+    });
+  }
 }
 
 async function renderAduDaduPage(env) {
   const canonical = `${BASE_URL}/insights/adu-dadu`;
-  const data = await getAduDaduData(env);
+  let data;
+  try {
+    data = await getAduDaduData(env);
+  } catch (error) {
+    console.error("ADU tracker page query failed:", error);
+    const body = `
+      ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "ADU / DADU" }])}
+      <div class="ent-hero">
+        <div class="ent-kicker">Seattle housing intelligence</div>
+        <h1>Seattle ADU &amp; DADU permit tracker</h1>
+      </div>
+      <div class="card">
+        <h2>Tracker temporarily unavailable</h2>
+        <p>Seattle permit data could not be loaded for this request. Try again shortly.</p>
+      </div>`;
+    return new Response(
+      renderEntityDoc({
+        title: "Seattle ADU & DADU Permit Tracker | Building Seattle",
+        description: "Track Seattle ADU and DADU permits using public SDCI permit records.",
+        canonical,
+        jsonLd: null,
+        noindex: true,
+        body,
+        activeNav: "insights",
+      }),
+      {
+        status: 503,
+        headers: {
+          "Content-Type": "text/html",
+          "Cache-Control": "no-store",
+          "Retry-After": "300",
+        },
+      },
+    );
+  }
   const totals = data.totals;
   const hasData = totals.total > 0;
   const title = "Seattle ADU & DADU Permit Tracker | Building Seattle";
@@ -5091,9 +5158,15 @@ async function renderAduDaduPage(env) {
         url: canonical,
         creator: { "@type": "Organization", name: "Building Seattle" },
         spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
+        dateModified: dateOrNull(totals.data_updated_through) || undefined,
         temporalCoverage: data.by_year.length
           ? `${data.by_year[0].year}/${data.by_year[data.by_year.length - 1].year}`
           : undefined,
+        distribution: {
+          "@type": "DataDownload",
+          encodingFormat: "application/json",
+          contentUrl: `${BASE_URL}/api/adu-dadu`,
+        },
       },
       {
         "@type": "FAQPage",
@@ -5183,6 +5256,7 @@ async function renderAduDaduPage(env) {
         ${entStat("Declared value", compactMoney(totals.total_value))}
       </div>
       <p class="pr-note">These are matching permit records, not a count of guaranteed completed dwellings. One property or project can have multiple related permits.</p>
+      ${totals.data_updated_through ? `<p class="pr-note">Source data updated through ${escapeHtml(entDate(totals.data_updated_through))}.</p>` : ""}
     </div>
     <div class="card">
       <h2>ADU and DADU permits by year</h2>
@@ -5213,7 +5287,7 @@ async function renderAduDaduPage(env) {
       </section>
       <section class="card">
         <h2>How the tracker works</h2>
-        <p>Building Seattle searches public permit descriptions for explicit ADU terminology, classifies detached projects separately, and aggregates results by year and neighborhood.</p>
+        <p>Building Seattle searches public permit descriptions for explicit ADU terminology, classifies detached projects separately, and aggregates results by year and neighborhood. A permit mentioning both attached and detached units is classified as DADU.</p>
         <p>Declared permit values and housing-unit fields are presented as reported and may be incomplete or revised during review.</p>
       </section>
     </div>
@@ -8342,7 +8416,16 @@ async function renderChildSitemapXml(path, env, request) {
   if (type === "static") {
     if (pageText) return sitemapNotFound();
     const permitStats = await getSitemapStats(env, "permits");
-    const entries = SITEMAP_STATIC_PATHS.map((staticPath) => ({
+    let staticPaths = SITEMAP_STATIC_PATHS;
+    try {
+      if (!(await hasAduDaduData(env))) {
+        staticPaths = staticPaths.filter((staticPath) => staticPath !== "/insights/adu-dadu");
+      }
+    } catch (error) {
+      console.error("ADU sitemap availability query failed:", error);
+      staticPaths = staticPaths.filter((staticPath) => staticPath !== "/insights/adu-dadu");
+    }
+    const entries = staticPaths.map((staticPath) => ({
       loc: origin + staticPath,
       lastmod: permitStats.lastmod,
     }));
