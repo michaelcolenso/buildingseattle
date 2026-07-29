@@ -512,46 +512,71 @@ export function classifyAduPermit(permit) {
 
   if (!searchText) return null;
 
+  // "adu"/"adus" only match on a word boundary so that the attached form
+  // ("aadu") never satisfies the detached rules below.
   const isDadu =
-    /\bdadu(?:\s*\d+)?\b/.test(searchText) ||
-    /\bdetached\b.*\b(?:accessory\s+dwelling|adu)\b/.test(searchText) ||
+    /\bdadus?(?:\s*\d+)?\b/.test(searchText) ||
+    /\bdetached\b.*?\baccessory\s+dwellings?\b/.test(searchText) ||
+    /\bdetached\b.*?\badus?(?:\s*\d+)?\b/.test(searchText) ||
     /\bbackyard\s+cottage\b/.test(searchText);
   if (isDadu) return "DADU";
 
   const isAdu =
-    /\ba?adu(?:\s*\d+)?\b/.test(searchText) ||
-    /\baccessory\s+dwelling(?:\s+unit)?s?\b/.test(searchText);
+    /\ba?adus?(?:\s*\d+)?\b/.test(searchText) ||
+    /\baccessory\s+dwellings?\b/.test(searchText);
   return isAdu ? "ADU" : null;
 }
 
-const ADU_NORMALIZED_TEXT_SQL = `
+// SDCI descriptions bracket and quote the ADU markers ("[DADU]", "DADU?"), so
+// every non-alphanumeric separator is flattened to a space before matching.
+// Tabs and newlines are flattened too: the token rules below are space-delimited
+// and would otherwise miss a marker that begins a new line.
+export const ADU_NORMALIZED_TEXT_SQL = `
   lower(
-    replace(replace(replace(replace(replace(replace(
+    replace(replace(replace(
+      replace(replace(replace(replace(replace(
+      replace(replace(replace(replace(replace(
       replace(replace(replace(replace(replace(
       COALESCE(detailed_description, '') || ' ' ||
       COALESCE(description, '') || ' ' ||
       COALESCE(primary_property_use, '') || ' ' ||
       COALESCE(dwelling_unit_type, ''),
       '#', ' '), '+', ' '), '&', ' '), ':', ' '), ';', ' '),
-      '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '), ')', ' ')
+      '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '),
+      ')', ' '), '[', ' '), ']', ' '), '?', ' '), '"', ' '),
+      char(9), ' '), char(10), ' '), char(13), ' ')
   )
 `;
 
-const ADU_DADU_SQL = `
+// Bare "adu"/"adus" tokens, space-delimited so that the attached form ("aadu")
+// never matches -- an AADU is attached by definition and must not read as DADU.
+const ADU_BARE_TOKEN_SQL = `
+  instr(' ' || adu_search_text || ' ', ' adu ') > 0
+  OR instr(' ' || adu_search_text || ' ', ' adus ') > 0
+  OR (' ' || adu_search_text || ' ') GLOB '* adu[0-9]*'
+`;
+
+const ADU_ATTACHED_TOKEN_SQL = `
+  instr(' ' || adu_search_text || ' ', ' aadu ') > 0
+  OR instr(' ' || adu_search_text || ' ', ' aadus ') > 0
+  OR (' ' || adu_search_text || ' ') GLOB '* aadu[0-9]*'
+`;
+
+export const ADU_DADU_SQL = `
   instr(' ' || adu_search_text || ' ', ' dadu ') > 0
+  OR instr(' ' || adu_search_text || ' ', ' dadus ') > 0
   OR (' ' || adu_search_text || ' ') GLOB '* dadu[0-9]*'
   OR adu_search_text LIKE '%detached%accessory dwelling%'
-  OR adu_search_text LIKE '%detached%adu%'
+  OR (' ' || adu_search_text || ' ') LIKE '%detached% adu %'
+  OR (' ' || adu_search_text || ' ') LIKE '%detached% adus %'
+  OR (' ' || adu_search_text || ' ') GLOB '*detached* adu[0-9]*'
   OR adu_search_text LIKE '%backyard cottage%'
 `;
 
-const ADU_MATCH_SQL = `
+export const ADU_MATCH_SQL = `
   ${ADU_DADU_SQL}
-  OR instr(' ' || adu_search_text || ' ', ' aadu ') > 0
-  OR (' ' || adu_search_text || ' ') GLOB '* aadu[0-9]*'
-  OR instr(' ' || adu_search_text || ' ', ' adu ') > 0
-  OR (' ' || adu_search_text || ' ') GLOB '* adu[0-9]*'
-  OR adu_search_text LIKE '%accessory dwelling unit%'
+  OR ${ADU_ATTACHED_TOKEN_SQL}
+  OR ${ADU_BARE_TOKEN_SQL}
   OR adu_search_text LIKE '%accessory dwelling%'
 `;
 
