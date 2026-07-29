@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import worker, {
   ADU_CLASSIFICATION_VERSION,
+  ADU_DADU_SQL,
+  ADU_NORMALIZED_TEXT_SQL,
   classifyAduPermit,
   summarizePlanReview,
   percentileSorted,
@@ -1229,19 +1231,86 @@ test("ADU classification migration backfills realistic permit descriptions", () 
   db.close();
 });
 
-test("Worker ADU classifier matches migration edge cases", () => {
-  const fixtures = [
-    ["ADU", "SFR & AADU"],
-    ["DADU", "SFR+AADU+DADU"],
-    ["DADU", "Detached and attached accessory dwelling units"],
-    ["DADU", "Detached two-unit accessory dwelling"],
-    ["DADU", "Construct DADU#2"],
-    ["ADU", "Construct stacked ADU1 and ADU2"],
-    [null, "Graduate studies tenant improvement"],
-  ];
-  for (const [expected, description] of fixtures) {
-    assert.equal(classifyAduPermit({ description }), expected, description);
+// The migration backfills the table and buildAduReclassificationStatement keeps
+// new/enriched permits in step, so the SQL predicate is the source of truth. This
+// runs each fixture through the real migration and through the JS classifier and
+// requires both to agree -- a divergence silently mislabels permits.
+const ADU_DIFFERENTIAL_FIXTURES = [
+  ["ADU", "SFR & AADU"],
+  ["DADU", "SFR+AADU+DADU"],
+  ["DADU", "Detached and attached accessory dwelling units"],
+  ["DADU", "Detached two-unit accessory dwelling"],
+  ["DADU", "Construct DADU#2"],
+  ["ADU", "Construct stacked ADU1 and ADU2"],
+  // Bracketed and quoted markers: SDCI wraps these constantly.
+  ["DADU", "Construct WEST one-family dwelling [DADU] per plan."],
+  ["DADU", 'Construct "DADU" per plan.'],
+  ["ADU", "Construct [ADU] within existing basement"],
+  // Plural markers.
+  ["DADU", "12036 Hiram Pl NE for (2) new SFRs + (2) new DADUs"],
+  ["DADU", "Two attached SFRs, one detached SFR and two DADUs at common wall"],
+  // An AADU is attached by definition: an unrelated "detached" nearby must not
+  // promote it to DADU.
+  ["ADU", "Construct detached garage, alterations to existing SFR+AADU, per plan"],
+  ["ADU", "Existing detached dwelling with AADU to remain"],
+  [null, "Graduate studies tenant improvement"],
+  [null, "Construct detached garage, per plan"],
+];
+
+test("ADU classification agrees between the migration SQL and the worker classifier", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE permits (
+      id INTEGER PRIMARY KEY,
+      permit_number TEXT UNIQUE,
+      neighborhood TEXT,
+      issued_date TEXT,
+      applied_date TEXT,
+      detailed_description TEXT,
+      description TEXT,
+      primary_property_use TEXT,
+      dwelling_unit_type TEXT
+    );
+  `);
+  const insert = db.prepare(
+    `INSERT INTO permits (permit_number, description) VALUES (?, ?)`,
+  );
+  ADU_DIFFERENTIAL_FIXTURES.forEach(([, description], index) =>
+    insert.run(`DIFF${index}`, description),
+  );
+  db.exec(
+    readFileSync(new URL("../migration_permit_adu_classification.sql", import.meta.url), "utf8"),
+  );
+  const sqlResults = new Map(
+    db
+      .prepare(`SELECT permit_number, adu_type FROM permits`)
+      .all()
+      .map((row) => [row.permit_number, row.adu_type]),
+  );
+  db.close();
+
+  ADU_DIFFERENTIAL_FIXTURES.forEach(([expected, description], index) => {
+    assert.equal(sqlResults.get(`DIFF${index}`), expected, `migration: ${description}`);
+    assert.equal(classifyAduPermit({ description }), expected, `worker: ${description}`);
+  });
+});
+
+test("migration SQL and worker reclassification SQL do not drift", () => {
+  const migration = readFileSync(
+    new URL("../migration_permit_adu_classification.sql", import.meta.url),
+    "utf8",
+  );
+  const collapse = (sql) => sql.replace(/\s+/g, " ").trim();
+  for (const [label, sql] of [
+    ["normalized text", ADU_NORMALIZED_TEXT_SQL],
+    ["DADU predicate", ADU_DADU_SQL],
+  ]) {
+    assert.ok(
+      collapse(migration).includes(collapse(sql)),
+      `${label} in worker.js is missing from migration_permit_adu_classification.sql`,
+    );
   }
+  assert.match(migration, new RegExp(`adu_classification_version = ${ADU_CLASSIFICATION_VERSION}`));
 });
 
 test("GET /insights/adu-dadu renders an indexable tracker with methodology and recent permits", async () => {
