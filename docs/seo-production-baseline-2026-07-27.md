@@ -1,0 +1,62 @@
+# Production SEO baseline — July 27, 2026
+
+## Scope
+
+Automated bounded crawl of `https://buildingseattle.com` using
+`scripts/check_seo_health.mjs`. The run checked the sitemap index and every
+advertised child sitemap, representative aggregate and detail pages, page
+metadata and JSON-LD syntax, a bounded internal-link sample, and known filtered
+hub URLs.
+
+## Baseline
+
+- 129 of 135 checks passed before the changes in this branch.
+- `/sitemap.xml` returned HTTP 200 with a valid sitemap index.
+- Six child sitemaps returned HTTP 200 and used only the canonical
+  `https://buildingseattle.com` origin.
+- The child sitemaps advertised 38,234 URLs:
+  - static: 16
+  - permits: 13,756
+  - addresses: 10,914
+  - projects: 11,332
+  - contractors: 2,163
+  - neighborhoods: 53
+- Sampled pages had titles, descriptions, self-consistent canonical hosts, and
+  parseable JSON-LD, except where listed below.
+- The bounded internal-link sample returned no unexpected 404 responses.
+
+## Baseline findings addressed by this branch
+
+1. The representative contractor detail page omitted a robots directive.
+2. Contractor, project, and address filter parameters remained indexable and
+   canonicalized to the unfiltered hub.
+3. The central methodology route did not exist.
+
+This branch adds the missing contractor directive, explicitly noindexes
+filtered hub states, keeps stable unfiltered pagination indexable with
+self-referencing canonicals, and publishes `/methodology`.
+
+## Search Console baseline
+
+The sitemap submission and Google indexed, discovered, crawled, and excluded
+counts require access to the site’s Google Search Console property. Record
+those values here after submitting:
+
+| Measurement | Baseline |
+|---|---:|
+| Sitemap submitted | Pending Search Console access |
+| Sitemap status | Pending |
+| Indexed pages | Pending |
+| Discovered — currently not indexed | Pending |
+| Crawled — currently not indexed | Pending |
+| Excluded by `noindex` | Pending |
+| Duplicate/canonical exclusions | Pending |
+
+## Reproduction
+
+```sh
+node scripts/check_seo_health.mjs https://buildingseattle.com
+```
+
+The scheduled GitHub Actions workflow stores each JSON result for 90 days so
+subsequent runs form a comparable crawl-health history.
