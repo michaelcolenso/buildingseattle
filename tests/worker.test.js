@@ -1255,6 +1255,13 @@ const ADU_DIFFERENTIAL_FIXTURES = [
   ["ADU", "Existing detached dwelling with AADU to remain"],
   [null, "Graduate studies tenant improvement"],
   [null, "Construct detached garage, per plan"],
+  // Markers split across lines: the token rules are space-delimited, so the
+  // normalizer has to flatten tabs and newlines too.
+  ["DADU", "Construct detached\nADU behind home"],
+  ["DADU", "Construct detached\tADU behind home"],
+  ["DADU", "Construct detached\r\nADU behind home"],
+  ["DADU", "Construct\nDADU behind home"],
+  ["ADU", "Construct new\nADU in basement"],
 ];
 
 test("ADU classification agrees between the migration SQL and the worker classifier", () => {

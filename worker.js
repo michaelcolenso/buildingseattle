@@ -529,9 +529,12 @@ export function classifyAduPermit(permit) {
 
 // SDCI descriptions bracket and quote the ADU markers ("[DADU]", "DADU?"), so
 // every non-alphanumeric separator is flattened to a space before matching.
+// Tabs and newlines are flattened too: the token rules below are space-delimited
+// and would otherwise miss a marker that begins a new line.
 export const ADU_NORMALIZED_TEXT_SQL = `
   lower(
-    replace(replace(replace(replace(replace(
+    replace(replace(replace(
+      replace(replace(replace(replace(replace(
       replace(replace(replace(replace(replace(
       replace(replace(replace(replace(replace(
       COALESCE(detailed_description, '') || ' ' ||
@@ -540,7 +543,8 @@ export const ADU_NORMALIZED_TEXT_SQL = `
       COALESCE(dwelling_unit_type, ''),
       '#', ' '), '+', ' '), '&', ' '), ':', ' '), ';', ' '),
       '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '),
-      ')', ' '), '[', ' '), ']', ' '), '?', ' '), '"', ' ')
+      ')', ' '), '[', ' '), ']', ' '), '?', ' '), '"', ' '),
+      char(9), ' '), char(10), ' '), char(13), ' ')
   )
 `;
 

@@ -8,7 +8,8 @@ ADD COLUMN adu_classification_version INTEGER NOT NULL DEFAULT 0;
 WITH normalized AS (
   SELECT id,
          lower(
-           replace(replace(replace(replace(replace(
+           replace(replace(replace(
+             replace(replace(replace(replace(replace(
              replace(replace(replace(replace(replace(
              replace(replace(replace(replace(replace(
              COALESCE(detailed_description, '') || ' ' ||
@@ -17,7 +18,8 @@ WITH normalized AS (
              COALESCE(dwelling_unit_type, ''),
              '#', ' '), '+', ' '), '&', ' '), ':', ' '), ';', ' '),
              '/', ' '), '-', ' '), ',', ' '), '.', ' '), '(', ' '),
-             ')', ' '), '[', ' '), ']', ' '), '?', ' '), '"', ' ')
+             ')', ' '), '[', ' '), ']', ' '), '?', ' '), '"', ' '),
+             char(9), ' '), char(10), ' '), char(13), ' ')
          ) AS adu_search_text
   FROM permits
 ),
