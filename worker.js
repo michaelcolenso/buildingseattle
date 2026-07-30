@@ -354,7 +354,16 @@ export default {
         return secure(renderOgImage());
       }
 
-      if (path === "/favicon.ico" || path === "/icons/icon-192.png") {
+      const socialImageMatch = path.match(/^\/social\/(permit|contractor|project|address|neighborhood|insight)\.svg$/);
+      if (socialImageMatch) {
+        return secure(renderSocialImage(socialImageMatch[1]));
+      }
+
+      if (path === "/favicon.ico" || path === "/icons/icon-32.png") {
+        return secure(renderAppIcon(32));
+      }
+
+      if (path === "/icons/icon-192.png") {
         return secure(renderAppIcon(192));
       }
 
@@ -995,7 +1004,7 @@ async function handleRoot(request, env) {
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
-	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
 	    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
@@ -2345,7 +2354,7 @@ async function renderPermitBrowser(request, env) {
 	    <meta property="og:image:width" content="1200">
 	    <meta property="og:image:height" content="630">
 	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
-	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
 	    <link rel="manifest" href="/site.webmanifest">
 	    ${renderDesignTokens()}
 	    <style>
@@ -2930,12 +2939,14 @@ async function renderPermitDetail(permitNumber, env, request) {
 	    <meta property="og:description" content="${safeMetaDesc}">
     <meta property="og:type" content="article">
     <meta property="og:url" content="${canonical}">
-    <meta name="twitter:card" content="summary">
-    <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta property="og:image" content="${BASE_URL}/social/permit.svg">
+    <meta property="og:image:type" content="image/svg+xml">
+    <meta property="og:image:alt" content="${safeTitleAddress} | Building Seattle">
     <meta property="og:image:width" content="1200">
 	    <meta property="og:image:height" content="630">
-	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
-	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <meta name="twitter:image" content="${BASE_URL}/social/permit.svg">
+	    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
 	    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
@@ -3678,12 +3689,14 @@ async function renderContractorPage(slug, env, request) {
 	    <meta property="og:description" content="${safeContractorMetaDescription}">
     <meta property="og:type" content="profile">
     <meta property="og:url" content="${canonical}">
-    <meta name="twitter:card" content="summary">
-    <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta property="og:image" content="${BASE_URL}/social/contractor.svg">
+    <meta property="og:image:type" content="image/svg+xml">
+    <meta property="og:image:alt" content="${safeContractorName} | Building Seattle">
 	    <meta property="og:image:width" content="1200">
 	    <meta property="og:image:height" content="630">
-	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
-	    <link rel="icon" href="/favicon.ico" type="image/png">
+	    <meta name="twitter:image" content="${BASE_URL}/social/contractor.svg">
+	    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
 	    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
@@ -4253,6 +4266,7 @@ export function renderProjectReviewSummary(permits) {
 
 function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType = "website", body, activeNav = "permits" }) {
   const metaDescription = truncateMetaDescription(description);
+  const socialImage = `${BASE_URL}/social/${socialImageForCanonical(canonical)}.svg`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4267,11 +4281,15 @@ function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogTyp
     <meta property="og:type" content="${ogType}">
     <meta property="og:url" content="${escapeHtml(canonical)}">
     <meta name="twitter:card" content="summary_large_image">
-    <meta property="og:image" content="${BASE_URL}/og-image.png">
+    <meta property="og:image" content="${socialImage}">
+    <meta property="og:image:secure_url" content="${socialImage}">
+    <meta property="og:image:type" content="image/svg+xml">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
-    <link rel="icon" href="/favicon.ico" type="image/png">
+    <meta property="og:image:alt" content="${escapeHtml(title)}">
+    <meta name="twitter:image" content="${socialImage}">
+    <meta name="twitter:image:alt" content="${escapeHtml(title)}">
+    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     ${entStyles()}
@@ -8422,7 +8440,7 @@ function renderApiDocs() {
     <title>API Documentation | Building Seattle</title>
     <meta name="description" content="Public read-only API for Seattle construction permit and contractor data.">
     <link rel="canonical" href="${BASE_URL}/api-docs">
-    <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
@@ -9071,6 +9089,8 @@ function renderWebManifest() {
 
 function renderAppIcon(size) {
   const icons = {
+    32:
+      "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAWElEQVR4nO3WQQqAMAxE0bz/kR0XQbyBILQz4F9Z0EWtJj8DkjRNWZZlWY7zWmtm5pzZQ0Ts3iMiIqWUzjnP8/x+v58PoJRSSimllFJKKaWUUkoppZRSSimllFJKKaXUH/QAHNsKPPoJkJAAAAAASUVORK5CYII=",
     192:
       "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAACXklEQVR42u3dPU4CQRiAYXdjDx2cgZ/EgovoNeyoLa3tvIZehMIEvIOlR6DbSAwgOLMw8z1Phc1CmDfDurM/zWA0uYFztb4CBISAEBACAgEhIASEgEBACAgBISAQEAJCQAgIBISAEBACQkAgIASEgBAQCAgBISAEBAJCQAiIutz6Cvb5/vrsXg/HU1+IGQgBISAEBAJCQAgIASEgEBACQkAIiJ2V1N9/IiAEhIAQEAICASEgytN47Hfn7wd7nGMvoNOK0ZOAsqQjo1gB9bMiEaqkVj3lvpGAKqwnWkOtejQkoCsdyAgNVb4TvW8Ic+zn9vleZiAEBAJCQIdcfP+j+oOK9c9AFxzCCIekQ9zibjie9v8fdcJ6VutNjk+4mM/MQFc6GcRZDgu0E93boIZaTI11l9ZuaJ3OIaAEg+2EMgGlHHintAoo7w+cbkLvRCMgBISAQEAICAEhIAQEAkJACIhgyltMvX/5SL7N9+WdFMxACAgBISAQEAJCQOU5cGq9p4YJCAEhIKrhurDzPb+tk2/z6WFuBsJPGAgIASEgBAQCQkAICAGBgEgkzVrY7HGV48NtXhdGyAyEgEBACAgBISAQEALK4OiVXy4NExACQkAICASEgBAQAkJAICAERDncH2iHJ8ObgRAQAkJAICAEhIAQEAgIASEgBAQCQkAICAEhIBAQAkJACAgEhIAQEAICASEgBISA4IdmMJr8fyvu316iJLciMQMhIASEgBAQCAgBUYw0x4EwA4GAEBACQkAgIASEgBAQCAgBISAEBAJCQAgIASEgEBACQkAICE6wBUhBYQ0pqaiEAAAAAElFTkSuQmCC",
     512:
@@ -9086,6 +9106,42 @@ function renderAppIcon(size) {
       "Cache-Control": "public, max-age=604800, immutable",
     },
   });
+}
+
+function renderSocialImage(type) {
+  const labels = {
+    permit: ["PERMIT RECORD", "Seattle permit details"],
+    contractor: ["CONTRACTOR PROFILE", "Work history and activity"],
+    project: ["PROJECT PROFILE", "Connected permit activity"],
+    address: ["PROPERTY PROFILE", "Construction activity by address"],
+    neighborhood: ["NEIGHBORHOOD PROFILE", "Local development activity"],
+    insight: ["MARKET INSIGHT", "Seattle construction trends"],
+  };
+  const [eyebrow, subtitle] = labels[type];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">Building Seattle — ${eyebrow}</title>
+  <desc id="description">${subtitle}</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0f172a"/><stop offset="1" stop-color="#1e3a5f"/></linearGradient><pattern id="grid" width="72" height="72" patternUnits="userSpaceOnUse"><path d="M72 0H0V72" fill="none" stroke="#93c5fd" stroke-opacity=".12"/></pattern></defs>
+  <rect width="1200" height="630" fill="url(#bg)"/><rect width="1200" height="630" fill="url(#grid)"/>
+  <rect x="76" y="72" width="58" height="58" rx="12" fill="#3b82f6"/><text x="105" y="113" text-anchor="middle" font-family="Arial,sans-serif" font-size="34" font-weight="700" fill="white">B</text>
+  <text x="154" y="112" font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="white">Building Seattle</text>
+  <text x="76" y="267" font-family="Arial,sans-serif" font-size="24" font-weight="700" letter-spacing="4" fill="#93c5fd">${eyebrow}</text>
+  <text x="76" y="350" font-family="Arial,sans-serif" font-size="58" font-weight="700" fill="white">${subtitle}</text>
+  <text x="76" y="410" font-family="Arial,sans-serif" font-size="25" fill="#cbd5e1">Public construction permits, projects, and market intelligence</text>
+  <path d="M780 486V306h70v180m28 0V230h82v256m28 0V338h64v148m-320 0h396" fill="none" stroke="#60a5fa" stroke-width="12" stroke-linejoin="round" opacity=".8"/>
+  <text x="76" y="553" font-family="Arial,sans-serif" font-size="22" fill="#94a3b8">buildingseattle.com</text>
+</svg>`;
+  return new Response(svg, { headers: { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public, max-age=604800, immutable" } });
+}
+
+function socialImageForCanonical(canonical) {
+  const path = new URL(canonical).pathname;
+  if (path.startsWith("/permits/")) return "permit";
+  if (path.startsWith("/contractor")) return "contractor";
+  if (path.startsWith("/project")) return "project";
+  if (path.startsWith("/address")) return "address";
+  if (path.startsWith("/neighborhood")) return "neighborhood";
+  return "insight";
 }
 
 function renderOgImage() {
@@ -9659,7 +9715,7 @@ function renderAboutPage() {
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary">
-    <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
@@ -9786,7 +9842,7 @@ async function renderDataPage(env) {
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary">
-    <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
@@ -9908,7 +9964,7 @@ function render404(options) {
     <meta name="description" content="${escapeHtml(message)}">
     <meta name="robots" content="noindex">
     <link rel="canonical" href="${BASE_URL}/">
-    <link rel="icon" href="/favicon.ico" type="image/png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>

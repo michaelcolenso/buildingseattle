@@ -739,12 +739,14 @@ test("GET /favicon.ico returns the site icon", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type") || "", /image\/png/);
   const bytes = new Uint8Array(await response.arrayBuffer());
-  assert.equal(bytes.length, 663);
-  assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 192, 0, 0, 0, 192]);
+  assert.equal(bytes.length, 155);
+  assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 32, 0, 0, 0, 32]);
+  assert.match(response.headers.get("Cache-Control") || "", /immutable/);
 });
 
 test("GET /icons serves square install icons at their declared dimensions", async () => {
   for (const [size, expectedLength] of [
+    [32, 155],
     [192, 663],
     [512, 742],
   ]) {
@@ -958,7 +960,8 @@ test("entity hub pages use the entity-graph schema, expose links, and safely ser
     );
     assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
     assert.match(html, /<meta property="og:image:width" content="1200">/);
-    assert.match(html, /<meta name="twitter:image" content="https:\/\/buildingseattle\.com\/og-image\.png">/);
+    assert.ok(html.includes(`<meta name="twitter:image" content="https://buildingseattle.com/social/${testCase.type === "addresses" ? "address" : testCase.type.replace(/s$/, "")}.svg">`));
+    assert.match(html, /<meta property="og:image:type" content="image\/svg\+xml">/);
     assert.ok(html.includes('href="' + testCase.pathPrefix + 'dangerous"'));
     assert.match(html, /"@type":"ItemList"/);
     if (testCase.type === "projects") {
@@ -1149,6 +1152,30 @@ test("methodology page documents source, freshness, matching, and cost limitatio
   assert.match(html, /Entity grouping is deterministic but inferred/);
   assert.match(html, /data\.seattle\.gov\/resource\/k44w-2dcq\.json/);
   assert.match(html, /"@type":"AboutPage"/);
+});
+
+test("bounded social image routes return branded 1200x630 images with immutable caching", async () => {
+  for (const type of ["permit", "contractor", "project", "address", "neighborhood", "insight"]) {
+    const response = await worker.fetch(
+      new Request(`http://example.com/social/${type}.svg`),
+      createEnv(),
+      createCtx(),
+    );
+    const svg = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "image/svg+xml; charset=utf-8");
+    assert.match(response.headers.get("Cache-Control") || "", /immutable/);
+    assert.match(svg, /width="1200" height="630"/);
+    assert.match(svg, /Building Seattle/);
+  }
+
+  const response = await worker.fetch(
+    new Request("http://example.com/social/not-a-real-type.svg"),
+    createEnv(),
+    createCtx(),
+  );
+  assert.equal(response.status, 404);
 });
 
 test("robots policy disallows AI training and web manifest describes the app", async () => {
