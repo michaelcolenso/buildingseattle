@@ -58,5 +58,14 @@ those values here after submitting:
 node scripts/check_seo_health.mjs https://buildingseattle.com
 ```
 
-The scheduled GitHub Actions workflow stores each JSON result for 90 days so
-subsequent runs form a comparable crawl-health history.
+The scheduled GitHub Actions workflow stores each JSON result for 90 days and
+keeps a compact JSONL history between runs. Each report includes deltas from
+the preceding run. A failing run opens (or updates) a single actionable GitHub
+issue with the affected URLs; the workflow closes that issue automatically
+after production recovers.
+
+In addition to metadata and sitemap checks, the monitor verifies that every
+entity hub has a non-zero `ItemList`, remains indexable, and that the bounded
+internal-link sample stays below a 5% broken-link rate. It also probes the
+approved finite set of hub filters to ensure filtered URLs remain noindexed
+and canonicalized to their unfiltered hubs.

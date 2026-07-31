@@ -1,10 +1,17 @@
-import { writeFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_BASE_URL = "https://buildingseattle.com";
 const MAX_CHILD_SITEMAPS = 20;
 const MAX_SAMPLE_PAGES = 30;
 const MAX_LINK_CHECKS = 30;
+const ENTITY_HUB_PATHS = ["/contractors", "/neighborhoods", "/projects", "/addresses"];
+const FILTER_POLICY_PATHS = [
+  "/contractors?activity=active", "/contractors?permit_type=construction", "/contractors?min_value=1000000",
+  "/contractors?neighborhood=capitol-hill", "/projects?view=recent", "/projects?view=active",
+  "/addresses?min_permits=5", "/addresses?activity=recent", "/addresses?min_value=1000000",
+  "/neighborhoods?activity=recent",
+];
 
 export function xmlLocations(xml) {
   return [...String(xml).matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) =>
@@ -40,6 +47,30 @@ export function htmlMetadata(html) {
   };
 }
 
+export function entityHubItemCount(jsonLdBlocks) {
+  for (const block of jsonLdBlocks) {
+    try {
+      const value = JSON.parse(block);
+      const nodes = Array.isArray(value?.["@graph"]) ? value["@graph"] : [value];
+      const itemList = nodes.find((node) => node?.["@type"] === "ItemList");
+      if (itemList && Number.isFinite(Number(itemList.numberOfItems))) return Number(itemList.numberOfItems);
+    } catch {
+      // Invalid JSON-LD is reported separately by the page metadata check.
+    }
+  }
+  return null;
+}
+
+export function summarizeHistory(entries, report) {
+  const previous = entries.at(-1);
+  if (!previous) return { previous_generated_at: null, failed_delta: null, checks_delta: null };
+  return {
+    previous_generated_at: previous.generated_at || null,
+    failed_delta: report.summary.failed - Number(previous.summary?.failed || 0),
+    checks_delta: report.summary.checks - Number(previous.summary?.checks || 0),
+  };
+}
+
 function result(check, url, ok, detail) {
   return { check, url, ok, detail };
 }
@@ -65,10 +96,7 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   const checks = [];
   const discoveredPages = new Set([
     new URL("/", base).href,
-    new URL("/contractors", base).href,
-    new URL("/neighborhoods", base).href,
-    new URL("/projects", base).href,
-    new URL("/addresses", base).href,
+    ...ENTITY_HUB_PATHS.map((path) => new URL(path, base).href),
     new URL("/insights", base).href,
     new URL("/methodology", base).href,
   ]);
@@ -112,6 +140,11 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
       }
     }
     checks.push(result("page-jsonld", pageUrl, structuredDataValid, `${meta.jsonLd.length} JSON-LD blocks`));
+    if (ENTITY_HUB_PATHS.includes(new URL(pageUrl).pathname)) {
+      const itemCount = entityHubItemCount(meta.jsonLd);
+      checks.push(result("entity-hub-populated", pageUrl, itemCount !== null && itemCount > 0, itemCount === null ? "Missing ItemList count" : `${itemCount} items`));
+      checks.push(result("entity-hub-indexable", pageUrl, !/noindex/i.test(meta.robots || ""), meta.robots || "Missing robots directive"));
+    }
     for (const href of meta.links) {
       try {
         const link = new URL(href, pageUrl);
@@ -132,7 +165,13 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
     checks.push(result("internal-link", linkUrl, response.status < 400, `HTTP ${response.status}`));
   }
 
-  for (const path of ["/contractors?sort=value", "/projects?view=recent", "/addresses?min_permits=5"]) {
+
+  const internalLinkChecks = checks.filter((check) => check.check === "internal-link");
+  const brokenLinks = internalLinkChecks.filter((check) => !check.ok);
+  const brokenRate = internalLinkChecks.length ? brokenLinks.length / internalLinkChecks.length : 0;
+  checks.push(result("internal-link-404-rate", base.href, brokenRate <= 0.05, `${brokenLinks.length}/${internalLinkChecks.length} broken (${(brokenRate * 100).toFixed(1)}%)`));
+
+  for (const path of FILTER_POLICY_PATHS) {
     const url = new URL(path, base).href;
     const page = await fetchText(url);
     const meta = htmlMetadata(page.text);
@@ -159,8 +198,39 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
 async function main() {
   const baseUrl = process.argv[2] || process.env.SEO_BASE_URL || DEFAULT_BASE_URL;
   const outputPath = process.env.SEO_REPORT_PATH || "seo-health-report.json";
-  const report = await runSeoHealthCheck(baseUrl);
+  let report;
+  try {
+    report = await runSeoHealthCheck(baseUrl);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    report = {
+      version: 1,
+      generated_at: new Date().toISOString(),
+      base_url: new URL(baseUrl).href,
+      limits: {},
+      summary: { checks: 1, passed: 0, failed: 1 },
+      failures: [result("monitor-runtime", new URL(baseUrl).href, false, detail)],
+      checks: [result("monitor-runtime", new URL(baseUrl).href, false, detail)],
+    };
+  }
+  const historyPath = process.env.SEO_HISTORY_PATH;
+  let history = [];
+  if (historyPath) {
+    try {
+      history = (await readFile(historyPath, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  report.trend = summarizeHistory(history, report);
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  if (historyPath) {
+    const historyEntry = { generated_at: report.generated_at, summary: report.summary };
+    await appendFile(historyPath, `${JSON.stringify(historyEntry)}\n`, "utf8");
+  }
   console.log(`SEO health: ${report.summary.passed}/${report.summary.checks} checks passed`);
   for (const failure of report.failures) {
     console.error(`FAIL ${failure.check}: ${failure.url} — ${failure.detail}`);
