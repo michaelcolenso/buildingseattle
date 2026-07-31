@@ -960,8 +960,8 @@ test("entity hub pages use the entity-graph schema, expose links, and safely ser
     );
     assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
     assert.match(html, /<meta property="og:image:width" content="1200">/);
-    assert.ok(html.includes(`<meta name="twitter:image" content="https://buildingseattle.com/social/${testCase.type === "addresses" ? "address" : testCase.type.replace(/s$/, "")}.svg">`));
-    assert.match(html, /<meta property="og:image:type" content="image\/svg\+xml">/);
+    assert.ok(html.includes(`<meta name="twitter:image" content="https://buildingseattle.com/social/${testCase.type === "addresses" ? "address" : testCase.type.replace(/s$/, "")}.png">`));
+    assert.match(html, /<meta property="og:image:type" content="image\/png">/);
     assert.ok(html.includes('href="' + testCase.pathPrefix + 'dangerous"'));
     assert.match(html, /"@type":"ItemList"/);
     if (testCase.type === "projects") {
@@ -1154,24 +1154,24 @@ test("methodology page documents source, freshness, matching, and cost limitatio
   assert.match(html, /"@type":"AboutPage"/);
 });
 
-test("bounded social image routes return branded 1200x630 images with immutable caching", async () => {
+test("bounded social image routes return crawler-compatible PNGs with immutable caching", async () => {
   for (const type of ["permit", "contractor", "project", "address", "neighborhood", "insight"]) {
     const response = await worker.fetch(
-      new Request(`http://example.com/social/${type}.svg`),
+      new Request(`http://example.com/social/${type}.png`),
       createEnv(),
       createCtx(),
     );
-    const svg = await response.text();
+    const bytes = new Uint8Array(await response.arrayBuffer());
 
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Content-Type"), "image/svg+xml; charset=utf-8");
+    assert.equal(response.headers.get("Content-Type"), "image/png");
     assert.match(response.headers.get("Cache-Control") || "", /immutable/);
-    assert.match(svg, /width="1200" height="630"/);
-    assert.match(svg, /Building Seattle/);
+    assert.deepEqual([...bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118]);
   }
 
   const response = await worker.fetch(
-    new Request("http://example.com/social/not-a-real-type.svg"),
+    new Request("http://example.com/social/not-a-real-type.png"),
     createEnv(),
     createCtx(),
   );
