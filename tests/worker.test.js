@@ -13,6 +13,7 @@ import worker, {
   summarizeDays,
   summarizeNetHousing,
   projectSeattle,
+  latestPermitActivity,
   renderPermitTimeline,
   renderProjectReviewSummary,
 } from "../worker.js";
@@ -1068,6 +1069,42 @@ test("project views expose explicit active, recent, and all-time criteria", asyn
   assert.ok(queries.some((sql) => sql.includes("date('now', '-365 days')")));
 });
 
+test("address hub filters by bounded latest activity, neighborhood, permit count, and value", async () => {
+  let seenSql = "";
+  let seenBinds = [];
+  const env = {
+    DB: {
+      prepare(sql) {
+        seenSql = sql;
+        return {
+          bind(...binds) {
+            seenBinds = binds;
+            return this;
+          },
+          async all() {
+            return { results: [] };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(
+    new Request("http://example.com/addresses?activity=recent90&neighborhood=Ballard&min_permits=5&min_value=1000000"),
+    env,
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/addresses">/);
+  assert.match(html, /<option value="recent90" selected>Past 90 days<\/option>/);
+  assert.match(seenSql, /p\.neighborhood = \?/);
+  assert.match(seenSql, /date\('now', '-90 days'\)/);
+  assert.match(seenSql, /HAVING COALESCE\(SUM\(p\.value\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
+  assert.deepEqual(seenBinds, ["Ballard", 1000000, 5]);
+});
+
 test("market-segment landing pages render source-backed reports", async () => {
   const env = {
     DB: {
@@ -1690,6 +1727,84 @@ test("GET /insights/plan-review renders the insights page", async () => {
   const html = await response.text();
   assert.match(html, /plan review/i);
   assert.match(html, /Insights/);
+});
+
+test("latestPermitActivity selects the freshest available source timestamp", () => {
+  assert.equal(latestPermitActivity([
+    { issued_date: "2026-06-01", updated_at: "2026-07-30" },
+    { applied_date: "2026-07-01", created_at: "2026-07-02" },
+  ]), "2026-07-30");
+  assert.equal(latestPermitActivity([]), null);
+});
+
+test("address detail renders record-level freshness and methodology context", async () => {
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async first() {
+            if (sql.includes("FROM addresses WHERE slug")) {
+              return { id: 1, slug: "1-main-st", display_address: "1 Main St", city: "Seattle", state: "WA" };
+            }
+            return null;
+          },
+          async all() {
+            if (sql.includes("FROM permits p LEFT JOIN contractors")) {
+              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, updated_at: "2026-07-30" }] };
+            }
+            return { results: [] };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(new Request("http://example.com/address/1-main-st"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Source records updated through Jul 30, 2026/);
+  assert.match(html, /declared value is not verified project cost/i);
+  assert.match(html, /Read the full methodology and limitations/);
+});
+
+test("plan-review landing page links neighborhood evidence and publishes source-backed structured data", async () => {
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async all() {
+            if (sql.includes("MAX((SELECT n.slug")) {
+              return { results: [{ label: "Ballard", slug: "ballard", cnt: 8, avg_days: 42 }] };
+            }
+            if (sql.includes("SELECT total_days_plan_review AS d")) {
+              return { results: [{ d: 20 }, { d: 42 }, { d: 64 }] };
+            }
+            return { results: [] };
+          },
+          async first() {
+            if (sql.includes("data-freshness")) return { updated_through: "2026-07-30" };
+            return { avg_cycles: 2, avg_corrections: 12 };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(
+    new Request("http://example.com/insights/plan-review"),
+    env,
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /href="\/neighborhood\/ballard">Ballard<\/a>/);
+  assert.match(html, /"@type":"Dataset"/);
+  assert.match(html, /"@type":"Article"/);
+  assert.match(html, /"@type":"BreadcrumbList"/);
+  assert.match(html, /"dateModified":"2026-07-30"/);
+  assert.match(html, /data\.seattle\.gov\/resource\/k44w-2dcq\.json/);
 });
 
 test("GET /api/status-changes returns recent permit status transitions", async () => {

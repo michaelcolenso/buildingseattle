@@ -9,8 +9,16 @@ const ENTITY_HUB_PATHS = ["/contractors", "/neighborhoods", "/projects", "/addre
 const FILTER_POLICY_PATHS = [
   "/contractors?activity=active", "/contractors?permit_type=construction", "/contractors?min_value=1000000",
   "/contractors?neighborhood=capitol-hill", "/projects?view=recent", "/projects?view=active",
-  "/addresses?min_permits=5", "/addresses?activity=recent", "/addresses?min_value=1000000",
+  "/addresses?min_permits=5", "/addresses?activity=recent90", "/addresses?activity=recent365",
+  "/addresses?min_value=1000000",
   "/neighborhoods?activity=recent",
+];
+const IMAGE_ASSETS = [
+  ["/favicon.ico", 32, 32],
+  ["/icons/icon-192.png", 192, 192],
+  ["/icons/icon-512.png", 512, 512],
+  ...["permit", "contractor", "project", "address", "neighborhood", "insight"]
+    .map((type) => [`/social/${type}.png`, 1200, 630]),
 ];
 
 export function xmlLocations(xml) {
@@ -71,6 +79,49 @@ export function summarizeHistory(entries, report) {
   };
 }
 
+export function schemaTypes(jsonLdBlocks) {
+  const types = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const type = value["@type"];
+    for (const item of Array.isArray(type) ? type : [type]) {
+      if (typeof item === "string") types.add(item);
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  for (const block of jsonLdBlocks) {
+    try {
+      visit(JSON.parse(block));
+    } catch {
+      // Syntax failures are reported by page-jsonld.
+    }
+  }
+  return [...types];
+}
+
+export function expectedSchemaType(pathname) {
+  if (pathname === "/") return "WebSite";
+  if (ENTITY_HUB_PATHS.includes(pathname) || pathname === "/insights") return "CollectionPage";
+  if (pathname.startsWith("/permits/")) return "Report";
+  if (pathname.startsWith("/contractor/")) return "LocalBusiness";
+  if (pathname.startsWith("/address/")) return "Place";
+  if (pathname.startsWith("/project/")) return "CreativeWork";
+  if (pathname === "/methodology") return "AboutPage";
+  return null;
+}
+
+export function pngDimensions(value) {
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (bytes.length < 24 || !signature.every((byte, index) => bytes[index] === byte)) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
 function result(check, url, ok, detail) {
   return { check, url, ok, detail };
 }
@@ -91,6 +142,14 @@ async function fetchText(url) {
   return { response, text: await response.text() };
 }
 
+async function fetchAsset(url) {
+  const response = await fetch(url, {
+    headers: { "User-Agent": "BuildingSeattle-SEO-Monitor/1.0" },
+    redirect: "follow",
+  });
+  return { response, bytes: new Uint8Array(await response.arrayBuffer()) };
+}
+
 export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   const base = new URL(baseUrl);
   const checks = [];
@@ -105,6 +164,18 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   const sitemap = await fetchText(sitemapUrl);
   checks.push(result("sitemap-index-status", sitemapUrl, sitemap.response.status === 200, `HTTP ${sitemap.response.status}`));
   checks.push(result("sitemap-index-xml", sitemapUrl, /<sitemapindex\b/.test(sitemap.text), "Expected sitemapindex root"));
+
+  for (const [path, expectedWidth, expectedHeight] of IMAGE_ASSETS) {
+    const assetUrl = new URL(path, base).href;
+    const asset = await fetchAsset(assetUrl);
+    const dimensions = pngDimensions(asset.bytes);
+    const contentType = asset.response.headers.get("content-type") || "";
+    const cacheControl = asset.response.headers.get("cache-control") || "";
+    checks.push(result("image-status", assetUrl, asset.response.status === 200, `HTTP ${asset.response.status}`));
+    checks.push(result("image-content-type", assetUrl, /^image\/png\b/i.test(contentType), contentType || "Missing Content-Type"));
+    checks.push(result("image-dimensions", assetUrl, dimensions?.width === expectedWidth && dimensions?.height === expectedHeight, dimensions ? `${dimensions.width}x${dimensions.height}` : "Invalid PNG"));
+    checks.push(result("image-cache", assetUrl, /(?:max-age=\d+|immutable)/i.test(cacheControl), cacheControl || "Missing Cache-Control"));
+  }
 
   const childSitemaps = xmlLocations(sitemap.text).slice(0, MAX_CHILD_SITEMAPS);
   checks.push(result("sitemap-child-count", sitemapUrl, childSitemaps.length > 0, `${childSitemaps.length} child sitemaps`));
@@ -130,7 +201,10 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
     checks.push(result("page-title", pageUrl, Boolean(meta.title), meta.title || "Missing title"));
     checks.push(result("page-description", pageUrl, Boolean(meta.description), meta.description || "Missing description"));
     checks.push(result("page-canonical", pageUrl, sameCanonicalHost(meta.canonical, base.href), meta.canonical || "Missing canonical"));
+    const expectedCanonical = new URL(new URL(pageUrl).pathname, base).href;
+    checks.push(result("page-canonical-self", pageUrl, meta.canonical === expectedCanonical, meta.canonical || "Missing canonical"));
     checks.push(result("page-robots", pageUrl, Boolean(meta.robots), meta.robots || "Missing robots directive"));
+    checks.push(result("page-indexable", pageUrl, !/noindex/i.test(meta.robots || ""), meta.robots || "Missing robots directive"));
     let structuredDataValid = meta.jsonLd.length > 0;
     for (const json of meta.jsonLd) {
       try {
@@ -140,6 +214,11 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
       }
     }
     checks.push(result("page-jsonld", pageUrl, structuredDataValid, `${meta.jsonLd.length} JSON-LD blocks`));
+    const requiredType = expectedSchemaType(new URL(pageUrl).pathname);
+    if (requiredType) {
+      const types = schemaTypes(meta.jsonLd);
+      checks.push(result("page-schema-type", pageUrl, types.includes(requiredType), types.length ? `Found ${types.join(", ")}; expected ${requiredType}` : `Missing ${requiredType}`));
+    }
     if (ENTITY_HUB_PATHS.includes(new URL(pageUrl).pathname)) {
       const itemCount = entityHubItemCount(meta.jsonLd);
       checks.push(result("entity-hub-populated", pageUrl, itemCount !== null && itemCount > 0, itemCount === null ? "Missing ItemList count" : `${itemCount} items`));

@@ -3,7 +3,10 @@ import test from "node:test";
 
 import {
   entityHubItemCount,
+  expectedSchemaType,
   htmlMetadata,
+  pngDimensions,
+  schemaTypes,
   summarizeHistory,
   xmlLocations,
 } from "../scripts/check_seo_health.mjs";
@@ -52,4 +55,35 @@ test("summarizeHistory compares the current run with the most recent result", ()
     failed_delta: -1,
     checks_delta: 5,
   });
+});
+
+test("schemaTypes recursively finds semantic page types", () => {
+  assert.deepEqual(schemaTypes([
+    JSON.stringify({
+      "@graph": [
+        { "@type": "Report", about: { "@type": "Place" } },
+        { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem" }] },
+      ],
+    }),
+  ]), ["Report", "Place", "BreadcrumbList", "ListItem"]);
+});
+
+test("expectedSchemaType defines representative production page contracts", () => {
+  assert.equal(expectedSchemaType("/"), "WebSite");
+  assert.equal(expectedSchemaType("/projects"), "CollectionPage");
+  assert.equal(expectedSchemaType("/permits/123"), "Report");
+  assert.equal(expectedSchemaType("/contractor/example"), "LocalBusiness");
+  assert.equal(expectedSchemaType("/address/example"), "Place");
+  assert.equal(expectedSchemaType("/project/example"), "CreativeWork");
+  assert.equal(expectedSchemaType("/neighborhood/example"), null);
+});
+
+test("pngDimensions validates the PNG signature and reads IHDR dimensions", () => {
+  const pngHeader = Uint8Array.from([
+    137, 80, 78, 71, 13, 10, 26, 10,
+    0, 0, 0, 13, 73, 72, 68, 82,
+    0, 0, 4, 176, 0, 0, 2, 118,
+  ]);
+  assert.deepEqual(pngDimensions(pngHeader), { width: 1200, height: 630 });
+  assert.equal(pngDimensions(Uint8Array.from([1, 2, 3])), null);
 });
