@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { htmlMetadata, xmlLocations } from "../scripts/check_seo_health.mjs";
+import {
+  entityHubItemCount,
+  expectedSchemaType,
+  htmlMetadata,
+  schemaTypes,
+  summarizeHistory,
+  xmlLocations,
+} from "../scripts/check_seo_health.mjs";
 
 test("xmlLocations extracts and decodes sitemap locations", () => {
   assert.deepEqual(
@@ -26,4 +33,46 @@ test("htmlMetadata extracts crawl directives and valid JSON-LD blocks", () => {
   assert.equal(metadata.canonical, "https://buildingseattle.com/permits");
   assert.deepEqual(metadata.jsonLd, ['{"@type":"CollectionPage"}']);
   assert.deepEqual(metadata.links, ["/projects"]);
+});
+
+test("entityHubItemCount reads ItemList counts without trusting invalid JSON-LD", () => {
+  assert.equal(entityHubItemCount([
+    "not-json",
+    JSON.stringify({ "@graph": [{ "@type": "CollectionPage" }, { "@type": "ItemList", numberOfItems: 48 }] }),
+  ]), 48);
+  assert.equal(entityHubItemCount([JSON.stringify({ "@type": "CollectionPage" })]), null);
+});
+
+test("summarizeHistory compares the current run with the most recent result", () => {
+  const trend = summarizeHistory([
+    { generated_at: "2026-07-29T00:00:00.000Z", summary: { checks: 120, failed: 1 } },
+    { generated_at: "2026-07-30T00:00:00.000Z", summary: { checks: 125, failed: 3 } },
+  ], { summary: { checks: 130, failed: 2 } });
+
+  assert.deepEqual(trend, {
+    previous_generated_at: "2026-07-30T00:00:00.000Z",
+    failed_delta: -1,
+    checks_delta: 5,
+  });
+});
+
+test("schemaTypes recursively finds semantic page types", () => {
+  assert.deepEqual(schemaTypes([
+    JSON.stringify({
+      "@graph": [
+        { "@type": "Report", about: { "@type": "Place" } },
+        { "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem" }] },
+      ],
+    }),
+  ]), ["Report", "Place", "BreadcrumbList", "ListItem"]);
+});
+
+test("expectedSchemaType defines representative production page contracts", () => {
+  assert.equal(expectedSchemaType("/"), "WebSite");
+  assert.equal(expectedSchemaType("/projects"), "CollectionPage");
+  assert.equal(expectedSchemaType("/permits/123"), "Report");
+  assert.equal(expectedSchemaType("/contractor/example"), "LocalBusiness");
+  assert.equal(expectedSchemaType("/address/example"), "Place");
+  assert.equal(expectedSchemaType("/project/example"), "CreativeWork");
+  assert.equal(expectedSchemaType("/neighborhood/example"), null);
 });

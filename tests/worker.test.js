@@ -739,12 +739,14 @@ test("GET /favicon.ico returns the site icon", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type") || "", /image\/png/);
   const bytes = new Uint8Array(await response.arrayBuffer());
-  assert.equal(bytes.length, 663);
-  assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 192, 0, 0, 0, 192]);
+  assert.equal(bytes.length, 155);
+  assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 32, 0, 0, 0, 32]);
+  assert.match(response.headers.get("Cache-Control") || "", /immutable/);
 });
 
 test("GET /icons serves square install icons at their declared dimensions", async () => {
   for (const [size, expectedLength] of [
+    [32, 155],
     [192, 663],
     [512, 742],
   ]) {
@@ -958,7 +960,8 @@ test("entity hub pages use the entity-graph schema, expose links, and safely ser
     );
     assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
     assert.match(html, /<meta property="og:image:width" content="1200">/);
-    assert.match(html, /<meta name="twitter:image" content="https:\/\/buildingseattle\.com\/og-image\.png">/);
+    assert.ok(html.includes(`<meta name="twitter:image" content="https://buildingseattle.com/social/${testCase.type === "addresses" ? "address" : testCase.type.replace(/s$/, "")}.png">`));
+    assert.match(html, /<meta property="og:image:type" content="image\/png">/);
     assert.ok(html.includes('href="' + testCase.pathPrefix + 'dangerous"'));
     assert.match(html, /"@type":"ItemList"/);
     if (testCase.type === "projects") {
@@ -1065,6 +1068,42 @@ test("project views expose explicit active, recent, and all-time criteria", asyn
   assert.ok(queries.some((sql) => sql.includes("date('now', '-365 days')")));
 });
 
+test("address hub filters by bounded latest activity, neighborhood, permit count, and value", async () => {
+  let seenSql = "";
+  let seenBinds = [];
+  const env = {
+    DB: {
+      prepare(sql) {
+        seenSql = sql;
+        return {
+          bind(...binds) {
+            seenBinds = binds;
+            return this;
+          },
+          async all() {
+            return { results: [] };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(
+    new Request("http://example.com/addresses?activity=recent90&neighborhood=Ballard&min_permits=5&min_value=1000000"),
+    env,
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/addresses">/);
+  assert.match(html, /<option value="recent90" selected>Past 90 days<\/option>/);
+  assert.match(seenSql, /p\.neighborhood = \?/);
+  assert.match(seenSql, /date\('now', '-90 days'\)/);
+  assert.match(seenSql, /HAVING COALESCE\(SUM\(p\.value\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
+  assert.deepEqual(seenBinds, ["Ballard", 1000000, 5]);
+});
+
 test("market-segment landing pages render source-backed reports", async () => {
   const env = {
     DB: {
@@ -1149,6 +1188,30 @@ test("methodology page documents source, freshness, matching, and cost limitatio
   assert.match(html, /Entity grouping is deterministic but inferred/);
   assert.match(html, /data\.seattle\.gov\/resource\/k44w-2dcq\.json/);
   assert.match(html, /"@type":"AboutPage"/);
+});
+
+test("bounded social image routes return crawler-compatible PNGs with immutable caching", async () => {
+  for (const type of ["permit", "contractor", "project", "address", "neighborhood", "insight"]) {
+    const response = await worker.fetch(
+      new Request(`http://example.com/social/${type}.png`),
+      createEnv(),
+      createCtx(),
+    );
+    const bytes = new Uint8Array(await response.arrayBuffer());
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "image/png");
+    assert.match(response.headers.get("Cache-Control") || "", /immutable/);
+    assert.deepEqual([...bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118]);
+  }
+
+  const response = await worker.fetch(
+    new Request("http://example.com/social/not-a-real-type.png"),
+    createEnv(),
+    createCtx(),
+  );
+  assert.equal(response.status, 404);
 });
 
 test("robots policy disallows AI training and web manifest describes the app", async () => {
