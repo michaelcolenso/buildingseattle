@@ -76,9 +76,3 @@ and the Schema.org type expected for that route: `WebSite`, `CollectionPage`,
 the repeatable portions of the production validation checklist into scheduled
 regression checks; Search Console submission and index-coverage counts remain
 manual because they require property access.
-
-The same bounded run downloads the favicon, both manifest icons, and all six
-entity social previews. It verifies a successful PNG response, the declared
-32×32, 192×192, 512×512, or 1200×630 dimensions, and a reusable cache policy.
-This catches broken social-card or install assets without relying on an
-unbounded visual crawl.

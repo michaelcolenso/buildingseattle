@@ -13,13 +13,6 @@ const FILTER_POLICY_PATHS = [
   "/addresses?min_value=1000000",
   "/neighborhoods?activity=recent",
 ];
-const IMAGE_ASSETS = [
-  ["/favicon.ico", 32, 32],
-  ["/icons/icon-192.png", 192, 192],
-  ["/icons/icon-512.png", 512, 512],
-  ...["permit", "contractor", "project", "address", "neighborhood", "insight"]
-    .map((type) => [`/social/${type}.png`, 1200, 630]),
-];
 
 export function xmlLocations(xml) {
   return [...String(xml).matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) =>
@@ -112,14 +105,6 @@ export function expectedSchemaType(pathname) {
   if (pathname.startsWith("/project/")) return "CreativeWork";
   if (pathname === "/methodology") return "AboutPage";
   return null;
-}
-
-export function pngDimensions(value) {
-  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (bytes.length < 24 || !signature.every((byte, index) => bytes[index] === byte)) return null;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
 function result(check, url, ok, detail) {

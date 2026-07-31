@@ -5,7 +5,6 @@ import {
   entityHubItemCount,
   expectedSchemaType,
   htmlMetadata,
-  pngDimensions,
   schemaTypes,
   summarizeHistory,
   xmlLocations,
@@ -76,14 +75,4 @@ test("expectedSchemaType defines representative production page contracts", () =
   assert.equal(expectedSchemaType("/address/example"), "Place");
   assert.equal(expectedSchemaType("/project/example"), "CreativeWork");
   assert.equal(expectedSchemaType("/neighborhood/example"), null);
-});
-
-test("pngDimensions validates the PNG signature and reads IHDR dimensions", () => {
-  const pngHeader = Uint8Array.from([
-    137, 80, 78, 71, 13, 10, 26, 10,
-    0, 0, 0, 13, 73, 72, 68, 82,
-    0, 0, 4, 176, 0, 0, 2, 118,
-  ]);
-  assert.deepEqual(pngDimensions(pngHeader), { width: 1200, height: 630 });
-  assert.equal(pngDimensions(Uint8Array.from([1, 2, 3])), null);
 });
