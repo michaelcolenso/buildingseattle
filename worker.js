@@ -4325,6 +4325,14 @@ function entPermitRows(permits) {
   return `<table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+export function latestPermitActivity(permits) {
+  return (permits || [])
+    .flatMap((permit) => [permit.updated_at, permit.issued_date, permit.applied_date, permit.created_at])
+    .filter(Boolean)
+    .sort()
+    .at(-1) || null;
+}
+
 const ENTITY_HUB_PAGE_SIZE = 48;
 const ACTIVE_PERMIT_SQL =
   "lower(COALESCE(p.status, '')) IN ('active', 'pending', 'new', 'in review', 'under review')";
@@ -6850,7 +6858,15 @@ async function renderAddressPage(slug, env, request) {
     </div>`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType: "place", body }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex,
+      ogType: "place",
+      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Property totals aggregate public permit records; declared value is not verified project cost.")}`,
+    }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } },
   );
 }
@@ -6968,7 +6984,15 @@ async function renderProjectPage(slug, env, request) {
     </div>`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType: "article", body }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex,
+      ogType: "article",
+      body: `${body}${renderDataTrustNote(project.latest_activity_date || latestPermitActivity(permits), "Projects are inferred permit groups, not verified completed developments.")}`,
+    }),
     { headers: { "Content-Type": "text/html" } },
   );
 }
@@ -7098,7 +7122,14 @@ async function renderNeighborhoodPage(slug, env, request) {
     </div>`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex, body }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex,
+      body: `${body}${renderDataTrustNote(latestPermitActivity(recentPermits), "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.")}`,
+    }),
     { headers: { "Content-Type": "text/html" } },
   );
 }
@@ -7237,7 +7268,15 @@ async function renderOrgContractorPage(slug, env, request) {
     </div>`;
 
   return new Response(
-    renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType: "profile", body }),
+    renderEntityDoc({
+      title,
+      description,
+      canonical,
+      jsonLd,
+      noindex,
+      ogType: "profile",
+      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Participant matching follows names in public permit records and may combine or separate similarly named entities.")}`,
+    }),
     { headers: { "Content-Type": "text/html" } },
   );
 }

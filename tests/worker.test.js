@@ -13,6 +13,7 @@ import worker, {
   summarizeDays,
   summarizeNetHousing,
   projectSeattle,
+  latestPermitActivity,
   renderPermitTimeline,
   renderProjectReviewSummary,
 } from "../worker.js";
@@ -1726,6 +1727,45 @@ test("GET /insights/plan-review renders the insights page", async () => {
   const html = await response.text();
   assert.match(html, /plan review/i);
   assert.match(html, /Insights/);
+});
+
+test("latestPermitActivity selects the freshest available source timestamp", () => {
+  assert.equal(latestPermitActivity([
+    { issued_date: "2026-06-01", updated_at: "2026-07-30" },
+    { applied_date: "2026-07-01", created_at: "2026-07-02" },
+  ]), "2026-07-30");
+  assert.equal(latestPermitActivity([]), null);
+});
+
+test("address detail renders record-level freshness and methodology context", async () => {
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async first() {
+            if (sql.includes("FROM addresses WHERE slug")) {
+              return { id: 1, slug: "1-main-st", display_address: "1 Main St", city: "Seattle", state: "WA" };
+            }
+            return null;
+          },
+          async all() {
+            if (sql.includes("FROM permits p LEFT JOIN contractors")) {
+              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, updated_at: "2026-07-30" }] };
+            }
+            return { results: [] };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(new Request("http://example.com/address/1-main-st"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Source records updated through Jul 30, 2026/);
+  assert.match(html, /declared value is not verified project cost/i);
+  assert.match(html, /Read the full methodology and limitations/);
 });
 
 test("plan-review landing page links neighborhood evidence and publishes source-backed structured data", async () => {
