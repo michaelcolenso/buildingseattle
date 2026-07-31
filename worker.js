@@ -4695,7 +4695,9 @@ async function getPlanReviewData(env) {
     safeAll(
       env,
       `SELECT COALESCE(NULLIF(neighborhood,''),'Unknown') AS label, COUNT(*) AS cnt,
-              AVG(total_days_plan_review) AS avg_days
+              AVG(total_days_plan_review) AS avg_days,
+              MAX((SELECT n.slug FROM neighborhoods n
+                   WHERE lower(trim(n.name)) = lower(trim(permits.neighborhood)) LIMIT 1)) AS slug
        FROM permits WHERE ${reviewedWhere}
        GROUP BY label HAVING cnt >= 3 ORDER BY avg_days DESC LIMIT 12`,
     ),
@@ -4732,6 +4734,7 @@ async function getPlanReviewData(env) {
     })),
     by_neighborhood: byNeighborhood.map((r) => ({
       label: r.label,
+      slug: r.slug || null,
       count: Number(r.cnt) || 0,
       avg_days: Math.round(Number(r.avg_days) || 0),
     })),
@@ -4814,7 +4817,7 @@ function prBarChart(rows, accent = "var(--accent)") {
       const v = Number(r.value) || 0;
       const pct = max > 0 ? Math.max(2, Math.round((v / max) * 100)) : 0;
       return `<div class="pr-row">
-        <div class="pr-label" title="${escapeHtml(r.label)}">${escapeHtml(r.label)}</div>
+        <div class="pr-label" title="${escapeHtml(r.label)}">${r.href ? `<a class="ent-link" href="${escapeHtml(r.href)}">${escapeHtml(r.label)}</a>` : escapeHtml(r.label)}</div>
         <div class="pr-track"><div class="pr-fill" style="width:${pct}%;background:${accent};"></div></div>
         <div class="pr-val">${escapeHtml(r.display != null ? String(r.display) : String(v))}${
           r.sub ? `<span class="pr-sub"> · ${escapeHtml(r.sub)}</span>` : ""
@@ -4836,11 +4839,33 @@ async function renderPlanReviewPage(env) {
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
-    "@type": "Dataset",
-    name: "Seattle Permit Plan Review Times",
-    description,
-    url: canonical,
-    creator: { "@type": "Organization", name: "Building Seattle" },
+    "@graph": [
+      {
+        "@type": "Dataset",
+        name: "Seattle Permit Plan Review Times",
+        description,
+        url: canonical,
+        dateModified: freshness?.updated_through || undefined,
+        isBasedOn: "https://data.seattle.gov/resource/k44w-2dcq.json",
+        creator: { "@type": "Organization", name: "Building Seattle" },
+      },
+      {
+        "@type": "Article",
+        headline: "How long does Seattle permit plan review take?",
+        description,
+        url: canonical,
+        dateModified: freshness?.updated_through || undefined,
+        author: { "@type": "Organization", name: "Building Seattle" },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Insights", item: `${BASE_URL}/insights` },
+          { "@type": "ListItem", position: 3, name: "Plan Review Times", item: canonical },
+        ],
+      },
+    ],
   }).replace(/</g, "\\u003c");
 
   const emptyState = `
@@ -4865,6 +4890,7 @@ async function renderPlanReviewPage(env) {
 
   const neighborhoodRows = data.by_neighborhood.map((n) => ({
     label: n.label,
+    href: n.slug ? `/neighborhood/${encodeURIComponent(n.slug)}` : null,
     value: n.avg_days,
     display: `${n.avg_days} days`,
     sub: `${n.count.toLocaleString()} permits`,

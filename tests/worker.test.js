@@ -1728,6 +1728,45 @@ test("GET /insights/plan-review renders the insights page", async () => {
   assert.match(html, /Insights/);
 });
 
+test("plan-review landing page links neighborhood evidence and publishes source-backed structured data", async () => {
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async all() {
+            if (sql.includes("MAX((SELECT n.slug")) {
+              return { results: [{ label: "Ballard", slug: "ballard", cnt: 8, avg_days: 42 }] };
+            }
+            if (sql.includes("SELECT total_days_plan_review AS d")) {
+              return { results: [{ d: 20 }, { d: 42 }, { d: 64 }] };
+            }
+            return { results: [] };
+          },
+          async first() {
+            if (sql.includes("data-freshness")) return { updated_through: "2026-07-30" };
+            return { avg_cycles: 2, avg_corrections: 12 };
+          },
+        };
+      },
+    },
+  };
+  const response = await worker.fetch(
+    new Request("http://example.com/insights/plan-review"),
+    env,
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /href="\/neighborhood\/ballard">Ballard<\/a>/);
+  assert.match(html, /"@type":"Dataset"/);
+  assert.match(html, /"@type":"Article"/);
+  assert.match(html, /"@type":"BreadcrumbList"/);
+  assert.match(html, /"dateModified":"2026-07-30"/);
+  assert.match(html, /data\.seattle\.gov\/resource\/k44w-2dcq\.json/);
+});
+
 test("GET /api/status-changes returns recent permit status transitions", async () => {
   const response = await worker.fetch(new Request("http://example.com/api/status-changes"), createEnv(), createCtx());
 
