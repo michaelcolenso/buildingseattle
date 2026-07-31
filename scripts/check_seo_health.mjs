@@ -127,6 +127,14 @@ async function fetchText(url) {
   return { response, text: await response.text() };
 }
 
+async function fetchAsset(url) {
+  const response = await fetch(url, {
+    headers: { "User-Agent": "BuildingSeattle-SEO-Monitor/1.0" },
+    redirect: "follow",
+  });
+  return { response, bytes: new Uint8Array(await response.arrayBuffer()) };
+}
+
 export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   const base = new URL(baseUrl);
   const checks = [];
@@ -141,6 +149,18 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   const sitemap = await fetchText(sitemapUrl);
   checks.push(result("sitemap-index-status", sitemapUrl, sitemap.response.status === 200, `HTTP ${sitemap.response.status}`));
   checks.push(result("sitemap-index-xml", sitemapUrl, /<sitemapindex\b/.test(sitemap.text), "Expected sitemapindex root"));
+
+  for (const [path, expectedWidth, expectedHeight] of IMAGE_ASSETS) {
+    const assetUrl = new URL(path, base).href;
+    const asset = await fetchAsset(assetUrl);
+    const dimensions = pngDimensions(asset.bytes);
+    const contentType = asset.response.headers.get("content-type") || "";
+    const cacheControl = asset.response.headers.get("cache-control") || "";
+    checks.push(result("image-status", assetUrl, asset.response.status === 200, `HTTP ${asset.response.status}`));
+    checks.push(result("image-content-type", assetUrl, /^image\/png\b/i.test(contentType), contentType || "Missing Content-Type"));
+    checks.push(result("image-dimensions", assetUrl, dimensions?.width === expectedWidth && dimensions?.height === expectedHeight, dimensions ? `${dimensions.width}x${dimensions.height}` : "Invalid PNG"));
+    checks.push(result("image-cache", assetUrl, /(?:max-age=\d+|immutable)/i.test(cacheControl), cacheControl || "Missing Cache-Control"));
+  }
 
   const childSitemaps = xmlLocations(sitemap.text).slice(0, MAX_CHILD_SITEMAPS);
   checks.push(result("sitemap-child-count", sitemapUrl, childSitemaps.length > 0, `${childSitemaps.length} child sitemaps`));
