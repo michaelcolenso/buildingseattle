@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { htmlMetadata, xmlLocations } from "../scripts/check_seo_health.mjs";
+import {
+  entityHubItemCount,
+  htmlMetadata,
+  summarizeHistory,
+  xmlLocations,
+} from "../scripts/check_seo_health.mjs";
 
 test("xmlLocations extracts and decodes sitemap locations", () => {
   assert.deepEqual(
@@ -26,4 +31,25 @@ test("htmlMetadata extracts crawl directives and valid JSON-LD blocks", () => {
   assert.equal(metadata.canonical, "https://buildingseattle.com/permits");
   assert.deepEqual(metadata.jsonLd, ['{"@type":"CollectionPage"}']);
   assert.deepEqual(metadata.links, ["/projects"]);
+});
+
+test("entityHubItemCount reads ItemList counts without trusting invalid JSON-LD", () => {
+  assert.equal(entityHubItemCount([
+    "not-json",
+    JSON.stringify({ "@graph": [{ "@type": "CollectionPage" }, { "@type": "ItemList", numberOfItems: 48 }] }),
+  ]), 48);
+  assert.equal(entityHubItemCount([JSON.stringify({ "@type": "CollectionPage" })]), null);
+});
+
+test("summarizeHistory compares the current run with the most recent result", () => {
+  const trend = summarizeHistory([
+    { generated_at: "2026-07-29T00:00:00.000Z", summary: { checks: 120, failed: 1 } },
+    { generated_at: "2026-07-30T00:00:00.000Z", summary: { checks: 125, failed: 3 } },
+  ], { summary: { checks: 130, failed: 2 } });
+
+  assert.deepEqual(trend, {
+    previous_generated_at: "2026-07-30T00:00:00.000Z",
+    failed_delta: -1,
+    checks_delta: 5,
+  });
 });
