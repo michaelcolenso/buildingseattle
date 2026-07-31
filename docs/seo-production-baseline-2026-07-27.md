@@ -58,5 +58,27 @@ those values here after submitting:
 node scripts/check_seo_health.mjs https://buildingseattle.com
 ```
 
-The scheduled GitHub Actions workflow stores each JSON result for 90 days so
-subsequent runs form a comparable crawl-health history.
+The scheduled GitHub Actions workflow stores each JSON result for 90 days and
+keeps a compact JSONL history between runs. Each report includes deltas from
+the preceding run. A failing run opens (or updates) a single actionable GitHub
+issue with the affected URLs; the workflow closes that issue automatically
+after production recovers.
+
+In addition to metadata and sitemap checks, the monitor verifies that every
+entity hub has a non-zero `ItemList`, remains indexable, and that the bounded
+internal-link sample stays below a 5% broken-link rate. It also probes the
+approved finite set of hub filters to ensure filtered URLs remain noindexed
+and canonicalized to their unfiltered hubs.
+
+Representative indexable pages must also return a self-referencing canonical
+and the Schema.org type expected for that route: `WebSite`, `CollectionPage`,
+`Report`, `LocalBusiness`, `Place`, `CreativeWork`, or `AboutPage`. This turns
+the repeatable portions of the production validation checklist into scheduled
+regression checks; Search Console submission and index-coverage counts remain
+manual because they require property access.
+
+The same bounded run downloads the favicon, both manifest icons, and all six
+entity social previews. It verifies a successful PNG response, the declared
+32×32, 192×192, 512×512, or 1200×630 dimensions, and a reusable cache policy.
+This catches broken social-card or install assets without relying on an
+unbounded visual crawl.
