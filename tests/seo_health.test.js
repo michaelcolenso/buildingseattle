@@ -5,6 +5,7 @@ import {
   entityHubItemCount,
   expectedSchemaType,
   htmlMetadata,
+  pngDimensions,
   schemaTypes,
   summarizeHistory,
   xmlLocations,
@@ -75,4 +76,20 @@ test("expectedSchemaType defines representative production page contracts", () =
   assert.equal(expectedSchemaType("/address/example"), "Place");
   assert.equal(expectedSchemaType("/project/example"), "CreativeWork");
   assert.equal(expectedSchemaType("/neighborhood/example"), null);
+});
+
+test("pngDimensions reads width and height from the IHDR chunk", () => {
+  const png = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x04, 0xb0,
+    0x00, 0x00, 0x02, 0x76,
+  ]);
+  assert.deepEqual(pngDimensions(png), { width: 1200, height: 630 });
+});
+
+test("pngDimensions rejects truncated and non-PNG payloads", () => {
+  assert.equal(pngDimensions(new Uint8Array(10)), null);
+  assert.equal(pngDimensions(new Uint8Array(new Array(24).fill(0x41))), null);
+  assert.equal(pngDimensions(undefined), null);
 });
