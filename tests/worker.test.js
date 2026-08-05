@@ -1022,7 +1022,7 @@ test("entity hubs paginate deterministically and noindex bounded filter states",
   assert.match(seenSql, /p\.type = \?/);
   assert.match(seenSql, /lower\(COALESCE\(p\.status/);
   assert.match(seenSql, /HAVING COALESCE\(SUM\(p\.value\), 0\) >= \?/);
-  assert.match(seenSql, /ORDER BY total_value DESC, permit_count DESC, slug ASC/);
+  assert.match(seenSql, /ORDER BY total_value DESC, permit_count DESC, o.slug ASC/);
   assert.match(seenSql, /LIMIT 49 OFFSET 96/);
   assert.deepEqual(seenBinds, ["Ballard", "Construction", 1000000]);
 });
