@@ -13,6 +13,35 @@ const FILTER_POLICY_PATHS = [
   "/addresses?min_value=1000000",
   "/neighborhoods?activity=recent",
 ];
+// [path, expected width, expected height] for every binary image route worker.js serves.
+const IMAGE_ASSETS = [
+  ["/og-image.png", 1200, 630],
+  ["/social/permit.png", 1200, 630],
+  ["/social/contractor.png", 1200, 630],
+  ["/social/project.png", 1200, 630],
+  ["/social/address.png", 1200, 630],
+  ["/social/neighborhood.png", 1200, 630],
+  ["/social/insight.png", 1200, 630],
+  ["/icons/icon-32.png", 32, 32],
+  ["/icons/icon-192.png", 192, 192],
+  ["/icons/icon-512.png", 512, 512],
+];
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+export function pngDimensions(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  if (data.length < 24) return null;
+  if (PNG_SIGNATURE.some((byte, index) => data[index] !== byte)) return null;
+  // Bytes 12-15 are the chunk type; the first chunk of a valid PNG must be IHDR.
+  if (String.fromCharCode(data[12], data[13], data[14], data[15]) !== "IHDR") return null;
+  const readUint32 = (offset) =>
+    ((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]) >>> 0;
+  const width = readUint32(16);
+  const height = readUint32(20);
+  if (!width || !height) return null;
+  return { width, height };
+}
 
 export function xmlLocations(xml) {
   return [...String(xml).matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) =>
