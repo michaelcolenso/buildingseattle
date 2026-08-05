@@ -4,10 +4,6 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import worker, {
-  ADU_CLASSIFICATION_VERSION,
-  ADU_DADU_SQL,
-  ADU_NORMALIZED_TEXT_SQL,
-  classifyAduPermit,
   summarizePlanReview,
   percentileSorted,
   summarizeDays,
@@ -17,6 +13,12 @@ import worker, {
   renderPermitTimeline,
   renderProjectReviewSummary,
 } from "../worker.js";
+import {
+  ADU_CLASSIFICATION_VERSION,
+  ADU_DADU_SQL,
+  ADU_NORMALIZED_TEXT_SQL,
+  classifyAduPermit,
+} from "../adu.js";
 
 const samplePermits = [
   {

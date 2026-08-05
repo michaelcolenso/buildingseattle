@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { ENTITY_HUBS, buildEntityHubQuery, buildEntityHubState } from "../worker.js";
+import { buildEntityHubQuery, buildEntityHubState } from "../worker.js";
+import { ENTITY_HUBS } from "../entity_hubs.js";
 
 // The mocked-DB hub tests never execute SQL, so a query that is valid text but
 // invalid SQLite (ambiguous columns, missing tables) shipped silently and left
