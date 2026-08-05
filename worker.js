@@ -4351,6 +4351,7 @@ const ENTITY_HUBS = {
       JOIN permit_participants pp ON pp.people_org_id = o.id AND pp.role = 'contractor'
       JOIN permits p ON p.id = pp.permit_id`,
     groupSql: "GROUP BY o.id, o.slug, o.name, o.type_guess",
+    tiebreakSql: "o.slug",
     sortOptions: { permits: "permit_count DESC, total_value DESC", value: "total_value DESC, permit_count DESC", recent: "latest_activity DESC, permit_count DESC" },
     defaultSort: "permits",
   },
@@ -4368,6 +4369,7 @@ const ENTITY_HUBS = {
       JOIN address_neighborhoods an ON an.neighborhood_id = n.id
       JOIN permits p ON p.address_id = an.address_id`,
     groupSql: "GROUP BY n.id, n.slug, n.name",
+    tiebreakSql: "n.slug",
     sortOptions: { permits: "permit_count DESC, total_value DESC", value: "total_value DESC, permit_count DESC", recent: "latest_activity DESC, permit_count DESC" },
     defaultSort: "permits",
   },
@@ -4386,6 +4388,7 @@ const ENTITY_HUBS = {
       JOIN permits p ON p.id = pp.permit_id
       LEFT JOIN addresses a ON a.id = pr.address_id`,
     groupSql: "GROUP BY pr.id, pr.slug, pr.name, a.display_address",
+    tiebreakSql: "pr.slug",
     sortOptions: { value: "total_value DESC, permit_count DESC", permits: "permit_count DESC, total_value DESC", recent: "latest_activity DESC, total_value DESC" },
     defaultSort: "value",
   },
@@ -4402,10 +4405,13 @@ const ENTITY_HUBS = {
       FROM addresses a
       JOIN permits p ON p.address_id = a.id`,
     groupSql: "GROUP BY a.id, a.slug, a.display_address",
+    tiebreakSql: "a.slug",
     sortOptions: { permits: "permit_count DESC, total_value DESC", recent: "latest_activity DESC, permit_count DESC", value: "total_value DESC, permit_count DESC" },
     defaultSort: "permits",
   },
 };
+
+export { ENTITY_HUBS, buildEntityHubQuery, buildEntityHubState };
 
 function boundedHubChoice(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback;
@@ -4476,7 +4482,7 @@ function buildEntityHubQuery(type, state) {
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ${config.groupSql}
       ${havingParts.length ? `HAVING ${havingParts.join(" AND ")}` : ""}
-      ORDER BY ${config.sortOptions[state.sort]}, slug ASC
+      ORDER BY ${config.sortOptions[state.sort]}, ${config.tiebreakSql} ASC
       LIMIT ${ENTITY_HUB_PAGE_SIZE + 1} OFFSET ${offset}`,
     binds,
   };
@@ -4531,9 +4537,11 @@ async function renderEntityHubPage(type, env, request) {
   try {
     const result = await env.DB.prepare(query.sql).bind(...query.binds).all();
     items = result.results || [];
-  } catch {
+  } catch (error) {
     // Graph migrations may briefly lag a deployment; keep the route available
-    // but prevent an empty fallback from entering the index.
+    // but prevent an empty fallback from entering the index. Log it so a
+    // permanently failing hub query is visible instead of silently empty.
+    console.error(`entity-hub query failed for ${type}:`, error);
   }
 
   const hasNext = items.length > ENTITY_HUB_PAGE_SIZE;
