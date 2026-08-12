@@ -2773,27 +2773,72 @@ async function renderPermitDetail(permitNumber, env, request) {
     typeMap[(permit.type || "").toLowerCase()] ||
     (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
-  const permitDescForMeta = permit.description ? ` ${String(permit.description).trim().replace(/\.$/, "")}.` : "";
-  const metaDesc = truncateMetaDescription(`See ${permit.address || "Seattle"}: a ${permitType} project in ${neighborhood}. Value: ${valueFormatted}. Status: ${permit.status || "under review"}.${permitDescForMeta}${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`);
   const safePermitNumber = escapeHtml(permit.permit_number);
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
   const safeAddress = escapeHtml(permit.address || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
   const safeStatus = escapeHtml(permit.status || "Unknown");
-  const safeMetaDesc = escapeHtml(metaDesc);
   const safeTitleAddress = escapeHtml(permit.address || "Seattle");
   const safeDescription = escapeHtml(
     permit.detailed_description || permit.description || "No description available for this permit.",
   );
   const mapsQuery = encodeURIComponent(permit.address || "Seattle, WA");
+
+  // Work highlight: SDCI's enriched "detailed description" is preferred over
+  // the shorter scraped description because it commonly leads with the
+  // tenant/project name (e.g. "MangoApps Tenant improvement...", "Sephora -
+  // Downtown Seattle Construct alterations...") ahead of the same work
+  // summary — exactly the specific, searchable detail that makes a
+  // title/description/summary unique instead of generic.
+  const rawWorkText = String(permit.detailed_description || permit.description || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[.,]?\s*per plans?\.?$/i, "")
+    .replace(/[.,\s]+$/, "");
+  const streetOnly = permit.address ? entStreet(permit.address) : "";
+  const titleLocation = streetOnly ? `${streetOnly}, Seattle` : "Seattle";
+  const titleHighlight = rawWorkText
+    ? truncateMetaDescription(rawWorkText, 45)
+    : `${permitType} (${permit.status || "Unknown"})`;
+  const pageTitle = `${titleLocation} — ${titleHighlight} | Building Seattle`;
+  const safeTitle = escapeHtml(pageTitle);
+
+  const metaWorkSnippet = rawWorkText ? truncateMetaDescription(rawWorkText, 75) : `${permitType} project`;
+  const metaDesc = truncateMetaDescription(
+    `${metaWorkSnippet} at ${streetOnly || permit.address || "Seattle"}, Seattle. Permit ${permit.permit_number} (${permit.status || "status unknown"}).${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`,
+  );
+  const safeMetaDesc = escapeHtml(metaDesc);
+
+  // Concise, factual summary sentence rendered directly below the H1 so the
+  // same facts a searcher was looking for (work scope, address, permit
+  // number/status, contractor) are visible on the first screen, with links
+  // into the verified address/contractor entity pages.
+  const neighborhoodPhrase =
+    neighborhood && neighborhood !== "Seattle" ? ` in ${safeNeighborhood}, Seattle` : " in Seattle";
+  const summaryAddressHtml = permit.address_slug
+    ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${safeAddress}</a>`
+    : safeAddress;
+  const summaryContractorHtml = permit.contractor_name
+    ? ` Work is being performed by ${
+        permit.contractor_slug
+          ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name)}</a>`
+          : escapeHtml(permit.contractor_name)
+      }.`
+    : permit.work_performed_by === "Owner/Lessee"
+      ? " Work is being performed by the property owner/lessee."
+      : "";
+  const summaryLeadText = rawWorkText
+    ? rawWorkText.charAt(0).toUpperCase() + rawWorkText.slice(1)
+    : `A ${permitType.toLowerCase()} project`;
+  const permitSummaryHtml = `${escapeHtml(summaryLeadText)} at ${summaryAddressHtml}${neighborhoodPhrase}. Permit ${safePermitNumber} is ${escapeHtml((permit.status || "under review").toLowerCase())}${valueFormatted !== "N/A" ? `, valued at ${valueFormatted}` : ""}.${summaryContractorHtml}`;
   const permitJsonLd = JSON.stringify({
     "@context": "https://schema.org",
     "@graph": [
       {
         "@type": "Report",
         name: `Seattle construction permit ${permit.permit_number}`,
-        headline: `${permitType} permit at ${permit.address || "Seattle"}`,
+        headline: rawWorkText ? `${rawWorkText} — ${permit.address || "Seattle"}` : `${permitType} permit at ${permit.address || "Seattle"}`,
         description: metaDesc,
         url: canonical,
         identifier: permit.permit_number,
@@ -2810,6 +2855,15 @@ async function renderPermitDetail(permitNumber, env, request) {
         about: [permitType, permit.status, neighborhood].filter(Boolean),
         isBasedOn: safeHttpUrl(permit.permit_detail_url || permit.source_url || permit.url) || "https://www.seattle.gov/sdci",
         provider: { "@type": "Organization", name: "Seattle Department of Construction and Inspections" },
+        ...(permit.contractor_name
+          ? {
+              contributor: {
+                "@type": "Organization",
+                name: permit.contractor_name,
+                url: permit.contractor_slug ? `${BASE_URL}/contractor/${permit.contractor_slug}` : undefined,
+              },
+            }
+          : {}),
       },
       {
         "@type": "BreadcrumbList",
@@ -2859,11 +2913,11 @@ async function renderPermitDetail(permitNumber, env, request) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	    <title>${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle</title>
+	    <title>${safeTitle}</title>
 	    <meta name="description" content="${safeMetaDesc}">
 	    <meta name="robots" content="index,follow,max-image-preview:large">
 	    <link rel="canonical" href="${canonical}">
-	    <meta property="og:title" content="${safeTitleAddress} — ${safePermitType} (${safeStatus}) | Building Seattle">
+	    <meta property="og:title" content="${safeTitle}">
 	    <meta property="og:description" content="${safeMetaDesc}">
     <meta property="og:type" content="article">
     <meta property="og:url" content="${canonical}">
@@ -2934,6 +2988,13 @@ async function renderPermitDetail(permitNumber, env, request) {
             color: var(--primary);
             margin-bottom: 1rem;
             line-height: 1.2;
+        }
+        .permit-summary {
+            font-size: 1.0625rem;
+            line-height: 1.65;
+            color: var(--text);
+            max-width: 62ch;
+            margin: 1rem 0 0;
         }
         .status-badge {
             display: inline-flex;
@@ -3108,6 +3169,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 	                    <span class="status-dot"></span>
 	                    ${safeStatus}
                 </span>
+                <p class="permit-summary">${permitSummaryHtml}</p>
             </div>
             <div class="detail-grid">
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Permit Timeline &amp; Status</h2>

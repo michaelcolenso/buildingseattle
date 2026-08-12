@@ -2008,6 +2008,99 @@ test("GET /permits/:permit_number safely serializes JSON-LD and uses the officia
   assert.match(html, /&lt;script&gt;alert\(&quot;detail&quot;\)&lt;\/script&gt;/);
 });
 
+test("GET /permits/:permit_number builds a specific title, meta description, and on-page summary from verified permit and entity data", async () => {
+  const env = createEnv();
+  Object.assign(env._state.permits[0], {
+    address: "760 Aloha St, Seattle, WA",
+    description: "Tenant improvement for offices (MangoApps) on 5th floor of existing commercial building  per plan.",
+    detailed_description: "MangoApps Tenant improvement for offices (MangoApps) on 5th floor of existing commercial building, per plan.",
+    status: "active",
+    value: 760000,
+    address_slug: "760-aloha-st-seattle-wa",
+    address_display: "760 ALOHA ST, SEATTLE, WA",
+    contractor_name: "D P Inc General Contractors",
+    contractor_slug: "d-p-inc-general-contractors",
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+
+  // Title: street address + a real work-scope highlight from source data + Seattle, not a generic label.
+  // The enriched detail text leads with the tenant/project name ("MangoApps") ahead
+  // of the work summary, so it should appear immediately, not just buried mid-sentence.
+  assert.match(html, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices[^<]*\| Building Seattle<\/title>/);
+  assert.doesNotMatch(html, /<title>[^<]*undefined[^<]*<\/title>/);
+
+  // Meta description answers: what work, where, permit number/status, contractor.
+  const descriptionMatch = html.match(/<meta name="description" content="([^"]*)">/);
+  assert.ok(descriptionMatch, "expected a meta description tag");
+  const metaDescription = descriptionMatch[1];
+  assert.match(metaDescription, /MangoApps Tenant improvement for offices/);
+  assert.match(metaDescription, /760 Aloha St/);
+  assert.match(metaDescription, /PERM123/);
+  assert.match(metaDescription, /active/);
+  assert.ok(metaDescription.length <= 165);
+
+  // A single H1, with a concise factual summary directly below it that links
+  // to the verified address and contractor entity pages.
+  const h1Matches = html.match(/<h1[^>]*>/g) || [];
+  assert.equal(h1Matches.length, 1);
+  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>\s*<span class="status-badge"[^>]*>[\s\S]*?<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
+  const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.ok(summaryMatch);
+  const summaryHtml = summaryMatch[1];
+  assert.match(summaryHtml, /MangoApps Tenant improvement for offices \(MangoApps\)/);
+  assert.match(summaryHtml, /<a href="\/address\/760-aloha-st-seattle-wa"[^>]*>760 Aloha St, Seattle, WA<\/a>/);
+  assert.match(summaryHtml, /<a href="\/contractor\/d-p-inc-general-contractors"[^>]*>D P Inc General Contractors<\/a>/);
+  assert.match(summaryHtml, /PERM123/);
+  assert.match(summaryHtml, /active/);
+  assert.match(summaryHtml, /\$760,000/);
+
+  // Canonical is unchanged and correct.
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits\/PERM123">/);
+});
+
+test("GET /permits/:permit_number falls back to permit type and plain text for sparse permits without a description, entity links, or contractor", async () => {
+  const env = createEnv();
+  Object.assign(env._state.permits[0], {
+    address: "1200 5th Ave, Seattle, WA",
+    description: "",
+    detailed_description: null,
+    contractor_name: null,
+    contractor_slug: null,
+    address_slug: null,
+    project_slug: null,
+    value: null,
+    status: "new",
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits\/PERM123">/);
+
+  const h1Matches = html.match(/<h1[^>]*>/g) || [];
+  assert.equal(h1Matches.length, 1);
+
+  // No placeholder text leaking into the title/summary for missing fields.
+  assert.doesNotMatch(html, /undefined|null|NaN/);
+
+  const titleMatch = html.match(/<title>([^<]*)<\/title>/);
+  assert.ok(titleMatch);
+  assert.match(titleMatch[1], /^1200 5th Ave, Seattle —/);
+  assert.match(titleMatch[1], /\| Building Seattle$/);
+
+  const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.ok(summaryMatch);
+  // No entity links render when there is no verified slug to link to.
+  assert.doesNotMatch(summaryMatch[1], /<a href="\/address\//);
+  assert.doesNotMatch(summaryMatch[1], /<a href="\/contractor\//);
+  assert.match(summaryMatch[1], /1200 5th Ave, Seattle, WA/);
+});
+
 test("POST /ingest/permit/batch rejects payloads without an items array", async () => {
   const response = await worker.fetch(
     new Request("http://example.com/ingest/permit/batch", {
