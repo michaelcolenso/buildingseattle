@@ -15,6 +15,7 @@ import {
   classifyAduPermit,
 } from "./adu.js";
 import { ENTITY_HUBS } from "./entity_hubs.js";
+import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -94,6 +95,10 @@ export default {
 
       if (path === "/api/permits") {
         return secure(await getPermits(request, env));
+      }
+
+      if (path === "/mcp") {
+        return secure(await handleMcpRequest(request, (name, args) => executeMcpTool(name, args, env, request.url)));
       }
 
       if (path === "/permits" || path === "/permits/") {
@@ -8410,48 +8415,32 @@ function renderApiDocs() {
   return new Response(html, { headers: { "Content-Type": "text/html" } });
 }
 
-// SEP-1649 MCP Server Card. There is no live MCP transport; the card maps the
-// available read tools to the public REST API and points to the docs.
+async function executeMcpTool(name, args, env, requestUrl) {
+  let response;
+  if (name === "search_permits") {
+    const url = new URL("/api/permits", requestUrl);
+    for (const [key, value] of Object.entries(args)) {
+      if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
+    }
+    response = await getPermits(new Request(url), env);
+  } else if (name === "list_contractors") {
+    response = await getContractors(new Request(new URL("/api/contractors", requestUrl)), env);
+  } else {
+    response = await getStats(env);
+  }
+  if (!response.ok) throw new Error(`request failed with status ${response.status}`);
+  return response.json();
+}
+
+// SEP-1649 MCP Server Card for the live Streamable HTTP transport.
 function renderMcpServerCard() {
   return jsonResponse({
     serverInfo: { name: "building-seattle", version: "1.0.0" },
     description: "Read-only access to aggregated Seattle construction permit and contractor data.",
-    transport: { type: "rest", endpoint: API_BASE },
+    transport: { type: "streamable-http", endpoint: `${BASE_URL}/mcp` },
     documentation: `${BASE_URL}/api-docs`,
     capabilities: { tools: { listChanged: false } },
-    tools: [
-      {
-        name: "search_permits",
-        description: "Query Seattle construction permits with optional filters and pagination.",
-        endpoint: `${API_BASE}/permits`,
-        method: "GET",
-        inputSchema: {
-          type: "object",
-          properties: {
-            neighborhood: { type: "string" },
-            type: { type: "string" },
-            status: { type: "string" },
-            q: { type: "string" },
-            page: { type: "integer", minimum: 1 },
-            per_page: { type: "integer", minimum: 1, maximum: 100 },
-          },
-        },
-      },
-      {
-        name: "list_contractors",
-        description: "List the top contractors ranked by active project count.",
-        endpoint: `${API_BASE}/contractors`,
-        method: "GET",
-        inputSchema: { type: "object", properties: {} },
-      },
-      {
-        name: "get_stats",
-        description: "Get aggregate permit, contractor, and value statistics.",
-        endpoint: `${API_BASE}/stats`,
-        method: "GET",
-        inputSchema: { type: "object", properties: {} },
-      },
-    ],
+    tools: MCP_TOOLS,
   });
 }
 
