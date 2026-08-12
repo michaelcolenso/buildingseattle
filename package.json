@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "refresh-data": "uv run python sdci_scraper.py && uv run python direct_import.py",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:mcp": "node --test tests/mcp.test.js"
   },
   "devDependencies": {
     "wrangler": "4.107.0"
