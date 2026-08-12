@@ -2804,10 +2804,19 @@ async function renderPermitDetail(permitNumber, env, request) {
   const pageTitle = `${titleLocation} — ${titleHighlight} | Building Seattle`;
   const safeTitle = escapeHtml(pageTitle);
 
-  const metaWorkSnippet = rawWorkText ? truncateMetaDescription(rawWorkText, 75) : `${permitType} project`;
-  const metaDesc = truncateMetaDescription(
-    `${metaWorkSnippet} at ${streetOnly || permit.address || "Seattle"}, Seattle. Permit ${permit.permit_number} (${permit.status || "status unknown"}).${permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : ""}`,
-  );
+  // Build the meta description with the required facts (permit number/status)
+  // always intact, and the contractor included whole or not at all — never
+  // truncate the tail mid-name. Only the leading work/address snippet, which
+  // is already word-boundary truncated, absorbs any remaining length overflow.
+  const META_MAX = 165;
+  const permitCore = `Permit ${permit.permit_number} (${permit.status || "status unknown"}).`;
+  const contractorSuffix = permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : "";
+  const coreWithContractor = `${permitCore}${contractorSuffix}`;
+  const metaCore = coreWithContractor.length <= META_MAX - 30 ? coreWithContractor : permitCore;
+  const metaLeadBudget = Math.max(20, META_MAX - metaCore.length - 1);
+  const metaWorkSnippet = rawWorkText ? truncateMetaDescription(rawWorkText, Math.min(75, metaLeadBudget)) : `${permitType} project`;
+  const metaLead = truncateMetaDescription(`${metaWorkSnippet} at ${streetOnly || permit.address || "Seattle"}, Seattle.`, metaLeadBudget);
+  const metaDesc = truncateMetaDescription(`${metaLead} ${metaCore}`, META_MAX);
   const safeMetaDesc = escapeHtml(metaDesc);
 
   // Concise, factual summary sentence rendered directly below the H1 so the
@@ -2828,8 +2837,12 @@ async function renderPermitDetail(permitNumber, env, request) {
     : permit.work_performed_by === "Owner/Lessee"
       ? " Work is being performed by the property owner/lessee."
       : "";
-  const summaryLeadText = rawWorkText
-    ? rawWorkText.charAt(0).toUpperCase() + rawWorkText.slice(1)
+  // Cap the lead clause so an unusually long scraped description can't turn
+  // this "concise summary below the H1" into a duplicate of the full Project
+  // Description card further down the page.
+  const summaryWorkSnippet = rawWorkText ? truncateMetaDescription(rawWorkText, 220) : "";
+  const summaryLeadText = summaryWorkSnippet
+    ? summaryWorkSnippet.charAt(0).toUpperCase() + summaryWorkSnippet.slice(1)
     : `A ${permitType.toLowerCase()} project`;
   const permitSummaryHtml = `${escapeHtml(summaryLeadText)} at ${summaryAddressHtml}${neighborhoodPhrase}. Permit ${safePermitNumber} is ${escapeHtml((permit.status || "under review").toLowerCase())}${valueFormatted !== "N/A" ? `, valued at ${valueFormatted}` : ""}.${summaryContractorHtml}`;
   const permitJsonLd = JSON.stringify({
@@ -2838,7 +2851,9 @@ async function renderPermitDetail(permitNumber, env, request) {
       {
         "@type": "Report",
         name: `Seattle construction permit ${permit.permit_number}`,
-        headline: rawWorkText ? `${rawWorkText} — ${permit.address || "Seattle"}` : `${permitType} permit at ${permit.address || "Seattle"}`,
+        headline: rawWorkText
+          ? `${truncateMetaDescription(rawWorkText, 90)} — ${permit.address || "Seattle"}`
+          : `${permitType} permit at ${permit.address || "Seattle"}`,
         description: metaDesc,
         url: canonical,
         identifier: permit.permit_number,

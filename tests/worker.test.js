@@ -2101,6 +2101,38 @@ test("GET /permits/:permit_number falls back to permit type and plain text for s
   assert.match(summaryMatch[1], /1200 5th Ave, Seattle, WA/);
 });
 
+test("GET /permits/:permit_number keeps the permit number, status, and full contractor name intact in the meta description even with a long address and description", async () => {
+  const env = createEnv();
+  Object.assign(env._state.permits[0], {
+    address: "1234 Martin Luther King Jr Way S Apartment Complex Building B, Seattle, WA",
+    description: "Long description",
+    detailed_description:
+      "Construct extensive alterations and substantial tenant improvements to convert existing commercial retail space into a mixed-use office and light-industrial fabrication facility with full mechanical, electrical, and plumbing upgrades throughout the entire five story structure, subject to field inspection, per plan.",
+    contractor_name: "A Very Long General Contracting And Construction Management Company LLC",
+    contractor_slug: "a-very-long-gc",
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  const descriptionMatch = html.match(/<meta name="description" content="([^"]*)">/);
+  assert.ok(descriptionMatch);
+  const metaDescription = descriptionMatch[1];
+  assert.ok(metaDescription.length <= 165, `expected <=165 chars, got ${metaDescription.length}`);
+  // The permit number, status, and full contractor name must survive truncation
+  // intact — only the leading work/address snippet may be shortened.
+  assert.match(metaDescription, /Permit PERM123 \(active\)\./);
+  assert.match(metaDescription, /Contractor: A Very Long General Contracting And Construction Management Company LLC\.$/);
+
+  // The above-the-fold summary paragraph stays bounded instead of reproducing
+  // the entire long scraped description verbatim.
+  const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.ok(summaryMatch);
+  const summaryText = summaryMatch[1].replace(/<[^>]+>/g, "");
+  assert.ok(summaryText.length < 500, `expected a bounded summary, got ${summaryText.length} chars`);
+});
+
 test("POST /ingest/permit/batch rejects payloads without an items array", async () => {
   const response = await worker.fetch(
     new Request("http://example.com/ingest/permit/batch", {
