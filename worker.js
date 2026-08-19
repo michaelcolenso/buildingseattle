@@ -46,8 +46,93 @@ const SECURITY_HEADERS = {
   ].join("; "),
 };
 
+// --- Template-wide HTML edge caching --------------------------------------
+// Worker responses bypass Cloudflare's edge cache unless a Cache Rule exists.
+// While the owner's dashboard Cache Rule (drafted 2026-08-16) is not yet live,
+// this layer serves warm public HTML pages straight from the edge cache,
+// skipping Worker execution and D1 lookups entirely — the dominant LCP cost on
+// mobile (cold Worker start + D1 query + 900KB script transfer per hit).
+// Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
+// template change so stale entries are bypassed.
+const HTML_CACHE_VERSION = "v1";
+const HTML_CACHE_EXCLUDED_PREFIXES = [
+  "/api/", "/admin", "/ingest/", "/leads", "/alerts",
+  "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
+  "/robots.txt", "/sitemap", "/favicon", "/og-image", "/site.webmanifest",
+  "/409508639a064e738971e5aa92be599e.txt",
+];
+
+// Public GET HTML pages are edge-cacheable; API/admin/ingest/auth/asset paths
+// are not (they are dynamic, credentialed, or binary).
+export function isHtmlCacheablePath(path) {
+  return !HTML_CACHE_EXCLUDED_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
+// TTL for a cached HTML copy: honor the page's own max-age (permit/address
+// pages say 3600, insight pages 300), clamped to [60, 86400] seconds.
+export function htmlCacheTtl(response) {
+  const cc = response?.headers?.get("Cache-Control") || "";
+  const match = cc.match(/max-age=(\d+)/);
+  const ttl = match ? Number(match[1]) : 3600;
+  return Math.max(60, Math.min(Number.isFinite(ttl) ? ttl : 3600, 86400));
+}
+
+function edgeHtmlCache() {
+  return typeof caches !== "undefined" && caches.default ? caches.default : null;
+}
+
+// Wraps the route handler: serve warm pages from the edge cache, and store
+// freshly rendered 200 text/html pages back into it. Content-negotiated
+// markdown responses and non-GET requests are never cached. The version is
+// encoded as a query param on the cache key (the Cache API matches on the
+// full URL) so template changes can invalidate by bumping HTML_CACHE_VERSION.
+async function withHtmlEdgeCache(request, env, ctx, render) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const cacheable =
+    request.method === "GET" && isHtmlCacheablePath(path) && !wantsMarkdown(request);
+  const cache = cacheable ? edgeHtmlCache() : null;
+  const key = cache
+    ? (() => {
+        const keyUrl = new URL(url.toString());
+        keyUrl.searchParams.set("__bsv", HTML_CACHE_VERSION);
+        return new Request(keyUrl.toString(), { method: "GET" });
+      })()
+    : null;
+
+  if (cache && key) {
+    const hit = await cache.match(key);
+    if (hit) {
+      ctx?.waitUntil?.(logPageView(request, env, path));
+      return hit;
+    }
+  }
+
+  const response = await render();
+
+  if (cache && key && response?.status === 200) {
+    const contentType = response.headers.get("Content-Type") || "";
+    if (contentType.includes("text/html")) {
+      const ttl = htmlCacheTtl(response);
+      const headers = new Headers(response.headers);
+      // Advertise edge-cache eligibility (s-maxage) so the owner's dashboard
+      // Cache Rule, once deployed, honors the same TTL; also store the copy.
+      headers.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
+      const upgraded = new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+      ctx?.waitUntil?.(cache.put(key, upgraded.clone()));
+      return upgraded;
+    }
+  }
+  return response;
+}
+
 export default {
   async fetch(request, env, ctx) {
+    return withHtmlEdgeCache(request, env, ctx, async () => {
     const url = new URL(request.url);
     const path = url.pathname;
     const secure = (response) => withSecurityHeaders(response);
@@ -442,6 +527,7 @@ export default {
         ),
       );
     }
+    });
   },
 
   async scheduled(event, env, ctx) {
@@ -739,6 +825,7 @@ function renderDesignTokens() {
         --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
         --shadow-md: 0 14px 45px rgba(15,23,42,0.06);
         --shadow-lg: 0 22px 60px rgba(15,23,42,0.14);
+        --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
         --container-max: 1200px;
       }
       .global-nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 50; }
@@ -2948,16 +3035,6 @@ async function renderPermitDetail(permitNumber, env, request) {
     ${renderDesignTokens()}
     <style>
         :root {
-            --primary: #0f172a;
-            --accent: #3b82f6;
-            --accent-hover: #2563eb;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --bg: #ffffff;
-            --bg-alt: #f8fafc;
-            --text: #1e293b;
-            --text-muted: #64748b;
-            --border: #e2e8f0;
             --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
             --shadow-lg: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
         }
@@ -4931,33 +5008,75 @@ async function getPipelineData(env) {
     "applied_date IS NOT NULL AND applied_date != '' AND issued_date IS NOT NULL AND issued_date != '' AND julianday(issued_date) >= julianday(applied_date)";
   const completedFunnel =
     "issued_date IS NOT NULL AND issued_date != '' AND completed_date IS NOT NULL AND completed_date != '' AND julianday(completed_date) >= julianday(issued_date)";
+  const aduWhere = "adu_type IN ('ADU', 'DADU')";
 
-  const [stageRow, appliedToIssued, issuedToCompleted, byTypeTiming] = await Promise.all([
-    safeFirst(
-      env,
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN applied_date IS NOT NULL AND applied_date != '' THEN 1 ELSE 0 END) AS applied,
-              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
-              SUM(CASE WHEN completed_date IS NOT NULL AND completed_date != '' THEN 1 ELSE 0 END) AS completed
-       FROM permits`,
-    ),
-    safeAll(
-      env,
-      `SELECT CAST(julianday(issued_date) - julianday(applied_date) AS REAL) AS d
-       FROM permits WHERE ${issuedFunnel}`,
-    ),
-    safeAll(
-      env,
-      `SELECT CAST(julianday(completed_date) - julianday(issued_date) AS REAL) AS d
-       FROM permits WHERE ${completedFunnel}`,
-    ),
-    safeAll(
-      env,
-      `SELECT COALESCE(NULLIF(type,''),'unknown') AS label, COUNT(*) AS cnt,
-              AVG(julianday(issued_date) - julianday(applied_date)) AS avg_days
-       FROM permits WHERE ${issuedFunnel} GROUP BY label ORDER BY cnt DESC LIMIT 8`,
-    ),
-  ]);
+  const [stageRow, appliedToIssued, issuedToCompleted, byTypeTiming, aduStage, aduDays, aduCompletedDays, aduByYear, aduRecent] =
+    await Promise.all([
+      safeFirst(
+        env,
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN applied_date IS NOT NULL AND applied_date != '' THEN 1 ELSE 0 END) AS applied,
+                SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
+                SUM(CASE WHEN completed_date IS NOT NULL AND completed_date != '' THEN 1 ELSE 0 END) AS completed
+         FROM permits`,
+      ),
+      safeAll(
+        env,
+        `SELECT CAST(julianday(issued_date) - julianday(applied_date) AS REAL) AS d
+         FROM permits WHERE ${issuedFunnel}`,
+      ),
+      safeAll(
+        env,
+        `SELECT CAST(julianday(completed_date) - julianday(issued_date) AS REAL) AS d
+         FROM permits WHERE ${completedFunnel}`,
+      ),
+      safeAll(
+        env,
+        `SELECT COALESCE(NULLIF(type,''),'unknown') AS label, COUNT(*) AS cnt,
+                AVG(julianday(issued_date) - julianday(applied_date)) AS avg_days
+         FROM permits WHERE ${issuedFunnel} GROUP BY label ORDER BY cnt DESC LIMIT 8`,
+      ),
+      safeAll(
+        env,
+        `/* pipeline:adu-stage */
+         SELECT adu_type,
+                COUNT(*) AS cnt,
+                SUM(CASE WHEN applied_date IS NOT NULL AND applied_date != '' THEN 1 ELSE 0 END) AS applied,
+                SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
+                SUM(CASE WHEN completed_date IS NOT NULL AND completed_date != '' THEN 1 ELSE 0 END) AS completed
+         FROM permits WHERE ${aduWhere} GROUP BY adu_type`,
+      ),
+      safeAll(
+        env,
+        `/* pipeline:adu-days */
+         SELECT adu_type, CAST(julianday(issued_date) - julianday(applied_date) AS REAL) AS d
+         FROM permits WHERE ${aduWhere} AND ${issuedFunnel}`,
+      ),
+      safeAll(
+        env,
+        `/* pipeline:adu-completed-days */
+         SELECT adu_type, CAST(julianday(completed_date) - julianday(issued_date) AS REAL) AS d
+         FROM permits WHERE ${aduWhere} AND ${completedFunnel}`,
+      ),
+      safeAll(
+        env,
+        `/* pipeline:adu-by-year */
+         SELECT adu_type, substr(COALESCE(NULLIF(issued_date,''),applied_date),1,4) AS yr,
+                COUNT(*) AS cnt,
+                ROUND(AVG(julianday(issued_date) - julianday(applied_date)), 0) AS avg_days
+         FROM permits WHERE ${aduWhere} AND ${issuedFunnel}
+         GROUP BY adu_type, yr ORDER BY yr ASC`,
+      ),
+      safeAll(
+        env,
+        `/* pipeline:adu-recent */
+         SELECT p.permit_number, p.address, p.adu_type, a.slug AS address_slug, a.display_address
+         FROM permits p LEFT JOIN addresses a ON a.id = p.address_id
+         WHERE p.adu_type IN ('ADU', 'DADU') AND a.slug IS NOT NULL AND a.slug != ''
+         ORDER BY COALESCE(p.issued_date, p.applied_date, p.created_at) DESC
+         LIMIT 8`,
+      ),
+    ]);
 
   const total = Number(stageRow?.total) || 0;
   const applied = Number(stageRow?.applied) || 0;
@@ -4975,6 +5094,55 @@ async function getPipelineData(env) {
       count: Number(r.cnt) || 0,
       avg_days: Math.round(Number(r.avg_days) || 0),
     })),
+    adu_timeline: summarizeAduTimeline({
+      stageRows: aduStage,
+      dayRows: aduDays,
+      completedDayRows: aduCompletedDays,
+      byYearRows: aduByYear,
+      recentRows: aduRecent,
+    }),
+  };
+}
+
+// Aggregates ADU/DADU pipeline-stage counts and application→issuance /
+// issuance→completion durations (pure; safe to unit-test).
+export function summarizeAduTimeline({ stageRows = [], dayRows = [], completedDayRows = [], byYearRows = [], recentRows = [] } = {}) {
+  const bucket = (type) => {
+    const stage = stageRows.find((r) => r.adu_type === type) || {};
+    const days = dayRows.filter((r) => r.adu_type === type).map((r) => r.d);
+    const completedDays = completedDayRows.filter((r) => r.adu_type === type).map((r) => r.d);
+    const applied = Number(stage.applied) || 0;
+    const issued = Number(stage.issued) || 0;
+    const completedCount = Number(stage.completed) || 0;
+    return {
+      count: Number(stage.cnt) || 0,
+      applied,
+      issued,
+      completed: completedCount,
+      issue_rate: applied ? Math.min(100, Math.round((issued / applied) * 100)) : 0,
+      completion_rate: issued ? Math.min(100, Math.round((completedCount / issued) * 100)) : 0,
+      applied_to_issued: summarizeDays(days),
+      issued_to_completed: summarizeDays(completedDays),
+    };
+  };
+  return {
+    ADU: bucket("ADU"),
+    DADU: bucket("DADU"),
+    by_year: byYearRows
+      .filter((r) => r.yr)
+      .map((r) => ({
+        adu_type: r.adu_type,
+        year: String(r.yr),
+        count: Number(r.cnt) || 0,
+        avg_days: Math.round(Number(r.avg_days) || 0),
+      })),
+    recent: recentRows.map((r) => ({
+      permit_number: r.permit_number,
+      address: r.address || null,
+      adu_type: r.adu_type || null,
+      address_slug: r.address_slug || null,
+      display_address: r.display_address || null,
+    })),
   };
 }
 
@@ -4990,17 +5158,70 @@ async function renderPipelinePage(env) {
   const [data, freshness] = await Promise.all([getPipelineData(env), getDataFreshness(env)]);
   const st = data.stages;
   const hasData = st.applied > 0 || st.issued > 0;
+  const adu = data.adu_timeline || { ADU: null, DADU: null, by_year: [], recent: [] };
+  const aduHasData = (adu.ADU?.issued || 0) > 0 || (adu.DADU?.issued || 0) > 0;
 
-  const title = "Seattle Permit Pipeline — From Application to Completion";
+  const title = "Seattle ADU Permit Timeline: How Long It Takes, Step by Step";
   const description =
-    "How Seattle building permits move from application to issuance to completion: stage counts, conversion rates, and the median days spent at each step.";
+    "How long does an ADU or DADU permit take in Seattle? Median days from application to issuance by permit type and year, with each step explained using real SDCI permit records.";
+
+  // Data-grounded FAQ: numbers are only quoted when the tracker actually has
+  // issued ADU/DADU permits with dated records. If the dataset is empty the
+  // page is noindex and no FAQ is emitted, so no fabricated claims can ship.
+  const faqQuestions = [];
+  if (aduHasData) {
+    const aduMed = adu.ADU?.applied_to_issued?.median;
+    const daduMed = adu.DADU?.applied_to_issued?.median;
+    if (Number.isFinite(aduMed) && Number.isFinite(daduMed)) {
+      faqQuestions.push({
+        name: "How long does an ADU permit take in Seattle?",
+        acceptedAnswer: `Across ${adu.ADU.applied_to_issued.count.toLocaleString()} issued ADU permits tracked by Building Seattle, the median time from application to issuance is ${aduMed} days.`,
+      });
+      faqQuestions.push({
+        name: "How long does a DADU (backyard cottage) permit take in Seattle?",
+        acceptedAnswer: `Across ${adu.DADU.applied_to_issued.count.toLocaleString()} issued DADU permits tracked by Building Seattle, the median time from application to issuance is ${daduMed} days.`,
+      });
+    }
+    faqQuestions.push({
+      name: "Does the ADU permit timeline include permits still in review?",
+      acceptedAnswer:
+        "No. Timeline medians are computed only from permits with both application and issuance dates, so permits still in review are counted in stage totals but excluded from duration statistics.",
+    });
+  }
+
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
-    "@type": "Dataset",
-    name: "Seattle Permit Pipeline",
-    description,
-    url: canonical,
-    creator: { "@type": "Organization", name: "Building Seattle" },
+    "@graph": [
+      {
+        "@type": "Dataset",
+        name: title,
+        description,
+        url: canonical,
+        creator: { "@type": "Organization", name: "Building Seattle" },
+        spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
+        ...(freshness?.updated_through ? { dateModified: dateOrNull(freshness.updated_through) || undefined } : {}),
+      },
+      ...(faqQuestions.length
+        ? [
+            {
+              "@type": "FAQPage",
+              mainEntity: faqQuestions.map((q) => ({
+                "@type": "Question",
+                name: q.name,
+                acceptedAnswer: { "@type": "Answer", text: q.acceptedAnswer },
+              })),
+            },
+          ]
+        : []),
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Insights", item: `${BASE_URL}/insights` },
+          { "@type": "ListItem", position: 3, name: "ADU permit timeline", item: canonical },
+        ],
+      },
+    ],
   }).replace(/</g, "\\u003c");
 
   const funnelRows = [
@@ -5026,6 +5247,85 @@ async function renderPipelinePage(env) {
     sub: `${t.count.toLocaleString()} permits`,
   }));
 
+  // --- ADU / DADU timeline section (the rising "adu permit timeline seattle"
+  // --- query): median durations by dwelling type plus a by-year breakdown.
+  const aduRows = aduHasData
+    ? [
+        {
+          label: "ADU (attached)",
+          value: adu.ADU.applied_to_issued.median,
+          display: `${adu.ADU.applied_to_issued.median} days`,
+          sub: `${adu.ADU.applied_to_issued.count.toLocaleString()} issued permits`,
+        },
+        {
+          label: "DADU (detached)",
+          value: adu.DADU.applied_to_issued.median,
+          display: `${adu.DADU.applied_to_issued.median} days`,
+          sub: `${adu.DADU.applied_to_issued.count.toLocaleString()} issued permits`,
+        },
+      ]
+    : [];
+  const aduYearRows = adu.by_year
+    .filter((r) => r.adu_type === "ADU" || r.adu_type === "DADU")
+    .sort((a, b) => String(a.year).localeCompare(String(b.year)))
+    .map(
+      (r) => `<tr>
+        <td>${escapeHtml(r.year)}</td>
+        <td>${r.adu_type === "ADU" ? "ADU" : "DADU"}</td>
+        <td>${r.count.toLocaleString()}</td>
+        <td>${r.avg_days} days</td>
+      </tr>`,
+    )
+    .join("");
+  const aduRecentLinks = adu.recent
+    .map(
+      (r) => `<li>
+        <a class="ent-link" href="/permits/${encodeURIComponent(r.permit_number)}">${escapeHtml(r.permit_number)}</a>
+        <span class="pill" style="margin-left:0.4rem;">${escapeHtml(r.adu_type || "ADU")}</span>
+        ${r.address_slug ? ` <a class="ent-link" href="/address/${encodeURIComponent(r.address_slug)}">${escapeHtml(r.display_address || r.address)}</a>` : ""}
+      </li>`,
+    )
+    .join("");
+
+  const aduSection = aduHasData
+    ? `
+    <div class="card">
+      <h2>ADU vs. DADU: how long to issuance</h2>
+      <div class="stat-row">
+        ${entStat("ADU median to issue", `${adu.ADU.applied_to_issued.median} days`)}
+        ${entStat("DADU median to issue", `${adu.DADU.applied_to_issued.median} days`)}
+        ${entStat("ADU permits issued", adu.ADU.issued.toLocaleString())}
+        ${entStat("DADU permits issued", adu.DADU.issued.toLocaleString())}
+      </div>
+      ${prBarChart(aduRows, "var(--success)")}
+      <p class="pr-note">Median application-to-issuance time across ${adu.ADU.applied_to_issued.count.toLocaleString()} issued ADU and ${adu.DADU.applied_to_issued.count.toLocaleString()} issued DADU permits. Averages run higher: ${adu.ADU.applied_to_issued.mean} days (ADU) and ${adu.DADU.applied_to_issued.mean} days (DADU).</p>
+    </div>
+    <div class="card">
+      <h2>How long each step takes</h2>
+      <ol style="margin:0;padding-left:1.25rem;line-height:1.8;">
+        <li><strong>Application</strong> — the permit is filed with the Seattle Department of Construction and Inspections. ${adu.ADU.applied.toLocaleString()} ADU and ${adu.DADU.applied.toLocaleString()} DADU permits in this dataset have an application date.</li>
+        <li><strong>Review</strong> — plans go through SDCI review, including applicant correction cycles where published. ${adu.ADU.issue_rate}% of applied ADU permits and ${adu.DADU.issue_rate}% of applied DADU permits reach issuance.</li>
+        <li><strong>Issuance</strong> — the permit is issued. Median ${adu.ADU.applied_to_issued.median} days after application for ADUs and ${adu.DADU.applied_to_issued.median} days for DADUs.</li>
+        <li><strong>Completion</strong> — construction finishes and the permit is marked complete. ${adu.ADU.completion_rate}% of issued ADU permits and ${adu.DADU.completion_rate}% of issued DADU permits are marked complete, with a median of ${adu.ADU.issued_to_completed.median} days (ADU) and ${adu.DADU.issued_to_completed.median} days (DADU) from issuance.</li>
+      </ol>
+    </div>
+    ${aduYearRows ? `<div class="card">
+      <h2>Average application → issuance time by year</h2>
+      <div style="overflow-x:auto;">
+        <table class="ent">
+          <thead><tr><th>Year</th><th>Type</th><th>Issued permits</th><th>Average days</th></tr></thead>
+          <tbody>${aduYearRows}</tbody>
+        </table>
+      </div>
+      <p class="pr-note">Grouped by issue date; partial years reflect records ingested so far. Years with a handful of dated permits are noisier than recent full years.</p>
+    </div>` : ""}
+    ${aduRecentLinks ? `<div class="card">
+      <h2>Recent ADU and DADU permits</h2>
+      <ul class="ent-list">${aduRecentLinks}</ul>
+    </div>` : ""}
+    `
+    : "";
+
   const emptyState = `
     <div class="card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No pipeline data yet</h2>
@@ -5033,14 +5333,15 @@ async function renderPipelinePage(env) {
     </div>`;
 
   const body = `
-    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Permit Pipeline" }])}
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "ADU Permit Timeline" }])}
     ${insightsStyles()}
     ${insightsTabs("pipeline")}
     <div class="ent-hero">
-      <div class="ent-kicker">Insights</div>
-      <h1>The Seattle permit pipeline</h1>
-      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Every permit travels from application to issuance to completion. Here's how many make it to each stage and how long the journey takes.</p>
+      <div class="ent-kicker">ADU &amp; DADU permit timeline</div>
+      <h1>How long does an ADU permit take in Seattle?</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">ADU and DADU permits travel from application to review to issuance to completion. Using public Seattle DCI records, here's how long each step actually takes — by permit type and by year.</p>
     </div>
+    ${aduSection}
     ${
       hasData
         ? `
@@ -5054,7 +5355,7 @@ async function renderPipelinePage(env) {
       </div>
     </div>
     <div class="card">
-      <h2>Pipeline funnel</h2>
+      <h2>Pipeline funnel (all permits)</h2>
       ${prBarChart(funnelRows)}
       <p class="pr-note">${data.issue_rate}% of applied permits reach issuance${
         data.completion_rate ? `, and ${data.completion_rate}% of issued permits are marked complete` : ""
@@ -6517,9 +6818,9 @@ async function renderInsightsIndex(env) {
       )}
       ${feature(
         "/insights/pipeline",
-        "Flow",
-        "The permit pipeline",
-        "Application → issuance → completion: how many permits reach each stage and how long it takes.",
+        "ADU timeline",
+        "ADU permit timeline",
+        "How long ADU and DADU permits take from application to issuance to completion, plus the full Seattle permit pipeline.",
         pipeTotal ? `${pipeIssued.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">issued of ${pipeTotal.toLocaleString()}</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
       ${feature(
