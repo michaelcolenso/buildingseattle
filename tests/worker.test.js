@@ -691,6 +691,32 @@ test("GET /permits renders a public permit browser instead of returning 404", as
   assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits">/);
 });
 
+test("GET /permits falls back to legacy search columns when graph columns are missing", async () => {
+  const env = createEnv();
+  const queries = [];
+  const originalPrepare = env.DB.prepare;
+  env.DB.prepare = (query) => {
+    queries.push(query);
+    if (query.includes("detailed_description")) {
+      throw new Error("no such column: p.detailed_description");
+    }
+    return originalPrepare(query);
+  };
+
+  const response = await worker.fetch(new Request("http://example.com/permits?q=Tower"), env, createCtx());
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /\/permits\/PERM123/);
+  assert.match(html, /407 Stewart St, Seattle, WA/);
+
+  const permitQueries = queries.filter((query) => query.includes("FROM permits p"));
+  assert.equal(permitQueries.length, 3);
+  assert.match(permitQueries[0], /detailed_description/);
+  assert.doesNotMatch(permitQueries[1], /detailed_description|JOIN addresses/);
+  assert.doesNotMatch(permitQueries[2], /detailed_description|JOIN addresses/);
+});
+
 test("GET /admin rejects public requests before reading dashboard data", async () => {
   const response = await worker.fetch(new Request("http://example.com/admin"), createEnv(), createCtx());
 
@@ -2456,4 +2482,126 @@ test("renderPermitTimeline omits optional milestones when their dates are absent
   });
   assert.doesNotMatch(html, /Reviews Done|Ready to Issue/);
   assert.doesNotMatch(html, /null|NaN|undefined/);
+});
+
+test("permit and address pages promote source-backed project descriptors and entity links", async () => {
+  const pilotPermit = {
+    id: 7120268,
+    permit_number: "7120268-CN",
+    address: "760 ALOHA ST, SEATTLE, WA",
+    address_display: "760 Aloha St, Seattle, WA",
+    address_slug: "760-aloha-st",
+    project_name: "Tenant improvement at 760 Aloha St",
+    project_slug: "tenant-improvement-at-760-aloha-st",
+    neighborhood: "South Lake Union",
+    type: "commercial",
+    value: 760000,
+    status: "active",
+    description: "Tenant improvement for offices (MangoApps) on 5th floor of existing commercial building  per plan.",
+    detailed_description: "MangoApps Tenant improvement for offices (MangoApps) on 5th floor of existing commercial building, per plan.",
+    applied_date: "2026-02-18",
+    issued_date: "2026-04-07",
+    contractor_name: "D P INC GENERAL CONTRACTORS",
+    contractor_slug: "d-p-inc-general-contractors",
+  };
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async all() {
+            if (sql.includes("WHERE p.permit_number = ?")) return { results: [pilotPermit] };
+            if (sql.includes("FROM permits p LEFT JOIN contractors")) return { results: [pilotPermit] };
+            return { results: [] };
+          },
+          async first() {
+            if (sql.includes("FROM addresses WHERE slug")) {
+              return { id: 1, slug: "760-aloha-st", display_address: "760 Aloha St, Seattle, WA", city: "Seattle", state: "WA" };
+            }
+            if (sql.includes("SELECT COUNT(*) as total")) return { total: 1 };
+            return null;
+          },
+        };
+      },
+    },
+  };
+
+  const permitResponse = await worker.fetch(new Request("http://example.com/permits/7120268-CN"), env, createCtx());
+  const permitHtml = await permitResponse.text();
+  assert.equal(permitResponse.status, 200);
+  assert.match(permitHtml, /<title>760 ALOHA ST, Seattle — MangoApps Tenant improvement for offices \| Building Seattle<\/title>/);
+  assert.doesNotMatch(permitHtml, /<title>[^<]*MangoApps Tenant improvement for offices \(MangoApps\)/);
+  assert.match(permitHtml, /<meta name="description" content="[^>]*MangoApps[^>]*760 ALOHA ST/);
+  assert.match(permitHtml, /<h1 class="permit-title">760 ALOHA ST, SEATTLE, WA<\/h1>[\s\S]*MangoApps/);
+  assert.match(permitHtml, /href="\/address\/760-aloha-st"/);
+  assert.match(permitHtml, /href="\/contractor\/d-p-inc-general-contractors"/);
+  assert.match(permitHtml, /href="\/project\/tenant-improvement-at-760-aloha-st"/);
+  assert.match(permitHtml, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits\/7120268-CN">/);
+
+  const browserResponse = await worker.fetch(new Request("http://example.com/permits?q=MangoApps"), env, createCtx());
+  const browserHtml = await browserResponse.text();
+  assert.equal(browserResponse.status, 200);
+  assert.match(browserHtml, /MangoApps Tenant improvement/);
+  assert.match(browserHtml, /href="\/address\/760-aloha-st"[^>]*>Property history/);
+
+  const addressResponse = await worker.fetch(new Request("http://example.com/address/760-aloha-st"), env, createCtx());
+  const addressHtml = await addressResponse.text();
+  assert.equal(addressResponse.status, 200);
+  assert.match(addressHtml, /<title>760 Aloha St, Seattle, WA — MangoApps Tenant improvement/);
+  assert.match(addressHtml, /<meta name="description" content="[^>]*MangoApps/);
+  assert.match(addressHtml, /<h1>760 Aloha St, Seattle, WA<\/h1>[\s\S]*MangoApps/);
+  assert.match(addressHtml, /href="\/permits\/7120268-CN"/);
+  assert.doesNotMatch(addressHtml, /undefined|null|NaN/);
+});
+
+test("permit and address pages use safe, useful fallbacks for sparse records", async () => {
+  const sparsePermit = {
+    permit_number: "SPARSE-1",
+    address: null,
+    neighborhood: null,
+    type: null,
+    value: null,
+    status: null,
+    description: null,
+    detailed_description: null,
+    applied_date: null,
+    issued_date: null,
+    contractor_name: null,
+    contractor_slug: null,
+  };
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async all() {
+            if (sql.includes("WHERE p.permit_number = ?")) return { results: [sparsePermit] };
+            if (sql.includes("FROM permits p LEFT JOIN contractors")) return { results: [sparsePermit] };
+            return { results: [] };
+          },
+          async first() {
+            if (sql.includes("FROM addresses WHERE slug")) {
+              return { id: 2, slug: "sparse-address", display_address: "12 Example St, Seattle, WA", city: "Seattle", state: "WA" };
+            }
+            return null;
+          },
+        };
+      },
+    },
+  };
+
+  const permitResponse = await worker.fetch(new Request("http://example.com/permits/SPARSE-1"), env, createCtx());
+  const permitHtml = await permitResponse.text();
+  assert.equal(permitResponse.status, 200);
+  assert.match(permitHtml, /<h1 class="permit-title">Seattle<\/h1>/);
+  assert.match(permitHtml, /<title>Seattle — General Construction \(Unknown\) \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<meta name="description" content="[^>]*Permit SPARSE-1/);
+  assert.doesNotMatch(permitHtml, /undefined|null|NaN/);
+
+  const addressResponse = await worker.fetch(new Request("http://example.com/address/sparse-address"), env, createCtx());
+  const addressHtml = await addressResponse.text();
+  assert.equal(addressResponse.status, 200);
+  assert.match(addressHtml, /<h1>12 Example St, Seattle, WA<\/h1>/);
+  assert.match(addressHtml, /<meta name="description" content="[^>]*12 Example St/);
+  assert.doesNotMatch(addressHtml, /undefined|null|NaN/);
 });

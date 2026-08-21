@@ -590,6 +590,59 @@ function truncateMetaDescription(value, maxLength = 165) {
   return shortened.replace(/[,:;.!?\s]+$/, "") + "…";
 }
 
+const PERMIT_TYPE_LABELS = {
+  commercial: "Commercial Construction",
+  residential: "Residential Construction",
+  industrial: "Industrial Construction",
+  demolition: "Demolition",
+  other: "General Construction",
+  new: "New Construction",
+  alteration: "Alteration/Repair",
+  repair: "Repair",
+};
+
+function permitTypeLabel(type) {
+  const value = cleanFeedText(type);
+  if (!value) return "General Construction";
+  return PERMIT_TYPE_LABELS[value.toLowerCase()] || `${value.charAt(0).toUpperCase()}${value.slice(1).toLowerCase()}`;
+}
+
+function permitDescriptionText(permit) {
+  return cleanFeedText(permit?.detailed_description) || cleanFeedText(permit?.description) || "";
+}
+
+// Keep the source's most useful project/tenant phrase near the start of SERP
+// titles and first-screen summaries without inventing a project name.
+function permitSearchDescriptor(permit) {
+  const text = permitDescriptionText(permit);
+  if (!text) return "";
+  const clause = text.split(/\s+(?:on|per|subject to)\s+/i)[0].trim();
+  let descriptor = truncateMetaDescription(clause || text, 84).replace(/[,:;.!?\s]+$/, "");
+  const trailingParenthetical = descriptor.match(/\s+\(([^()]{2,60})\)$/);
+  if (trailingParenthetical) {
+    const repeatedName = trailingParenthetical[1].trim();
+    const withoutParenthetical = descriptor.slice(0, trailingParenthetical.index).trim();
+    if (
+      withoutParenthetical.localeCompare(repeatedName, undefined, { sensitivity: "accent" }) === 0 ||
+      withoutParenthetical.toLocaleLowerCase().startsWith(`${repeatedName.toLocaleLowerCase()} `)
+    ) {
+      descriptor = withoutParenthetical;
+    }
+  }
+  return descriptor;
+}
+
+function isGenericPermitDescriptor(value) {
+  return /^(allow|construct|demolish|install|alter|change|repair|remove|establish|replace|permit)\b/i.test(value || "");
+}
+
+function featuredAddressPermit(permits) {
+  const rows = (permits || [])
+    .map((permit) => ({ permit, descriptor: permitSearchDescriptor(permit) }))
+    .filter(({ descriptor }) => descriptor);
+  return rows.find(({ descriptor }) => !isGenericPermitDescriptor(descriptor)) || rows[0] || null;
+}
+
 function safeHttpUrl(value) {
   try {
     const url = new URL(String(value || ""));
@@ -2239,28 +2292,49 @@ async function renderPermitBrowser(request, env) {
     where += " AND p.status = ?";
     params.push(status);
   }
+
+  let primaryWhere = where;
+  let fallbackWhere = where;
+  let primaryParams = params;
+  let fallbackParams = params;
   if (q) {
     const like = "%" + q + "%";
-    where +=
+    primaryWhere +=
+      " AND (p.address LIKE ? OR p.description LIKE ? OR p.detailed_description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
+    primaryParams = [...params, like, like, like, like, like, like];
+    fallbackWhere +=
       " AND (p.address LIKE ? OR p.description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
-    params.push(like, like, like, like, like);
+    fallbackParams = [...params, like, like, like, like, like];
   }
 
-  const listQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
-  const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where}`;
+  const listQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty, a.slug as address_slug, a.display_address as address_display FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id LEFT JOIN addresses a ON a.id = p.address_id ${primaryWhere} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
+  const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id LEFT JOIN addresses a ON a.id = p.address_id ${primaryWhere}`;
+
+  let permitResult;
+  let totalResult;
+  try {
+    [permitResult, totalResult] = await Promise.all([
+      env.DB.prepare(listQuery).bind(...primaryParams).all(),
+      env.DB.prepare(countQuery).bind(...primaryParams).first(),
+    ]);
+  } catch {
+    // Entity-graph columns are added by a separate migration. Keep the public
+    // permit browser available while that migration is being rolled out.
+    const fallbackListQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${fallbackWhere} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
+    const fallbackCountQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${fallbackWhere}`;
+    [permitResult, totalResult] = await Promise.all([
+      env.DB.prepare(fallbackListQuery).bind(...fallbackParams).all(),
+      env.DB.prepare(fallbackCountQuery).bind(...fallbackParams).first(),
+    ]);
+  }
 
   const [
-    { results: permits },
     { results: neighborhoods },
     { results: types },
     { results: statuses },
-    { total: totalRaw },
     lastRun,
     recentStatusChanges,
   ] = await Promise.all([
-    env.DB.prepare(listQuery)
-      .bind(...params)
-      .all(),
     env.DB.prepare(
       `SELECT DISTINCT neighborhood FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != '' ORDER BY neighborhood ASC`,
     ).all(),
@@ -2268,12 +2342,11 @@ async function renderPermitBrowser(request, env) {
     env.DB.prepare(
       `SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`,
     ).all(),
-    env.DB.prepare(countQuery)
-      .bind(...params)
-      .first(),
     env.DB.prepare(`SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`).first(),
     getRecentStatusChanges(env, 8),
   ]);
+  const permits = permitResult?.results || [];
+  const totalRaw = totalResult?.total || 0;
   const total = totalRaw || 0;
   const totalPages = Math.ceil(total / perPage);
   const lastUpdated = lastRun?.end_time ? timeAgo(new Date(lastRun.end_time)) : "Recently";
@@ -2324,17 +2397,21 @@ async function renderPermitBrowser(request, env) {
       const contractor = permit.contractor_slug
         ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name || "View contractor")}</a>`
         : `<span style="color:var(--text-muted);">Contractor not linked yet</span>`;
-      const address = escapeHtml(permit.address || "Unknown address");
-      const permitNumber = escapeHtml(permit.permit_number);
+      const address = escapeHtml(permit.address_display || permit.address || "Unknown address");
+      const addressLink = permit.address_slug
+        ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-size:0.78rem;font-weight:650;">Property history &rarr;</a>`
+        : "";
+      const permitNumber = escapeHtml(permit.permit_number || "Unknown permit");
       const neighborhoodLabel = escapeHtml(permit.neighborhood || "Seattle");
-      const typeLabel = escapeHtml(permit.type || "General");
+      const typeLabel = escapeHtml(permitTypeLabel(permit.type));
       const statusLabel = escapeHtml(permit.status || "new");
-      const description = escapeHtml(permit.description || "No project description available yet.");
+      const description = escapeHtml(permitSearchDescriptor(permit) || "No project description available yet.");
 
       return `<article class="permit-card">
         <div class="permit-card-top">
           <div>
-            <div class="permit-address"><a href="/permits/${encodeURIComponent(permit.permit_number)}">${address}</a></div>
+            <div class="permit-address"><a href="/permits/${encodeURIComponent(permit.permit_number || "")}">${address}</a></div>
+            ${addressLink}
             <div class="permit-meta">${neighborhoodLabel} &bull; ${typeLabel} &bull; ${issued}</div>
           </div>
           <span class="status-pill">${statusLabel}</span>
@@ -2757,17 +2834,9 @@ async function renderPermitDetail(permitNumber, env, request) {
     }
   }
 
-  // Format permit type
-  const typeMap = {
-    commercial: "Commercial Construction",
-    residential: "Residential Construction",
-    industrial: "Industrial Construction",
-    demolition: "Demolition",
-    other: "General Construction",
-    new: "New Construction",
-    alteration: "Alteration/Repair",
-    repair: "Repair",
-  };
+  // Format permit type and promote the source description into the page's
+  // search result title and first-screen context.
+  const permitType = permitTypeLabel(permit.type);
   const issuedDate = permit.issued_date
     ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
     : "N/A";
@@ -2856,13 +2925,13 @@ async function renderPermitDetail(permitNumber, env, request) {
   const primaryLeadLabel = "Email Me Permit Updates";
   const timelineCard = renderPermitTimeline(permit);
 
-  const permitType =
-    typeMap[(permit.type || "").toLowerCase()] ||
-    (permit.type ? permit.type.charAt(0).toUpperCase() + permit.type.slice(1).toLowerCase() : "General Construction");
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
-  const safePermitNumber = escapeHtml(permit.permit_number);
-  const serializedPermitNumber = JSON.stringify(String(permit.permit_number)).replace(/</g, "\\u003c");
-  const safeAddress = escapeHtml(permit.address || "Unknown Address");
+  const permitDescriptor = permitSearchDescriptor(permit);
+  const addressLabel = cleanFeedText(permit.address) || "Seattle";
+  const permitAddressLabel = entStreet(addressLabel) || "Seattle";
+  const safePermitNumber = escapeHtml(permit.permit_number || "Unknown permit");
+  const serializedPermitNumber = JSON.stringify(String(permit.permit_number || "")).replace(/</g, "\\u003c");
+  const safeAddress = escapeHtml(addressLabel || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
   const safeStatus = escapeHtml(permit.status || "Unknown");
@@ -2885,8 +2954,8 @@ async function renderPermitDetail(permitNumber, env, request) {
     .replace(/[.,\s]+$/, "");
   const streetOnly = permit.address ? entStreet(permit.address) : "";
   const titleLocation = streetOnly ? `${streetOnly}, Seattle` : "Seattle";
-  const titleHighlight = rawWorkText
-    ? truncateMetaDescription(rawWorkText, 45)
+  const titleHighlight = permitDescriptor || rawWorkText
+    ? truncateMetaDescription(permitDescriptor || rawWorkText, 45)
     : `${permitType} (${permit.status || "Unknown"})`;
   const pageTitle = `${titleLocation} — ${titleHighlight} | Building Seattle`;
   const safeTitle = escapeHtml(pageTitle);
@@ -2901,7 +2970,9 @@ async function renderPermitDetail(permitNumber, env, request) {
   const coreWithContractor = `${permitCore}${contractorSuffix}`;
   const metaCore = coreWithContractor.length <= META_MAX - 30 ? coreWithContractor : permitCore;
   const metaLeadBudget = Math.max(20, META_MAX - metaCore.length - 1);
-  const metaWorkSnippet = rawWorkText ? truncateMetaDescription(rawWorkText, Math.min(75, metaLeadBudget)) : `${permitType} project`;
+  const metaWorkSnippet = permitDescriptor || rawWorkText
+    ? truncateMetaDescription(permitDescriptor || rawWorkText, Math.min(75, metaLeadBudget))
+    : `${permitType} project`;
   const metaLead = truncateMetaDescription(`${metaWorkSnippet} at ${streetOnly || permit.address || "Seattle"}, Seattle.`, metaLeadBudget);
   const metaDesc = truncateMetaDescription(`${metaLead} ${metaCore}`, META_MAX);
   const safeMetaDesc = escapeHtml(metaDesc);
@@ -3002,6 +3073,18 @@ async function renderPermitDetail(permitNumber, env, request) {
                     </div>
                 </div>`
     : "";
+  const firstScreenLinks = [
+    permit.address_slug
+      ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-weight:650;">Address history: ${escapeHtml(permit.address_display || permit.address || "Property")}</a>`
+      : "",
+    permit.project_slug
+      ? `<a href="/project/${encodeURIComponent(permit.project_slug)}" style="color:var(--accent);text-decoration:none;font-weight:650;">Project: ${escapeHtml(permit.project_name || "View project")}</a>`
+      : "",
+    permit.contractor_slug
+      ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:650;">Contractor: ${escapeHtml(permit.contractor_name || "View contractor")}</a>`
+      : "",
+  ].filter(Boolean).join(" <span style=\"color:var(--text-subtle);\">·</span> ");
+
 
   if (wantsMarkdown(request)) {
     return markdownResponse(
@@ -3262,6 +3345,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 	                    ${safeStatus}
                 </span>
                 <p class="permit-summary">${permitSummaryHtml}</p>
+	                ${firstScreenLinks ? `<nav aria-label="Related permit records" style="display:flex;flex-wrap:wrap;gap:0.5rem 0.9rem;margin:1rem 0 0;font-size:0.84rem;">${firstScreenLinks}</nav>` : ""}
             </div>
             <div class="detail-grid">
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Permit Timeline &amp; Status</h2>
@@ -6958,33 +7042,35 @@ async function renderAddressPage(slug, env, request) {
   const dates = permits.map((p) => p.issued_date || p.applied_date).filter(Boolean).sort();
   const firstDate = dates[0];
   const lastDate = dates[dates.length - 1];
-  const activePermits = permits.filter((p) => ["active", "pending", "new"].includes(p.status));
-  const display = address.display_address;
+  const activePermits = permits.filter((p) => ["active", "pending", "new"].includes(String(p.status || "").toLowerCase()));
+  const display = cleanFeedText(address.display_address) || cleanFeedText(address.normalized_address) || "Seattle property";
   const noindex = permitCount === 0;
 
-  // Build SEO title/description from actual permit data instead of a generic template.
-  // This helps match search intent for address queries ("what's being built at X?").
-  const latestPermit = permits[0];  // Already sorted by date DESC via SQL
-  const permitTypeLabel = latestPermit
-    ? ({ commercial: "Commercial Construction", residential: "Residential Construction",
-         industrial: "Industrial Construction", demolition: "Demolition" })[(latestPermit.type || "").toLowerCase()] ||
-      (latestPermit.type ? latestPermit.type.charAt(0).toUpperCase() + latestPermit.type.slice(1).toLowerCase() : "Construction")
-    : "Construction";
+  // Use one shared, source-backed descriptor for the address title, meta, and
+  // first screen. Prefer a distinctive tenant/project phrase when available,
+  // but never infer a project name from the address alone.
+  const featured = featuredAddressPermit(permits);
+  const featuredPermit = featured?.permit || permits[0] || null;
+  const featuredDescriptor = featured?.descriptor || "";
+  const permitTypeLabelForAddress = permitTypeLabel(featuredPermit?.type);
   const valueStr = totalValue ? `$${parseInt(totalValue).toLocaleString()}` : "";
-  const latestContractor = latestPermit?.contractor_name || "";
+  const latestContractor = permits[0]?.contractor_name || "";
 
-  const title = activePermits.length > 0
-    ? `${display} — Active ${permitTypeLabel} | Building Seattle`
-    : `${display} — Construction Activity | Building Seattle`;
+  const title = featuredDescriptor
+    ? `${display} — ${featuredDescriptor} | Seattle Construction`
+    : activePermits.length > 0
+      ? `${display} — Active ${permitTypeLabelForAddress} | Building Seattle`
+      : `${display} — Construction Activity | Building Seattle`;
 
-  let description = `Construction permits & projects at ${display} in Seattle.`;
-  if (activePermits.length > 0) {
-    description += ` ${activePermits.length} active${valueStr ? `, ${valueStr}` : ""}.`;
-  } else if (permits.length > 0) {
-    description += ` ${permits.length} permits on record${valueStr ? `, ${valueStr}` : ""}.`;
-  }
-  if (latestContractor) description += ` Contractor: ${latestContractor}.`;
-  description += ` View full property history & nearby projects.`;
+  let description = featuredDescriptor
+    ? `${featuredDescriptor} at ${display}. `
+    : `${display} in Seattle. `;
+  description += `${permitCount} construction permit${permitCount !== 1 ? "s" : ""} on record`;
+  if (activePermits.length > 0) description += `, ${activePermits.length} active`;
+  if (valueStr) description += `, ${valueStr} combined declared value`;
+  description += ".";
+  if (latestContractor) description += ` Latest contractor: ${latestContractor}.`;
+  description += " Review individual permits, project history, and related construction activity.";
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -7055,13 +7141,14 @@ async function renderAddressPage(slug, env, request) {
     <div class="ent-hero">
       <div class="ent-kicker">Property / Address</div>
       <h1>${escapeHtml(display)}</h1>
+      ${featuredDescriptor ? `<p style="margin:0.75rem 0 0;max-width:760px;font-size:1.05rem;line-height:1.6;color:var(--text);"><strong>${escapeHtml(featuredDescriptor)}</strong>${featuredPermit?.permit_number ? ` <span style="color:var(--text-muted);">· <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">Permit ${escapeHtml(featuredPermit.permit_number)}</a></span>` : ""}</p>` : ""}
       ${neighborhood ? `<a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
     </div>
     <div style="max-width:var(--container-max);margin:0 auto 2.5rem;padding:0 1.5rem;">
       <div class="card" style="margin-bottom:0;">
         <div style="font-size:1.05rem;line-height:1.85;color:var(--text-muted);">
           <p style="margin:0 0 1rem;">${escapeHtml(display)} is a property in Seattle${neighborhood ? `'s <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a> neighborhood` : ""} with <strong style="color:var(--text);">${permitCount} construction permit${permitCount !== 1 ? "s" : ""}</strong> on record with the Seattle Department of Construction and Inspections${activePermits.length > 0 ? `, <strong style="color:var(--text);">${activePermits.length} of which ${activePermits.length === 1 ? "is" : "are"} currently active</strong>` : ""}.${totalValue > 0 ? ` The combined estimated project value across all permits is <strong style="color:var(--text);">$${parseInt(totalValue).toLocaleString()}</strong>.` : ""}</p>
-          <p style="margin:0 0 1rem;">Permit activity at this address spans from ${firstDate ? new Date(firstDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the earliest record"} to ${lastDate ? new Date(lastDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the present"}${latestPermit ? `, with the most recent permit being a ${(latestPermit.type || "construction").toLowerCase()} project filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(latestPermit.permit_number)}">${escapeHtml(latestPermit.permit_number)}</a>` : ""}.${latestContractor ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(latestPermit?.contractor_slug || "")}">${escapeHtml(latestContractor)}</a>.` : ""}</p>
+          <p style="margin:0 0 1rem;">Permit activity at this address spans from ${firstDate ? new Date(firstDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the earliest record"} to ${lastDate ? new Date(lastDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the present"}${featuredPermit?.permit_number ? `, with the featured record filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">${escapeHtml(featuredPermit.permit_number)}</a>` : ""}.${latestContractor && permits[0]?.contractor_slug ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(permits[0].contractor_slug)}">${escapeHtml(latestContractor)}</a>.` : ""}</p>
           <p style="margin:0;">Use the data below to review individual permit records, track project timelines, see which contractors and participants have been involved, and explore nearby construction activity. Each permit links to its own detail page with review cycles, status changes, and project descriptions.</p>
         </div>
       </div>
