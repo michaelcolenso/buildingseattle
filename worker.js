@@ -2352,31 +2352,39 @@ async function renderPermitBrowser(request, env) {
     where += " AND p.status = ?";
     params.push(status);
   }
+
+  let primaryWhere = where;
+  let fallbackWhere = where;
+  let primaryParams = params;
+  let fallbackParams = params;
   if (q) {
     const like = "%" + q + "%";
-    where +=
+    primaryWhere +=
       " AND (p.address LIKE ? OR p.description LIKE ? OR p.detailed_description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
-    params.push(like, like, like, like, like, like);
+    primaryParams = [...params, like, like, like, like, like, like];
+    fallbackWhere +=
+      " AND (p.address LIKE ? OR p.description LIKE ? OR p.permit_number LIKE ? OR p.neighborhood LIKE ? OR c.name LIKE ?)";
+    fallbackParams = [...params, like, like, like, like, like];
   }
 
-  const listQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty, a.slug as address_slug, a.display_address as address_display FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id LEFT JOIN addresses a ON a.id = p.address_id ${where} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
-  const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id LEFT JOIN addresses a ON a.id = p.address_id ${where}`;
+  const listQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty, a.slug as address_slug, a.display_address as address_display FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id LEFT JOIN addresses a ON a.id = p.address_id ${primaryWhere} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
+  const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id LEFT JOIN addresses a ON a.id = p.address_id ${primaryWhere}`;
 
   let permitResult;
   let totalResult;
   try {
     [permitResult, totalResult] = await Promise.all([
-      env.DB.prepare(listQuery).bind(...params).all(),
-      env.DB.prepare(countQuery).bind(...params).first(),
+      env.DB.prepare(listQuery).bind(...primaryParams).all(),
+      env.DB.prepare(countQuery).bind(...primaryParams).first(),
     ]);
   } catch {
     // Entity-graph columns are added by a separate migration. Keep the public
     // permit browser available while that migration is being rolled out.
-    const fallbackListQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
-    const fallbackCountQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where}`;
+    const fallbackListQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${fallbackWhere} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
+    const fallbackCountQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${fallbackWhere}`;
     [permitResult, totalResult] = await Promise.all([
-      env.DB.prepare(fallbackListQuery).bind(...params).all(),
-      env.DB.prepare(fallbackCountQuery).bind(...params).first(),
+      env.DB.prepare(fallbackListQuery).bind(...fallbackParams).all(),
+      env.DB.prepare(fallbackCountQuery).bind(...fallbackParams).first(),
     ]);
   }
 

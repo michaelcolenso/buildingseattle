@@ -689,6 +689,32 @@ test("GET /permits renders a public permit browser instead of returning 404", as
   assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits">/);
 });
 
+test("GET /permits falls back to legacy search columns when graph columns are missing", async () => {
+  const env = createEnv();
+  const queries = [];
+  const originalPrepare = env.DB.prepare;
+  env.DB.prepare = (query) => {
+    queries.push(query);
+    if (query.includes("detailed_description")) {
+      throw new Error("no such column: p.detailed_description");
+    }
+    return originalPrepare(query);
+  };
+
+  const response = await worker.fetch(new Request("http://example.com/permits?q=Tower"), env, createCtx());
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /\/permits\/PERM123/);
+  assert.match(html, /407 Stewart St, Seattle, WA/);
+
+  const permitQueries = queries.filter((query) => query.includes("FROM permits p"));
+  assert.equal(permitQueries.length, 3);
+  assert.match(permitQueries[0], /detailed_description/);
+  assert.doesNotMatch(permitQueries[1], /detailed_description|JOIN addresses/);
+  assert.doesNotMatch(permitQueries[2], /detailed_description|JOIN addresses/);
+});
+
 test("GET /admin rejects public requests before reading dashboard data", async () => {
   const response = await worker.fetch(new Request("http://example.com/admin"), createEnv(), createCtx());
 
