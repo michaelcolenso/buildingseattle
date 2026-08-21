@@ -4,10 +4,6 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import worker, {
-  ADU_CLASSIFICATION_VERSION,
-  ADU_DADU_SQL,
-  ADU_NORMALIZED_TEXT_SQL,
-  classifyAduPermit,
   summarizePlanReview,
   percentileSorted,
   summarizeDays,
@@ -17,6 +13,12 @@ import worker, {
   renderPermitTimeline,
   renderProjectReviewSummary,
 } from "../worker.js";
+import {
+  ADU_CLASSIFICATION_VERSION,
+  ADU_DADU_SQL,
+  ADU_NORMALIZED_TEXT_SQL,
+  classifyAduPermit,
+} from "../adu.js";
 
 const samplePermits = [
   {
@@ -1048,7 +1050,7 @@ test("entity hubs paginate deterministically and noindex bounded filter states",
   assert.match(seenSql, /p\.type = \?/);
   assert.match(seenSql, /lower\(COALESCE\(p\.status/);
   assert.match(seenSql, /HAVING COALESCE\(SUM\(p\.value\), 0\) >= \?/);
-  assert.match(seenSql, /ORDER BY total_value DESC, permit_count DESC, slug ASC/);
+  assert.match(seenSql, /ORDER BY total_value DESC, permit_count DESC, o.slug ASC/);
   assert.match(seenSql, /LIMIT 49 OFFSET 96/);
   assert.deepEqual(seenBinds, ["Ballard", "Construction", 1000000]);
 });
@@ -2032,6 +2034,131 @@ test("GET /permits/:permit_number safely serializes JSON-LD and uses the officia
   assert.match(html, /&lt;script&gt;alert\(&quot;detail&quot;\)&lt;\/script&gt;/);
 });
 
+test("GET /permits/:permit_number builds a specific title, meta description, and on-page summary from verified permit and entity data", async () => {
+  const env = createEnv();
+  Object.assign(env._state.permits[0], {
+    address: "760 Aloha St, Seattle, WA",
+    description: "Tenant improvement for offices (MangoApps) on 5th floor of existing commercial building  per plan.",
+    detailed_description: "MangoApps Tenant improvement for offices (MangoApps) on 5th floor of existing commercial building, per plan.",
+    status: "active",
+    value: 760000,
+    address_slug: "760-aloha-st-seattle-wa",
+    address_display: "760 ALOHA ST, SEATTLE, WA",
+    contractor_name: "D P Inc General Contractors",
+    contractor_slug: "d-p-inc-general-contractors",
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+
+  // Title: street address + a real work-scope highlight from source data + Seattle, not a generic label.
+  // The enriched detail text leads with the tenant/project name ("MangoApps") ahead
+  // of the work summary, so it should appear immediately, not just buried mid-sentence.
+  assert.match(html, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices[^<]*\| Building Seattle<\/title>/);
+  assert.doesNotMatch(html, /<title>[^<]*undefined[^<]*<\/title>/);
+
+  // Meta description answers: what work, where, permit number/status, contractor.
+  const descriptionMatch = html.match(/<meta name="description" content="([^"]*)">/);
+  assert.ok(descriptionMatch, "expected a meta description tag");
+  const metaDescription = descriptionMatch[1];
+  assert.match(metaDescription, /MangoApps Tenant improvement for offices/);
+  assert.match(metaDescription, /760 Aloha St/);
+  assert.match(metaDescription, /PERM123/);
+  assert.match(metaDescription, /active/);
+  assert.ok(metaDescription.length <= 165);
+
+  // A single H1, with a concise factual summary directly below it that links
+  // to the verified address and contractor entity pages.
+  const h1Matches = html.match(/<h1[^>]*>/g) || [];
+  assert.equal(h1Matches.length, 1);
+  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>\s*<span class="status-badge"[^>]*>[\s\S]*?<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
+  const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.ok(summaryMatch);
+  const summaryHtml = summaryMatch[1];
+  assert.match(summaryHtml, /MangoApps Tenant improvement for offices \(MangoApps\)/);
+  assert.match(summaryHtml, /<a href="\/address\/760-aloha-st-seattle-wa"[^>]*>760 Aloha St, Seattle, WA<\/a>/);
+  assert.match(summaryHtml, /<a href="\/contractor\/d-p-inc-general-contractors"[^>]*>D P Inc General Contractors<\/a>/);
+  assert.match(summaryHtml, /PERM123/);
+  assert.match(summaryHtml, /active/);
+  assert.match(summaryHtml, /\$760,000/);
+
+  // Canonical is unchanged and correct.
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits\/PERM123">/);
+});
+
+test("GET /permits/:permit_number falls back to permit type and plain text for sparse permits without a description, entity links, or contractor", async () => {
+  const env = createEnv();
+  Object.assign(env._state.permits[0], {
+    address: "1200 5th Ave, Seattle, WA",
+    description: "",
+    detailed_description: null,
+    contractor_name: null,
+    contractor_slug: null,
+    address_slug: null,
+    project_slug: null,
+    value: null,
+    status: "new",
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits\/PERM123">/);
+
+  const h1Matches = html.match(/<h1[^>]*>/g) || [];
+  assert.equal(h1Matches.length, 1);
+
+  // No placeholder text leaking into the title/summary for missing fields.
+  assert.doesNotMatch(html, /undefined|null|NaN/);
+
+  const titleMatch = html.match(/<title>([^<]*)<\/title>/);
+  assert.ok(titleMatch);
+  assert.match(titleMatch[1], /^1200 5th Ave, Seattle —/);
+  assert.match(titleMatch[1], /\| Building Seattle$/);
+
+  const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.ok(summaryMatch);
+  // No entity links render when there is no verified slug to link to.
+  assert.doesNotMatch(summaryMatch[1], /<a href="\/address\//);
+  assert.doesNotMatch(summaryMatch[1], /<a href="\/contractor\//);
+  assert.match(summaryMatch[1], /1200 5th Ave, Seattle, WA/);
+});
+
+test("GET /permits/:permit_number keeps the permit number, status, and full contractor name intact in the meta description even with a long address and description", async () => {
+  const env = createEnv();
+  Object.assign(env._state.permits[0], {
+    address: "1234 Martin Luther King Jr Way S Apartment Complex Building B, Seattle, WA",
+    description: "Long description",
+    detailed_description:
+      "Construct extensive alterations and substantial tenant improvements to convert existing commercial retail space into a mixed-use office and light-industrial fabrication facility with full mechanical, electrical, and plumbing upgrades throughout the entire five story structure, subject to field inspection, per plan.",
+    contractor_name: "A Very Long General Contracting And Construction Management Company LLC",
+    contractor_slug: "a-very-long-gc",
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  const descriptionMatch = html.match(/<meta name="description" content="([^"]*)">/);
+  assert.ok(descriptionMatch);
+  const metaDescription = descriptionMatch[1];
+  assert.ok(metaDescription.length <= 165, `expected <=165 chars, got ${metaDescription.length}`);
+  // The permit number, status, and full contractor name must survive truncation
+  // intact — only the leading work/address snippet may be shortened.
+  assert.match(metaDescription, /Permit PERM123 \(active\)\./);
+  assert.match(metaDescription, /Contractor: A Very Long General Contracting And Construction Management Company LLC\.$/);
+
+  // The above-the-fold summary paragraph stays bounded instead of reproducing
+  // the entire long scraped description verbatim.
+  const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.ok(summaryMatch);
+  const summaryText = summaryMatch[1].replace(/<[^>]+>/g, "");
+  assert.ok(summaryText.length < 500, `expected a bounded summary, got ${summaryText.length} chars`);
+});
+
 test("POST /ingest/permit/batch rejects payloads without an items array", async () => {
   const response = await worker.fetch(
     new Request("http://example.com/ingest/permit/batch", {
@@ -2402,10 +2529,10 @@ test("permit and address pages promote source-backed project descriptors and ent
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/7120268-CN"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<title>760 ALOHA ST — MangoApps Tenant improvement for offices.*7120268-CN/);
+  assert.match(permitHtml, /<title>760 ALOHA ST, Seattle — MangoApps Tenant improvement for offices \| Building Seattle<\/title>/);
   assert.doesNotMatch(permitHtml, /<title>[^<]*MangoApps Tenant improvement for offices \(MangoApps\)/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*MangoApps[^>]*760 ALOHA ST/);
-  assert.match(permitHtml, /<h1 class="permit-title">760 ALOHA ST<\/h1>[\s\S]*MangoApps/);
+  assert.match(permitHtml, /<h1 class="permit-title">760 ALOHA ST, SEATTLE, WA<\/h1>[\s\S]*MangoApps/);
   assert.match(permitHtml, /href="\/address\/760-aloha-st"/);
   assert.match(permitHtml, /href="\/contractor\/d-p-inc-general-contractors"/);
   assert.match(permitHtml, /href="\/project\/tenant-improvement-at-760-aloha-st"/);
@@ -2467,7 +2594,8 @@ test("permit and address pages use safe, useful fallbacks for sparse records", a
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
   assert.match(permitHtml, /<h1 class="permit-title">Seattle<\/h1>/);
-  assert.match(permitHtml, /<title>Seattle — General Construction.*SPARSE-1/);
+  assert.match(permitHtml, /<title>Seattle — General Construction \(Unknown\) \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<meta name="description" content="[^>]*Permit SPARSE-1/);
   assert.doesNotMatch(permitHtml, /undefined|null|NaN/);
 
   const addressResponse = await worker.fetch(new Request("http://example.com/address/sparse-address"), env, createCtx());

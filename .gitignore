@@ -43,3 +43,6 @@ buildingseattle_fresh.csv
 # Gumroad build outputs (built by gumroad/build_dataset.py)
 gumroad/dist/
 gumroad/releases/
+
+# Wrangler local dev state/cache (created by `wrangler dev`)
+.wrangler/

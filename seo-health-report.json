@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "generated_at": "2026-08-05T17:02:34.871Z",
+  "base_url": "https://buildingseattle.com/",
+  "limits": {},
+  "summary": {
+    "checks": 1,
+    "passed": 0,
+    "failed": 1
+  },
+  "failures": [
+    {
+      "check": "monitor-runtime",
+      "url": "https://buildingseattle.com/",
+      "ok": false,
+      "detail": "IMAGE_ASSETS is not defined"
+    }
+  ],
+  "checks": [
+    {
+      "check": "monitor-runtime",
+      "url": "https://buildingseattle.com/",
+      "ok": false,
+      "detail": "IMAGE_ASSETS is not defined"
+    }
+  ],
+  "trend": {
+    "previous_generated_at": null,
+    "failed_delta": null,
+    "checks_delta": null
+  }
+}
