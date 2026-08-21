@@ -1060,11 +1060,11 @@ async function handleRoot(request, env) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Seattle Construction Permits & Project Data | Building Seattle</title>
-    <meta name="description" content="Track Seattle construction: search permits, contractor profiles, project values, and neighborhood activity. Find active building projects and development leads faster.">
+    <meta name="description" content="Seattle construction intelligence from public SDCI records: search permits, projects, properties, neighborhoods, and contractors.">
     <meta name="robots" content="index,follow,max-image-preview:large">
     <link rel="canonical" href="${canonical}">
     <meta property="og:title" content="Seattle Construction Permits & Project Data | Building Seattle">
-    <meta property="og:description" content="Track Seattle construction: search permits, contractor profiles, project values, and neighborhood activity. Find active building projects and development leads faster.">
+    <meta property="og:description" content="Seattle construction intelligence from public SDCI records: search permits, projects, properties, neighborhoods, and contractors.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary_large_image">
@@ -1128,6 +1128,8 @@ async function handleRoot(request, env) {
         .seo-card p { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 1rem; }
         .seo-card a { color: var(--accent); font-weight: 700; text-decoration: none; }
         .seo-card a:hover { text-decoration: underline; }
+        .editorial-links { margin-top: 1.5rem; font-weight: 700; }
+        .editorial-links a { color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; }
         .faq-list { max-width: 880px; margin: 2.5rem auto 0; display: grid; gap: 1rem; }
         .faq-item { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem 1.5rem; }
         .faq-item h3 { color: var(--primary); font-size: 1rem; margin-bottom: 0.45rem; }
@@ -1200,7 +1202,7 @@ async function handleRoot(request, env) {
             <div class="hero-grid">
                 <div class="hero-content">
                     <div class="hero-badge"><span class="ops-dot"></span><span>Now tracking live permits</span></div>
-                    <h1>Construction intelligence for the Seattle metro</h1>
+                    <h1>Seattle construction: permits, projects & market data</h1>
                     <p>Search live Seattle construction permits, compare contractor activity, and spot new development leads by address, neighborhood, permit type, status, and project value.</p>
                     <div class="ops-strip">
                         <div class="ops-chip"><span class="ops-dot"></span><span>Seattle DCI feed</span></div>
@@ -1230,7 +1232,7 @@ async function handleRoot(request, env) {
         <div class="container" style="max-width:800px;">
             <h2 style="font-size:2rem;font-weight:800;color:var(--primary);margin-bottom:1.5rem;">Seattle Construction Market Activity</h2>
             <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
-                Building Seattle tracks construction permits across the Seattle metro area — from commercial towers in South Lake Union to residential renovations in Ballard and Capitol Hill. Every permit issued by the Seattle Department of Construction and Inspections is collected, organized, and made searchable so you can track who's building what, where, and with whom.
+                Building Seattle organizes public permit records from the Seattle Department of Construction and Inspections into a searchable research layer — from commercial towers in South Lake Union to residential renovations in Ballard and Capitol Hill. That source-backed layer helps you track who's building what, where, and with whom.
             </p>
             <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
                 The Seattle construction market covers everything from tenant improvements and new residential construction to major commercial projects and demolitions. Whether you're a contractor scoping new work, a developer tracking competition, or a property owner researching permit timelines, Building Seattle gives you the real-time market intelligence you need.
@@ -1238,6 +1240,7 @@ async function handleRoot(request, env) {
             <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;">
                 Browse thousands of active permits by neighborhood, contractor, or project type. Monitor permit valuations, track review timelines, and discover which contractors are winning work in Seattle's most active development areas.
             </p>
+            <p class="editorial-links">Start with <a href="/permits">Seattle construction permits</a>, then follow the public record into <a href="/projects">projects</a>, <a href="/addresses">properties</a>, <a href="/neighborhoods">neighborhoods</a>, or <a href="/contractors">contractors</a>.</p>
         </div>
     </section>
 

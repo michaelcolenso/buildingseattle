@@ -2605,3 +2605,38 @@ test("permit and address pages use safe, useful fallbacks for sparse records", a
   assert.match(addressHtml, /<meta name="description" content="[^>]*12 Example St/);
   assert.doesNotMatch(addressHtml, /undefined|null|NaN/);
 });
+
+test("homepage aligns with Seattle construction intent and preserves existing FAQ copy", async () => {
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), createCtx());
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.ok(html.includes("<h1>Seattle construction: permits, projects & market data</h1>"));
+
+  const description = html.match(/<meta name="description" content="([^"]+)"/i)?.[1] || "";
+  assert.ok(description.length <= 160, `homepage description is ${description.length} characters`);
+  assert.match(description, /Seattle construction/i);
+  assert.match(html, /public permit records from the Seattle Department of Construction and Inspections/i);
+
+  const editorialLinks = html.match(/<p class="editorial-links">([\s\S]*?)<\/p>/i)?.[1] || "";
+  for (const href of ["/permits", "/projects", "/addresses", "/neighborhoods", "/contractors"]) {
+    assert.ok(editorialLinks.includes(`href="${href}"`), `editorial copy should link to ${href}`);
+  }
+
+  const visibleFaqQuestions = [
+    "What can I search on Building Seattle?",
+    "Where does the permit data come from?",
+    "How does this help with SEO and traffic?",
+  ];
+  for (const question of visibleFaqQuestions) {
+    assert.ok(html.includes(`<h3>${question}</h3>`), `visible FAQ missing: ${question}`);
+  }
+
+  const structuredFaqQuestions = [
+    "What can I search on Building Seattle?",
+    "Where does the permit data come from?",
+    "How does Building Seattle help with construction lead generation?",
+  ];
+  for (const question of structuredFaqQuestions) {
+    assert.ok(html.includes(`"name":"${question}"`), `JSON-LD FAQ missing: ${question}`);
+  }
+});
