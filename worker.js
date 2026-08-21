@@ -604,7 +604,19 @@ function permitSearchDescriptor(permit) {
   const text = permitDescriptionText(permit);
   if (!text) return "";
   const clause = text.split(/\s+(?:on|per|subject to)\s+/i)[0].trim();
-  return truncateMetaDescription(clause || text, 84).replace(/[,:;.!?\s]+$/, "");
+  let descriptor = truncateMetaDescription(clause || text, 84).replace(/[,:;.!?\s]+$/, "");
+  const trailingParenthetical = descriptor.match(/\s+\(([^()]{2,60})\)$/);
+  if (trailingParenthetical) {
+    const repeatedName = trailingParenthetical[1].trim();
+    const withoutParenthetical = descriptor.slice(0, trailingParenthetical.index).trim();
+    if (
+      withoutParenthetical.localeCompare(repeatedName, undefined, { sensitivity: "accent" }) === 0 ||
+      withoutParenthetical.toLocaleLowerCase().startsWith(`${repeatedName.toLocaleLowerCase()} `)
+    ) {
+      descriptor = withoutParenthetical;
+    }
+  }
+  return descriptor;
 }
 
 function isGenericPermitDescriptor(value) {

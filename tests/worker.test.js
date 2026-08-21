@@ -2402,7 +2402,8 @@ test("permit and address pages promote source-backed project descriptors and ent
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/7120268-CN"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<title>760 ALOHA ST — MangoApps Tenant improvement for offices \(MangoApps\).*7120268-CN/);
+  assert.match(permitHtml, /<title>760 ALOHA ST — MangoApps Tenant improvement for offices.*7120268-CN/);
+  assert.doesNotMatch(permitHtml, /<title>[^<]*MangoApps Tenant improvement for offices \(MangoApps\)/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*MangoApps[^>]*760 ALOHA ST/);
   assert.match(permitHtml, /<h1 class="permit-title">760 ALOHA ST<\/h1>[\s\S]*MangoApps/);
   assert.match(permitHtml, /href="\/address\/760-aloha-st"/);
