@@ -54,7 +54,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v1";
+const HTML_CACHE_VERSION = "v2";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",

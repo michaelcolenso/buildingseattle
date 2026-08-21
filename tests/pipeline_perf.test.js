@@ -284,7 +284,7 @@ test("template-wide HTML edge cache: warm second fetch skips the render's D1 wor
     assert.ok(callsAfterFirst > 1, "first fetch actually queried D1");
     assert.equal(store.size, 1, "fresh page stored in the edge cache");
     const [key] = store.keys();
-    assert.ok(key.includes("__bsv=v1"), `cache key is versioned, got ${key}`);
+    assert.ok(key.includes("__bsv=v2"), `cache key is versioned, got ${key}`);
     assert.match(first.headers.get("Cache-Control") || "", /s-maxage=3600/);
 
     const second = await worker.fetch(request(), env, createCtx());
