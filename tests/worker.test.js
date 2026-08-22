@@ -678,7 +678,7 @@ test("GET /permits renders a public permit browser instead of returning 404", as
 
   const html = await response.text();
   assert.match(html, /<link rel="manifest" href="\/site\.webmanifest">/);
-  assert.match(html, /Browse Seattle permits/i);
+  assert.match(html, /<h1>Seattle Construction Permits<\/h1>/);
   assert.match(html, /action="\/permits"/);
   assert.match(html, /option value="Ballard" selected/);
   assert.match(html, /option value="residential" selected/);
