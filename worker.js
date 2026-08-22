@@ -2436,8 +2436,8 @@ async function renderPermitBrowser(request, env) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Browse Seattle Construction Permits | Building Seattle</title>
-    <meta name="description" content="Browse active Seattle construction permits by neighborhood and permit type. Real-time intelligence for the Greater Seattle metro area.">
+    <title>Seattle Construction Permits — Search Active SDCI Permit Records | Building Seattle</title>
+    <meta name="description" content="Search live Seattle construction permits from public SDCI records. Filter active building permits by address, neighborhood, permit type, contractor, and project value.">
     <meta name="robots" content="${hasPermitFilters || total === 0 ? "noindex,follow" : "index,follow,max-image-preview:large"}">
     <link rel="canonical" href="${permitCanonical}">
     <meta property="og:title" content="Browse Seattle Construction Permits | Building Seattle">
@@ -2503,8 +2503,11 @@ async function renderPermitBrowser(request, env) {
     </div>
     <main class="container">
         <section class="hero">
-            <h1>Browse Seattle permits</h1>
-            <p>Filter the live permit stream by neighborhood and permit type, then drill into the projects that matter to your team.</p>
+            <h1>Seattle Construction Permits</h1>
+            <p>Search live Seattle construction permits from public SDCI records. Filter the active permit stream by neighborhood and permit type — or look up any address, permit number, or contractor — then drill into the projects that matter to your team.</p>
+        </section>
+        <section aria-label="About this data" style="max-width:720px;color:var(--text-muted);font-size:0.95rem;line-height:1.6;margin:0 0 2rem;">
+            <p style="margin:0;">Every listing links to the full public record: project description, valuation, applicant, status history, and related permits at the same address. Data is refreshed daily from the Seattle Department of Construction &amp; Inspections.</p>
         </section>
         <form class="filters" action="/permits" method="GET">
             <div>
