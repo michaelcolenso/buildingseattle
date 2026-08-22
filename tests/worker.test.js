@@ -872,6 +872,34 @@ test("GET /data renders the dataset landing page with live stats", async () => {
   assert.match(html, /\$0\.06B/);
 });
 
+test("GET /site-intelligence renders the report offer and pilot request form", async () => {
+  const response = await worker.fetch(new Request("http://example.com/site-intelligence"), createEnv(), createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") || "", /text\/html/);
+  assert.match(html, /Know the building before you change it/);
+  assert.match(html, /Introductory price: <strong>\$395/);
+  assert.match(html, /site-intelligence-pilot/);
+  assert.match(html, /canonical" href="https:\/\/buildingseattle\.com\/site-intelligence"/);
+});
+
+test("GET /site-intelligence/sample renders a transparent, sourced demonstration report", async () => {
+  const response = await worker.fetch(
+    new Request("http://example.com/site-intelligence/sample"),
+    createEnv(),
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Stimson-Green Mansion/);
+  assert.match(html, /Why this flagship/);
+  assert.match(html, /Evidence register/);
+  assert.match(html, /demonstrates report structure, not a completed professional history/);
+  assert.match(html, /Seattle Municipal Archives/);
+});
+
 test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const env = createSitemapEnv({
     statsByType: {
@@ -883,7 +911,9 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 20);
+  assert.equal((xml.match(/<url>/g) || []).length, 22);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/site-intelligence/);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/site-intelligence\/sample/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/network/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/commercial-projects/);
@@ -908,7 +938,7 @@ test("GET /sitemaps/static.xml omits the ADU tracker while its page is noindex",
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 19);
+  assert.equal((xml.match(/<url>/g) || []).length, 21);
   assert.doesNotMatch(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
 });
 

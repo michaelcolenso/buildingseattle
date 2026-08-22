@@ -314,6 +314,16 @@ export default {
         return secure(await renderDataPage(env));
       }
 
+      if (path === "/site-intelligence" || path === "/site-intelligence/") {
+        ctx.waitUntil(logPageView(request, env, "/site-intelligence"));
+        return secure(renderSiteIntelligencePage());
+      }
+
+      if (path === "/site-intelligence/sample" || path === "/site-intelligence/sample/") {
+        ctx.waitUntil(logPageView(request, env, "/site-intelligence/sample"));
+        return secure(renderSiteIntelligenceSample());
+      }
+
       if (path === "/api/admin/stats") {
         const authError = requireAdminAuth(request, env);
         if (authError) return secure(authError);
@@ -917,6 +927,7 @@ function renderNav(activePage) {
           ${link("/neighborhoods", "Explore", "explore")}
           ${link("/insights/plan-review", "Insights", "insights")}
           ${link("/data", "Data", "data")}
+          ${link("/site-intelligence", "Reports", "reports")}
           ${link("/api/permits", "API", "api")}
         </div>
       </div>
@@ -9145,6 +9156,104 @@ Sitemap: ${BASE_URL}/sitemap.xml
   });
 }
 
+function siteIntelligenceStyles() {
+  return `<style>
+    .sir-hero{position:relative;overflow:hidden;padding:3.5rem;border-radius:1.5rem;background:#0f2741;color:white;margin-bottom:2rem}
+    .sir-hero:after{content:"";position:absolute;width:24rem;height:24rem;border:1px solid rgba(255,255,255,.16);border-radius:50%;right:-8rem;top:-11rem;box-shadow:0 0 0 4rem rgba(255,255,255,.035),0 0 0 8rem rgba(255,255,255,.025)}
+    .sir-eyebrow{font-size:.75rem;text-transform:uppercase;letter-spacing:.13em;font-weight:800;color:#7dd3fc;margin-bottom:.8rem}
+    .sir-hero h1{position:relative;z-index:1;max-width:16ch;font-family:Georgia,serif;font-size:clamp(2.5rem,6vw,4.8rem);line-height:1.02;margin:0 0 1.2rem}
+    .sir-hero p{position:relative;z-index:1;max-width:58ch;color:#dbeafe;font-size:1.08rem}
+    .sir-actions{position:relative;z-index:1;display:flex;gap:.8rem;flex-wrap:wrap;margin-top:1.6rem}
+    .sir-button{display:inline-flex;align-items:center;justify-content:center;padding:.8rem 1.15rem;border-radius:.5rem;text-decoration:none;font-weight:750;border:1px solid #7dd3fc;background:#7dd3fc;color:#0f2741}
+    .sir-button.secondary{background:transparent;color:white;border-color:rgba(255,255,255,.45)}
+    .sir-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:2rem 0}
+    .sir-card{background:white;border:1px solid var(--border);border-radius:1rem;padding:1.5rem;box-shadow:var(--shadow-sm)}
+    .sir-card h2,.sir-card h3{color:#0f2741;margin-top:0}
+    .sir-number{font-family:Georgia,serif;font-size:2rem;color:#0369a1}
+    .sir-band{padding:2.5rem;border-radius:1.25rem;background:#e0f2fe;margin:2rem 0}
+    .sir-form{display:grid;grid-template-columns:1fr 1fr;gap:.85rem;max-width:760px}
+    .sir-form label{display:grid;gap:.35rem;font-size:.8rem;font-weight:700;color:#334155}
+    .sir-form input,.sir-form select{font:inherit;padding:.75rem;border:1px solid #94a3b8;border-radius:.4rem;background:white}
+    .sir-form .wide{grid-column:1/-1}.sir-form button{cursor:pointer}
+    .sir-report-head{border-bottom:3px solid #0f2741;padding-bottom:1.5rem;margin-bottom:2rem}
+    .sir-report-head h1{font-family:Georgia,serif;font-size:clamp(2.4rem,6vw,4.5rem);line-height:1;margin:.4rem 0}
+    .sir-meta{display:flex;gap:1.5rem;flex-wrap:wrap;color:var(--text-muted);font-size:.85rem}
+    .sir-timeline{border-left:2px solid #7dd3fc;margin-left:.5rem;padding-left:1.5rem}
+    .sir-event{position:relative;margin-bottom:1.5rem}.sir-event:before{content:"";position:absolute;width:.7rem;height:.7rem;border-radius:50%;background:#0369a1;left:-1.92rem;top:.35rem}
+    .sir-event strong{font-family:Georgia,serif;font-size:1.2rem;color:#0f2741}.sir-source{font-size:.78rem;color:var(--text-muted)}
+    .sir-callout{border-left:4px solid #f59e0b;background:#fffbeb;padding:1.15rem 1.3rem;margin:1.5rem 0}
+    .sir-evidence{width:100%;border-collapse:collapse}.sir-evidence th,.sir-evidence td{text-align:left;padding:.8rem;border-bottom:1px solid var(--border);vertical-align:top}.sir-evidence th{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)}
+    @media(max-width:760px){.sir-hero{padding:2rem 1.35rem}.sir-grid{grid-template-columns:1fr}.sir-form{grid-template-columns:1fr}.sir-form .wide{grid-column:auto}}
+    @media print{.global-nav,.global-footer,.sir-actions{display:none}.global-nav-spacer{height:0}.sir-card{box-shadow:none;break-inside:avoid}}
+  </style>`;
+}
+
+function renderSiteIntelligencePage() {
+  const canonical = `${BASE_URL}/site-intelligence`;
+  const title = "Site Intelligence Reports for Seattle Properties | Building Seattle";
+  const description = "Decision-ready Seattle property research combining permit history, archival evidence, address changes, and a cited chronology in five business days.";
+  const body = `${siteIntelligenceStyles()}
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Site Intelligence Reports" }])}
+    <section class="sir-hero">
+      <div class="sir-eyebrow">A clearer starting point for your project</div>
+      <h1>Know the building before you change it.</h1>
+      <p>A decision-ready record of a Seattle property's permits, alterations, historic context, and unanswered questions—researched, reconciled, and cited for your project team.</p>
+      <div class="sir-actions"><a class="sir-button" href="/site-intelligence/sample">Read the sample report</a><a class="sir-button secondary" href="#request">Request a report</a></div>
+    </section>
+    <div class="sir-grid">
+      <article class="sir-card"><div class="sir-number">01</div><h2>One chronology</h2><p>Scattered permit cards, landmark records, maps, directories, and photographs are organized into a readable sequence.</p></article>
+      <article class="sir-card"><div class="sir-number">02</div><h2>Source-level confidence</h2><p>Facts, reasonable inferences, and open questions are labeled separately so a project team knows what to trust and verify.</p></article>
+      <article class="sir-card"><div class="sir-number">03</div><h2>Built for decisions</h2><p>The report surfaces likely alteration periods, address aliases, missing records, and follow-up research—not trivia without a use.</p></article>
+    </div>
+    <section class="sir-band"><div class="sir-eyebrow" style="color:#0369a1">Introductory service</div><h2 style="font-family:Georgia,serif;font-size:2rem;margin:.25rem 0">A focused answer in five business days.</h2><p style="max-width:65ch">The first release is deliberately narrow: one property, a concise evidence-backed chronology, source register, and next-step questions. Introductory price: <strong>$395</strong>. Scope is confirmed before work begins.</p></section>
+    <section class="sir-card"><h2>What arrives</h2><div class="sir-grid" style="margin-bottom:0"><div><h3>Property identity</h3><p>Parcel and address aliases, present-day record match, and confidence notes.</p></div><div><h3>Alteration timeline</h3><p>Permit and archival events translated into a building chronology.</p></div><div><h3>Evidence register</h3><p>Linked citations, record gaps, contradictions, and recommended follow-up.</p></div></div></section>
+    <section class="sir-card" id="request"><div class="sir-eyebrow" style="color:#0369a1">Pilot availability</div><h2>What would this report be worth for your next project?</h2><p>Share a real Seattle property and the decision you need to make. This pilot is as much about learning what matters as delivering the research.</p>
+      <form class="sir-form" id="sir-request-form">
+        <label>Email<input required type="email" name="email" autocomplete="email"></label>
+        <label>Company or name<input required name="company" autocomplete="organization"></label>
+        <label class="wide">Seattle property address<input required name="address" autocomplete="street-address"></label>
+        <label>Role<select name="role"><option>Architect</option><option>Real estate professional</option><option>Preservation consultant</option><option>Homeowner</option><option>Developer</option><option>Other</option></select></label>
+        <label>What decision are you making?<input required name="decision" placeholder="Remodel scope, due diligence, listing…"></label>
+        <div class="wide"><button class="sir-button" type="submit">Start the conversation</button> <span id="sir-form-status" role="status" style="margin-left:.7rem"></span></div>
+      </form>
+    </section>
+    <script>document.getElementById("sir-request-form").addEventListener("submit",async function(event){event.preventDefault();var form=event.currentTarget,status=document.getElementById("sir-form-status"),data=new FormData(form);status.textContent="Sending…";try{var response=await fetch("/leads",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:data.get("email"),company:data.get("company"),interest:"Site Intelligence Report: "+data.get("decision"),neighborhoods:data.get("address"),source:"site-intelligence-pilot",userAgent:navigator.userAgent})});if(!response.ok)throw new Error();form.reset();status.textContent="Thank you—we'll follow up shortly."}catch(error){status.textContent="Could not send. Please try again."}});</script>`;
+  const jsonLd = JSON.stringify({ "@context": "https://schema.org", "@type": "Service", name: "Site Intelligence Report", provider: { "@type": "Organization", name: "Building Seattle" }, areaServed: "Seattle, Washington", offers: { "@type": "Offer", price: "395", priceCurrency: "USD" }, url: canonical }).replace(/</g, "\\u003c");
+  return new Response(renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "reports" }), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } });
+}
+
+function renderSiteIntelligenceSample() {
+  const canonical = `${BASE_URL}/site-intelligence/sample`;
+  const title = "Stimson-Green Mansion — Sample Site Intelligence Report";
+  const description = "A sample Building Seattle Site Intelligence Report showing how property identity, archival records, permits, confidence, and next steps fit together.";
+  const body = `${siteIntelligenceStyles()}
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Site Intelligence", href: "/site-intelligence" }, { label: "Sample report" }])}
+    <header class="sir-report-head"><div class="sir-eyebrow" style="color:#0369a1">Sample report · public landmark</div><h1>Stimson-Green Mansion</h1><p style="font-size:1.15rem;max-width:60ch">A model for turning scattered public records into a concise, decision-oriented building history.</p><div class="sir-meta"><span>1204 Minor Avenue, Seattle</span><span>Prepared by Building Seattle</span><span>Demonstration edition · August 2026</span></div></header>
+    <div class="sir-callout"><strong>Why this flagship?</strong> The mansion is recognizable, extensively documented, and materially layered. It lets a buyer judge research quality across original construction, later stewardship, preservation, and adaptation—while keeping the sample grounded in public institutional sources.</div>
+    <div class="ent-grid"><div>
+      <section class="sir-card"><div class="sir-eyebrow" style="color:#0369a1">Executive reading</div><h2>The useful story</h2><p>This property is not represented by a single authoritative record. Its useful history emerges by reconciling landmark documentation, archival photographs, city records, and stewardship material. For a project team, the central task is to distinguish documented fabric from later interpretation and to identify where current permit research must begin.</p><p><strong>Decision implication:</strong> begin proposed work with the landmark record and current regulatory status, then verify the modern permit chain and physical conditions. Historic narrative alone is not a substitute for field investigation or code review.</p></section>
+      <section class="sir-card"><h2>Selected chronology</h2><div class="sir-timeline">
+        <div class="sir-event"><strong>1901 · Original residence</strong><p>The opening event establishes the original owner, architect, construction period, and architectural intent. A full commissioned report would quote and reconcile the designation record, drawings, and contemporary directories.</p><div class="sir-source">Evidence class: landmark record + archival sources · Confidence: high after source review</div></div>
+        <div class="sir-event"><strong>Mid-century · Changing use and stewardship</strong><p>Ownership and occupancy records help explain alteration periods that may not be obvious from a modern permit search.</p><div class="sir-source">Evidence class: directories + institutional history · Confidence: to be verified</div></div>
+        <div class="sir-event"><strong>Later preservation · Protected significance</strong><p>Designation materials identify character-defining features and provide a baseline for evaluating later work.</p><div class="sir-source">Evidence class: Seattle landmark records · Confidence: high after source review</div></div>
+        <div class="sir-event"><strong>Present · Active stewardship</strong><p>The present condition should be connected to permit records, ownership documentation, and a site walk before design decisions are made.</p><div class="sir-source">Evidence class: current public records + field verification · Confidence: open</div></div>
+      </div></section>
+      <section class="sir-card"><h2>Evidence register</h2><table class="sir-evidence"><thead><tr><th>Source</th><th>What it can establish</th><th>Next action</th></tr></thead><tbody>
+        <tr><td><a class="ent-link" href="https://www.seattle.gov/neighborhoods/programs-and-services/historic-preservation/landmarks" rel="external">Seattle Landmarks</a></td><td>Designation status, significance, protected features, and formal record trail.</td><td>Retrieve the complete designation packet and controls.</td></tr>
+        <tr><td><a class="ent-link" href="https://web6.seattle.gov/dpd/edms/" rel="external">Seattle Services Portal records</a></td><td>Modern permit applications, issued work, plans where available, and review history.</td><td>Search address aliases and parcel identifiers.</td></tr>
+        <tr><td><a class="ent-link" href="https://digitalcollections.lib.washington.edu/" rel="external">UW Digital Collections</a></td><td>Dated images and visual evidence of exterior conditions.</td><td>Compare image dates against known alteration periods.</td></tr>
+        <tr><td><a class="ent-link" href="https://www.seattle.gov/cityarchives" rel="external">Seattle Municipal Archives</a></td><td>Historic photographs, maps, municipal records, and provenance clues.</td><td>Search name, street, and historical address variants.</td></tr>
+      </tbody></table></section>
+    </div><aside>
+      <section class="sir-card"><h2>Confidence key</h2><p><strong>Documented</strong><br><span class="sir-source">Directly supported by a cited primary or authoritative record.</span></p><p><strong>Corroborated</strong><br><span class="sir-source">Supported by multiple independent records.</span></p><p><strong>Inference</strong><br><span class="sir-source">Reasonable interpretation, explicitly labeled.</span></p><p><strong>Open</strong><br><span class="sir-source">Requires a record pull, site observation, or specialist review.</span></p></section>
+      <section class="sir-card"><h2>Questions for the project team</h2><ol><li>What decision must the history support?</li><li>Which physical features are in scope?</li><li>Are there unrecorded or poorly documented alterations?</li><li>Which controls require early consultation?</li></ol></section>
+      <section class="sir-card"><h2>Scope note</h2><p>This public page demonstrates report structure, not a completed professional history. Claims marked for review are intentionally not presented as findings. A commissioned report includes record retrieval, citations to specific documents, and a property-specific limitations statement.</p></section>
+      <div class="sir-actions"><a class="sir-button" href="/site-intelligence#request">Request your report</a></div>
+    </aside></div>`;
+  const jsonLd = JSON.stringify({ "@context": "https://schema.org", "@type": "Report", name: title, author: { "@type": "Organization", name: "Building Seattle" }, about: { "@type": "Place", name: "Stimson-Green Mansion", address: "1204 Minor Avenue, Seattle, WA" }, url: canonical }).replace(/</g, "\\u003c");
+  return new Response(renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, ogType: "article", body, activeNav: "reports" }), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } });
+}
+
 const SITEMAP_PAGE_SIZE = 45000;
 const SITEMAP_STATIC_PATHS = [
   "/",
@@ -9152,6 +9261,8 @@ const SITEMAP_STATIC_PATHS = [
   "/data",
   "/about",
   "/methodology",
+  "/site-intelligence",
+  "/site-intelligence/sample",
   "/contractors",
   "/neighborhoods",
   "/projects",
