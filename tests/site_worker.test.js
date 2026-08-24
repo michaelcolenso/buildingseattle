@@ -144,8 +144,9 @@ test("new responses include security and caching headers", async () => {
 });
 
 test("non-home routes and www canonicalization continue through the existing worker", async () => {
-  const normal = await worker.fetch(new Request("https://buildingseattle.com/permits"), createEnv(), ctx());
+  const normal = await worker.fetch(new Request("https://buildingseattle.com/robots.txt"), createEnv(), ctx());
   assert.equal(normal.status, 200);
+  assert.match(await normal.text(), /User-agent:/i);
   const www = await worker.fetch(new Request("https://www.buildingseattle.com/"), createEnv(), ctx());
   assert.equal(www.status, 301);
 });
