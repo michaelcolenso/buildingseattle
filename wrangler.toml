@@ -1,5 +1,5 @@
 name = "buildingseattle"
-main = "worker.js"
+main = "site_worker.js"
 compatibility_date = "2026-03-14"
 
 [triggers]
