@@ -2436,15 +2436,17 @@ async function renderPermitBrowser(request, env) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Seattle Construction Permits — Search Active SDCI Permit Records | Building Seattle</title>
-    <meta name="description" content="Search live Seattle construction permits from public SDCI records. Filter active building permits by address, neighborhood, permit type, contractor, and project value.">
+    <title>Seattle Building Permits &amp; SDCI Records | Building Seattle</title>
+    <meta name="description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta name="robots" content="${hasPermitFilters || total === 0 ? "noindex,follow" : "index,follow,max-image-preview:large"}">
     <link rel="canonical" href="${permitCanonical}">
-    <meta property="og:title" content="Browse Seattle Construction Permits | Building Seattle">
-    <meta property="og:description" content="Browse active Seattle construction permits by neighborhood and permit type.">
+    <meta property="og:title" content="Seattle Building Permits &amp; SDCI Records | Building Seattle">
+    <meta property="og:description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${permitCanonical}">
     <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Seattle Building Permits &amp; SDCI Records | Building Seattle">
+    <meta name="twitter:description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
 	    <meta property="og:image:width" content="1200">
 	    <meta property="og:image:height" content="630">
@@ -2459,6 +2461,10 @@ async function renderPermitBrowser(request, env) {
         .hero { padding: 3.5rem 0 2rem; }
         .hero h1 { margin: 0 0 0.75rem; font-size: clamp(2rem, 4vw, 3.25rem); line-height: 1.05; }
         .hero p { margin: 0; max-width: 720px; color: var(--text-muted); font-size: 1.05rem; }
+        .permit-guide { max-width: 780px; margin: 0 0 2rem; color: var(--text-muted); line-height: 1.7; }
+        .permit-guide h2 { margin: 0 0 0.75rem; color: var(--text); font-size: 1.35rem; }
+        .permit-guide p { margin: 0 0 0.75rem; }
+        .permit-guide a { color: var(--accent); font-weight: 650; }
         .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
 	        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 0.4rem; }
 	        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
@@ -2506,8 +2512,10 @@ async function renderPermitBrowser(request, env) {
             <h1>Seattle Construction Permits</h1>
             <p>Search live Seattle construction permits from public SDCI records. Filter the active permit stream by neighborhood and permit type — or look up any address, permit number, or contractor — then drill into the projects that matter to your team.</p>
         </section>
-        <section aria-label="About this data" style="max-width:720px;color:var(--text-muted);font-size:0.95rem;line-height:1.6;margin:0 0 2rem;">
-            <p style="margin:0;">Every listing links to the full public record: project description, valuation, applicant, status history, and related permits at the same address. Data is refreshed daily from the Seattle Department of Construction &amp; Inspections.</p>
+        <section class="permit-guide" aria-labelledby="permit-guide-heading">
+            <h2 id="permit-guide-heading">How to search Seattle permit records</h2>
+            <p>Start with a street address, permit number, or contractor, then combine the neighborhood, permit type, and status filters to narrow the public Seattle Department of Construction &amp; Inspections record. Each result surfaces the project description, declared valuation, issue date, current status, and linked property or contractor history. The data is refreshed daily.</p>
+            <p>Permit valuations are project estimates, and a status describes the city's review or issuance workflow rather than proving construction is complete. Read the <a href="/methodology">data methodology</a>, or compare activity across <a href="/neighborhoods">Seattle neighborhoods</a>, <a href="/contractors">contractors</a>, and <a href="/addresses">property records</a>.</p>
         </section>
         <form class="filters" action="/permits" method="GET">
             <div>

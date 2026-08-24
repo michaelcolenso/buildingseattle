@@ -691,6 +691,31 @@ test("GET /permits renders a public permit browser instead of returning 404", as
   assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits">/);
 });
 
+test("GET /permits aligns search and social metadata with its SDCI research guide", async () => {
+  const response = await worker.fetch(new Request("http://example.com/permits"), createEnv(), createCtx());
+
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const title = "Seattle Building Permits & SDCI Records | Building Seattle";
+  const description =
+    "Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.";
+
+  const encodedTitle = title.replace("&", "&amp;");
+  assert.ok(html.includes(`<title>${encodedTitle}</title>`));
+  assert.ok(html.includes(`<meta name="description" content="${description}">`));
+  assert.ok(html.includes(`<meta property="og:title" content="${encodedTitle}">`));
+  assert.ok(html.includes(`<meta property="og:description" content="${description}">`));
+  assert.ok(html.includes(`<meta name="twitter:title" content="${encodedTitle}">`));
+  assert.ok(html.includes(`<meta name="twitter:description" content="${description}">`));
+
+  const guide = html.match(/<section class="permit-guide"[^>]*>([\s\S]*?)<\/section>/)?.[1] || "";
+  assert.match(guide, /<h2[^>]*>How to search Seattle permit records<\/h2>/);
+  assert.match(guide, /href="\/methodology"/);
+  assert.match(guide, /href="\/contractors"/);
+  assert.match(guide, /href="\/neighborhoods"/);
+  assert.match(guide, /href="\/addresses"/);
+});
+
 test("GET /permits falls back to legacy search columns when graph columns are missing", async () => {
   const env = createEnv();
   const queries = [];
