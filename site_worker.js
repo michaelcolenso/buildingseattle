@@ -64,6 +64,20 @@ function formatDate(value, includeTime = false) {
   }).format(date);
 }
 
+// Display helper: SDCI source text arrives in ALL CAPS ("2704 S HINDS ST,
+// SEATTLE, WA"). Render title case for readability while keeping directionals,
+// unit types, and common business suffixes uppercase.
+const TITLECASE_KEEP_UPPER = new Set(["NE", "NW", "SE", "SW", "N", "S", "E", "W", "LLC", "LLP", "INC", "CO", "USA", "US", "WA", "ADU", "DADU", "HVAC", "IID", "IV", "III", "II"]);
+function smartTitleCase(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\b[a-z][a-z0-9&.'/()-]*/g, (word) => {
+      const upper = word.toUpperCase();
+      if (TITLECASE_KEEP_UPPER.has(upper)) return upper;
+      return word.replace(/(^|[\s/('-])([a-z])/g, (m, p, c) => p + c.toUpperCase());
+    });
+}
+
 function humanize(value, fallback = "Permit") {
   const text = String(value || fallback)
     .replaceAll("_", " ")
@@ -211,7 +225,7 @@ function renderChanges(changes) {
   return changes
     .map((change) => {
       const permit = encodeURIComponent(String(change.permit_number || ""));
-      const title = change.address || change.permit_number || "Seattle permit";
+      const title = change.address ? smartTitleCase(change.address) : change.permit_number || "Seattle permit";
       const metadata = [
         humanize(change.type, "Permit"),
         change.value ? `${compactMoney(change.value)} declared value` : null,
@@ -231,11 +245,12 @@ function renderRanking(rows, type) {
 
   return rows
     .map((row, index) => {
-      const label = row.label || "Unclassified";
+      const rawLabel = row.label || "Unclassified";
+      const label = type === "address" ? smartTitleCase(rawLabel) : rawLabel;
       let href = "/permits";
       let metric = "";
       if (type === "address") {
-        href = `/permits?q=${encodeURIComponent(label)}`;
+        href = `/permits?q=${encodeURIComponent(rawLabel)}`;
         metric = `${Number(row.active_permits) || 0} active permits`;
       } else if (type === "contractor") {
         href = row.slug ? `/contractor/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(label)}`;
@@ -257,19 +272,49 @@ export function renderHomepage(snapshot) {
   const { stats, changes, addresses, contractors30d, neighborhoods30d } = snapshot;
   const ingestLabel = stats.last_ingest_at ? formatDate(stats.last_ingest_at, true) : "Unavailable";
   const recordLabel = stats.latest_record_date ? formatDate(stats.latest_record_date) : "Unavailable";
-  const title = "Seattle Construction Permits, Projects & Contractor Activity | Building Seattle";
+  const title = "Seattle Construction Permits & Projects — Building Seattle";
   const description = "Search Seattle construction permits, contractor activity, neighborhoods, addresses, and recent SDCI permit changes.";
+  const faqItems = [
+    {
+      q: "What can I search on Building Seattle?",
+      a: "Search permit records by address, permit number, contractor, neighborhood, project description, permit type, status, and other fields exposed by the permit browser.",
+    },
+    {
+      q: "Where does the data come from?",
+      a: "The base records come from Seattle Department of Construction and Inspections public data. Building Seattle cleans, links, and enriches those records into research views.",
+    },
+    {
+      q: "How current is the data?",
+      a: "The ingestion pipeline is scheduled daily. This page reports the latest successful ingest separately from the latest permit event date so freshness is not confused with source activity.",
+    },
+    {
+      q: "What does \u201cpermit value\u201d mean?",
+      a: "It is the declared value attached to the permit record. It is not a verified total project cost and may exclude land, design, financing, related permits, later changes, and other project costs.",
+    },
+  ];
   const structuredData = JSON.stringify({
     "@context": "https://schema.org",
-    "@type": "WebSite",
+    "@graph": [
+      {
+        "@type": "WebSite",
     name: "Building Seattle",
     url: BASE_URL,
     description,
     potentialAction: {
-      "@type": "SearchAction",
-      target: `${BASE_URL}/permits?q={search_term_string}`,
-      "query-input": "required name=search_term_string",
-    },
+        "@type": "SearchAction",
+        target: `${BASE_URL}/permits?q={search_term_string}`,
+        "query-input": "required name=search_term_string",
+      },
+      },
+      {
+        "@type": "FAQPage",
+        mainEntity: faqItems.map((item) => ({
+          "@type": "Question",
+          name: item.q,
+          acceptedAnswer: { "@type": "Answer", text: item.a },
+        })),
+      },
+    ],
   }).replaceAll("<", "\\u003c");
 
   return `<!doctype html>
@@ -292,10 +337,10 @@ export function renderHomepage(snapshot) {
   <script type="application/ld+json">${structuredData}</script>
   <style>
     :root{color-scheme:light;--primary:#0f172a;--accent:#2563eb;--accent-hover:#1d4ed8;--success:#047857;--warning:#b45309;--bg:#fff;--bg-alt:#f8fafc;--panel:#fff;--text:#1e293b;--muted:#64748b;--border:#cbd5e1;--soft:#e2e8f0;--focus:#1d4ed8;--max:1200px}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0f172a}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:#0f172a;color:#fff;font-size:16px}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav a{text-decoration:none;color:#334155}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:54px 0 36px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#1d4ed8;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,8vw,4.9rem);line-height:.98;letter-spacing:-.045em}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#475569}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.search-form input{min-height:52px;width:100%;border:1px solid #94a3b8;border-radius:9px;padding:0 16px;background:#fff;color:#0f172a}.search-form button{min-height:52px;border:0;border-radius:9px;padding:0 24px;background:var(--accent);color:#fff;font-weight:800;cursor:pointer}.search-form button:hover{background:var(--accent-hover)}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:30px;max-width:820px}.metric{border-top:3px solid #0f172a;padding:12px 4px 0}.metric strong{display:block;color:var(--primary);font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05;letter-spacing:-.025em}.metric span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35}.freshness{max-width:820px;margin:18px 0 0;color:#475569;font-size:13px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#475569}.text-link{font-weight:800;color:#1d4ed8;text-underline-offset:4px;white-space:nowrap}.changes{border-top:1px solid var(--border)}.change-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:center;padding:17px 2px;border-bottom:1px solid var(--border);text-decoration:none}.change-row:hover .change-title{text-decoration:underline;text-underline-offset:4px}.transition{font-size:12px;font-weight:850;letter-spacing:.04em;color:#0f172a}.change-title{font-weight:800;color:#0f172a}.change-meta{font-size:13px;color:#475569;text-align:right}.empty-state{border:1px dashed #94a3b8;border-radius:10px;padding:18px;color:#475569;background:var(--bg-alt)}.empty-state.compact{font-size:14px}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0f172a;font-size:16px}.market-card p{margin:5px 0 0;color:#475569;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#64748b;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0f172a;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#64748b;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0f172a;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0f172a;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#475569;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0f172a;padding:4px 0 4px 18px;color:#475569}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0f172a}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0f172a}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#475569}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#475569}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0f172a;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#cbd5e1}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0f172a;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0f172a}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#475569;text-underline-offset:3px}
-    @media(max-width:780px){.nav{display:none}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form button{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.change-row{grid-template-columns:1fr;gap:5px;padding:16px 2px}.change-meta{text-align:left}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0f172a}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:#0f172a;color:#fff;font-size:16px}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:#0f172a;background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(15,23,42,.14);z-index:40}.mobile-nav a{text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:#334155}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:54px 0 36px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#1d4ed8;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,8vw,4.9rem);line-height:.98;letter-spacing:-.045em}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#475569}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.search-form input{min-height:52px;width:100%;border:1px solid #94a3b8;border-radius:9px;padding:0 16px;background:#fff;color:#0f172a}.search-form button{min-height:52px;border:0;border-radius:9px;padding:0 24px;background:var(--accent);color:#fff;font-weight:800;cursor:pointer}.search-form button:hover{background:var(--accent-hover)}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:30px;max-width:820px}.metric{border-top:3px solid #0f172a;padding:12px 4px 0;text-decoration:none;color:inherit}.metric:hover strong{color:var(--accent)}.metric strong{display:block;color:var(--primary);font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05;letter-spacing:-.025em}.metric span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35}.freshness{max-width:820px;margin:18px 0 0;color:#475569;font-size:13px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#475569}.text-link{font-weight:800;color:#1d4ed8;text-underline-offset:4px;white-space:nowrap}.changes{border-top:1px solid var(--border)}.change-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:center;padding:17px 2px;border-bottom:1px solid var(--border);text-decoration:none}.change-row:hover .change-title{text-decoration:underline;text-underline-offset:4px}.transition{font-size:12px;font-weight:850;letter-spacing:.04em;color:#0f172a}.change-title{font-weight:800;color:#0f172a}.change-meta{font-size:13px;color:#475569;text-align:right}.empty-state{border:1px dashed #94a3b8;border-radius:10px;padding:18px;color:#475569;background:var(--bg-alt)}.empty-state.compact{font-size:14px}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0f172a;font-size:16px}.market-card p{margin:5px 0 0;color:#475569;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#64748b;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0f172a;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#64748b;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0f172a;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0f172a;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#475569;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0f172a;padding:4px 0 4px 18px;color:#475569}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0f172a}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0f172a}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#475569}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#475569}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0f172a;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#cbd5e1}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0f172a;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0f172a}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#475569;text-underline-offset:3px}
+    @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form button{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.change-row{grid-template-columns:1fr;gap:5px;padding:16px 2px}.change-meta{text-align:left}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
     @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.metric strong{font-size:1.16rem}.metric span{font-size:11px}.hero h1{font-size:2.05rem}}
-    @media(prefers-color-scheme:dark){:root{color-scheme:dark;--primary:#f8fafc;--bg:#0f172a;--bg-alt:#111c30;--panel:#172033;--text:#e2e8f0;--muted:#94a3b8;--border:#475569;--soft:#334155;--focus:#93c5fd}.site-header{background:rgba(15,23,42,.96)}.brand,.nav a,.hero h1,.metric strong,.section h2,.change-title,.transition,.market-card h3,.rank-copy strong,.rank-value,.task strong,.trust-meta dd,summary,.footer-brand{color:#f8fafc}.brand-mark{background:#f8fafc;color:#0f172a}.hero-copy,.freshness,.section-deck,.change-meta,.market-card p,.rank-index,.rank-copy small,.rank-value small,.task p,.trust-note,.answer,.footer-nav a{color:#cbd5e1}.search-form input{background:#172033;color:#f8fafc;border-color:#64748b}.metric{border-top-color:#f8fafc}.trust-note{border-left-color:#f8fafc}.alert-panel{background:#020617}.alert-button{background:#f8fafc;color:#0f172a}}
+    @media(prefers-color-scheme:dark){:root{color-scheme:dark;--primary:#f8fafc;--bg:#0f172a;--bg-alt:#111c30;--panel:#172033;--text:#e2e8f0;--muted:#94a3b8;--border:#475569;--soft:#334155;--focus:#93c5fd}.site-header{background:rgba(15,23,42,.96)}.brand,.nav a,.hero h1,.metric strong,.section h2,.change-title,.transition,.market-card h3,.rank-copy strong,.rank-value,.task strong,.trust-meta dd,summary,.footer-brand{color:#f8fafc}.brand-mark{background:#f8fafc;color:#0f172a}.hero-copy,.freshness,.section-deck,.change-meta,.market-card p,.rank-index,.rank-copy small,.rank-value small,.task p,.trust-note,.answer,.footer-nav a{color:#cbd5e1}.search-form input{background:#172033;color:#f8fafc;border-color:#64748b}.metric{border-top-color:#f8fafc}.trust-note{border-left-color:#f8fafc}.alert-panel{background:#020617}.alert-button{background:#f8fafc;color:#0f172a}.nav-toggle>summary{color:#f8fafc;background:#172033;border-color:#475569}.mobile-nav{background:#172033;border-color:#475569}.mobile-nav a{color:#f8fafc}.mobile-nav a:hover{background:#111c30}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
   </style>
 </head>
@@ -306,6 +351,12 @@ export function renderHomepage(snapshot) {
       <nav class="nav" aria-label="Primary navigation">
         <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a>
       </nav>
+      <details class="nav-toggle">
+        <summary aria-label="Open navigation menu">&#9776;</summary>
+        <nav class="mobile-nav" aria-label="Mobile navigation">
+          <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a><a href="/api-docs">API</a>
+        </nav>
+      </details>
     </div>
   </header>
   <main>
@@ -321,9 +372,9 @@ export function renderHomepage(snapshot) {
         </form>
         <div class="hero-subactions"><a href="/permits">Browse all permits →</a><a href="/projects">Explore projects →</a></div>
         <div class="metric-strip" aria-label="Current database metrics">
-          <div class="metric"><strong>${escapeHtml(stats.active_permits.toLocaleString("en-US"))}</strong><span>active permits</span></div>
-          <div class="metric"><strong>${escapeHtml(stats.contractors.toLocaleString("en-US"))}</strong><span>contractors linked to permits</span></div>
-          <div class="metric"><strong>${escapeHtml(compactMoney(stats.total_value))}</strong><span>declared permit value</span></div>
+          <a class="metric" href="/permits?status=active"><strong>${escapeHtml(stats.active_permits.toLocaleString("en-US"))}</strong><span>active permits</span></a>
+          <a class="metric" href="/contractors"><strong>${escapeHtml(stats.contractors.toLocaleString("en-US"))}</strong><span>contractors linked to permits</span></a>
+          <a class="metric" href="/permits"><strong>${escapeHtml(compactMoney(stats.total_value))}</strong><span>declared permit value</span></a>
         </div>
         <p class="freshness">Seattle SDCI Open Data · Scheduled daily ingest · Last successful ingest <strong>${escapeHtml(ingestLabel)}</strong> · Latest permit event <strong>${escapeHtml(recordLabel)}</strong> · <a href="/methodology">Methodology</a></p>
       </div>
@@ -377,7 +428,7 @@ export function renderHomepage(snapshot) {
 
     <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:#93c5fd">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Building Seattle already supports free per-permit alerts with confirmation and one-click unsubscribe.</p></div><a class="alert-button" href="/permits">Find a permit to watch</a></div></div></section>
   </main>
-  <footer class="site-footer"><div class="container footer-inner"><div><div class="footer-brand">Building Seattle</div><div style="margin-top:4px;color:#64748b;font-size:12px">Seattle construction intelligence</div></div><nav class="footer-nav" aria-label="Footer navigation"><a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/projects">Projects</a><a href="/addresses">Addresses</a><a href="/data">Dataset</a><a href="/methodology">Methodology</a><a href="/api-docs">API</a></nav></div></footer>
+  <footer class="site-footer"><div class="container footer-inner"><div><div class="footer-brand">Building Seattle</div><div style="margin-top:4px;color:#64748b;font-size:12px">Seattle construction intelligence</div></div><nav class="footer-nav" aria-label="Footer navigation"><a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/projects">Projects</a><a href="/addresses">Addresses</a><a href="/insights">Insights</a><a href="/data">Dataset</a><a href="/methodology">Methodology</a><a href="/api-docs">API</a><a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav></div></footer>
 </body>
 </html>`;
 }

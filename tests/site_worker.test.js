@@ -76,7 +76,7 @@ test("homepage is task-first and uses mechanically correct data labels", async (
   assert.doesNotMatch(html, /View Live Data/i);
   assert.doesNotMatch(html, /Permit Value Radar/i);
   assert.doesNotMatch(html, /<script>alert\("x"\)<\/script>/);
-  assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
+  assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/i);
 });
 
 test("homepage includes mobile/accessibility protections and has no JS-dependent primary action", async () => {

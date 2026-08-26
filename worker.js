@@ -54,7 +54,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v2";
+const HTML_CACHE_VERSION = "v3";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
@@ -477,6 +477,10 @@ export default {
         return secure(renderRobotsTxt());
       }
 
+      if (path === "/llms.txt") {
+        return secure(renderLlmsTxt());
+      }
+
       if (path === "/sitemap.xml") {
         return secure(await renderSitemapXml(env, request));
       }
@@ -540,6 +544,7 @@ const DISCOVERY_LINKS = [
   `<${BASE_URL}/openapi.json>; rel="service-desc"; type="application/json"`,
   `<${BASE_URL}/api-docs>; rel="service-doc"; type="text/html"`,
   `<${BASE_URL}/sitemap.xml>; rel="sitemap"; type="application/xml"`,
+  `<${BASE_URL}/llms.txt>; rel="llms-txt"; type="text/plain"`,
 ].join(", ");
 
 function withSecurityHeaders(response) {
@@ -579,6 +584,20 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// Display helper: SDCI source text arrives in ALL CAPS ("2704 S HINDS ST,
+// SEATTLE, WA"). Render title case for readability while keeping directionals,
+// unit types, and common business suffixes uppercase.
+const TITLECASE_KEEP_UPPER = new Set(["NE", "NW", "SE", "SW", "N", "S", "E", "W", "LLC", "LLP", "INC", "CO", "USA", "US", "WA", "ADU", "DADU", "HVAC", "IID", "IV", "III", "II"]);
+function smartTitleCase(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\b[a-z][a-z0-9&.'/()-]*/g, (word) => {
+      const upper = word.toUpperCase();
+      if (TITLECASE_KEEP_UPPER.has(upper)) return upper;
+      return word.replace(/(^|[\s/('-])([a-z])/g, (m, p, c) => p + c.toUpperCase());
+    });
 }
 
 function truncateMetaDescription(value, maxLength = 165) {
@@ -906,18 +925,24 @@ function renderDesignTokens() {
 }
 
 function renderNav(activePage) {
-  const link = (href, label, key) => `<a href="${href}"${key === activePage ? ' class="active"' : ""}>${label}</a>`;
+  // One nav across every template; each entry lists the activePage keys that
+  // highlight it (legacy "explore" key now maps to Neighborhoods).
+  const items = [
+    { href: "/permits", label: "Permits", keys: ["permits"] },
+    { href: "/contractors", label: "Contractors", keys: ["contractors"] },
+    { href: "/neighborhoods", label: "Neighborhoods", keys: ["neighborhoods", "explore"] },
+    { href: "/insights", label: "Insights", keys: ["insights"] },
+    { href: "/data", label: "Data", keys: ["data"] },
+    { href: "/api-docs", label: "API", keys: ["api"] },
+  ];
+  const link = ({ href, label, keys }) =>
+    `<a href="${href}"${keys.includes(activePage) ? ' class="active"' : ""}>${label}</a>`;
   return `<nav class="global-nav" id="global-nav">
       <div class="container global-nav-row">
         <a href="/" class="logo"><span class="logo-icon">B</span>Building Seattle</a>
-        <button class="global-nav-hamburger" onclick="document.querySelector('#global-nav .global-nav-links').classList.toggle('open')" aria-label="Menu">&#9776;</button>
+        <button class="global-nav-hamburger" onclick="document.querySelector('#global-nav .global-nav-links').classList.toggle('open')" aria-label="Menu" aria-expanded="false">&#9776;</button>
         <div class="global-nav-links">
-          ${link("/", "Home", "home")}
-          ${link("/permits", "Browse Permits", "permits")}
-          ${link("/neighborhoods", "Explore", "explore")}
-          ${link("/insights/plan-review", "Insights", "insights")}
-          ${link("/data", "Data", "data")}
-          ${link("/api/permits", "API", "api")}
+          ${items.map(link).join("\n          ")}
         </div>
       </div>
     </nav>`;
@@ -927,7 +952,7 @@ function renderFooter() {
   return `<footer class="global-footer">
       <div class="global-footer-row">
         <div>Building Seattle &mdash; Seattle construction intelligence</div>
-        <div><a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/data">Dataset</a> &middot; <a href="/methodology">Methodology</a></div>
+        <div><a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/insights">Insights</a> &middot; <a href="/data">Dataset</a> &middot; <a href="/methodology">Methodology</a> &middot; <a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></div>
       </div>
     </footer>`;
 }
@@ -1059,11 +1084,11 @@ async function handleRoot(request, env) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Seattle Construction Permits & Project Data | Building Seattle</title>
+    <title>Seattle Construction Permits & Data — Building Seattle</title>
     <meta name="description" content="Seattle construction intelligence from public SDCI records: search permits, projects, properties, neighborhoods, and contractors.">
     <meta name="robots" content="index,follow,max-image-preview:large">
     <link rel="canonical" href="${canonical}">
-    <meta property="og:title" content="Seattle Construction Permits & Project Data | Building Seattle">
+    <meta property="og:title" content="Seattle Construction Permits & Data — Building Seattle">
     <meta property="og:description" content="Seattle construction intelligence from public SDCI records: search permits, projects, properties, neighborhoods, and contractors.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
@@ -2431,21 +2456,25 @@ async function renderPermitBrowser(request, env) {
     })
     .join("");
 
+  // Paginated pages get a distinct title so the series doesn't share one
+  // duplicate <title> in the index.
+  const browserTitle = `Seattle Building Permits & SDCI Records | Building Seattle${page > 1 ? ` — Page ${page}` : ""}`;
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Seattle Building Permits &amp; SDCI Records | Building Seattle</title>
+    <title>${escapeHtml(browserTitle)}</title>
     <meta name="description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta name="robots" content="${hasPermitFilters || total === 0 ? "noindex,follow" : "index,follow,max-image-preview:large"}">
     <link rel="canonical" href="${permitCanonical}">
-    <meta property="og:title" content="Seattle Building Permits &amp; SDCI Records | Building Seattle">
+    <meta property="og:title" content="${escapeHtml(browserTitle)}">
     <meta property="og:description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${permitCanonical}">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="Seattle Building Permits &amp; SDCI Records | Building Seattle">
+    <meta name="twitter:title" content="${escapeHtml(browserTitle)}">
     <meta name="twitter:description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
 	    <meta property="og:image:width" content="1200">
@@ -2945,7 +2974,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   const permitAddressLabel = entStreet(addressLabel) || "Seattle";
   const safePermitNumber = escapeHtml(permit.permit_number || "Unknown permit");
   const serializedPermitNumber = JSON.stringify(String(permit.permit_number || "")).replace(/</g, "\\u003c");
-  const safeAddress = escapeHtml(addressLabel || "Unknown Address");
+  const safeAddress = escapeHtml(smartTitleCase(addressLabel) || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
   const safeStatus = escapeHtml(permit.status || "Unknown");
@@ -2967,11 +2996,19 @@ async function renderPermitDetail(permitNumber, env, request) {
     .replace(/[.,]?\s*per plans?\.?$/i, "")
     .replace(/[.,\s]+$/, "");
   const streetOnly = permit.address ? entStreet(permit.address) : "";
-  const titleLocation = streetOnly ? `${streetOnly}, Seattle` : "Seattle";
-  const titleHighlight = permitDescriptor || rawWorkText
-    ? truncateMetaDescription(permitDescriptor || rawWorkText, 45)
-    : `${permitType} (${permit.status || "Unknown"})`;
-  const pageTitle = `${titleLocation} — ${titleHighlight} | Building Seattle`;
+  const titleLocation = streetOnly ? `${smartTitleCase(streetOnly)}, Seattle` : "Seattle";
+  const rawTitleHighlight =
+    permitDescriptor || rawWorkText || `${permitType} (${permit.status || "Unknown"})`;
+  // Keep the <title> around 60 chars so it isn't truncated in SERPs: the work
+  // highlight absorbs all overflow, and the brand suffix drops first.
+  const PERMIT_TITLE_MAX = 60;
+  const brandSuffix = " | Building Seattle";
+  const titlePrefix = `${titleLocation} — `;
+  const highlightBudget = PERMIT_TITLE_MAX - titlePrefix.length - brandSuffix.length;
+  const pageTitle =
+    highlightBudget >= 18
+      ? `${titlePrefix}${truncateMetaDescription(rawTitleHighlight, highlightBudget)}${brandSuffix}`
+      : truncateMetaDescription(`${titlePrefix}${rawTitleHighlight}`, PERMIT_TITLE_MAX);
   const safeTitle = escapeHtml(pageTitle);
 
   // Build the meta description with the required facts (permit number/status)
@@ -3391,6 +3428,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                         : `
 	                        <div class="card-value" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
 	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
+	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" onclick="openModal()" style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
                     `
                     }
                     ${peopleCards}
@@ -3818,6 +3856,10 @@ async function renderContractorPage(slug, env, request) {
 	        </div>`
     : "";
   const safeContractorName = escapeHtml(contractor.name);
+  const safeContractorDisplayName = escapeHtml(smartTitleCase(contractor.name));
+  const fullContractorTitle = `${smartTitleCase(contractor.name)} — ${contractor.specialty || "Contractor"} | Building Seattle`;
+  const contractorPageTitle =
+    fullContractorTitle.length <= 60 ? fullContractorTitle : `${smartTitleCase(contractor.name)} | Building Seattle`;
   const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
   const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
   const safeContractorMetaDescription = escapeHtml(
@@ -3861,11 +3903,11 @@ async function renderContractorPage(slug, env, request) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	    <title>${safeContractorName} — ${safeContractorSpecialty} | Seattle | Building Seattle</title>
+	    <title>${escapeHtml(contractorPageTitle)}</title>
 	    <meta name="description" content="${safeContractorMetaDescription}">
 	    <meta name="robots" content="index,follow,max-image-preview:large">
 	    <link rel="canonical" href="${canonical}">
-	    <meta property="og:title" content="${safeContractorName} — ${safeContractorSpecialty} | Seattle | Building Seattle">
+	    <meta property="og:title" content="${escapeHtml(contractorPageTitle)}">
 	    <meta property="og:description" content="${safeContractorMetaDescription}">
     <meta property="og:type" content="profile">
     <meta property="og:url" content="${canonical}">
@@ -3903,7 +3945,7 @@ async function renderContractorPage(slug, env, request) {
             <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:2rem;">
                 <div style="max-width:600px">
 	                    <div style="color:#94a3b8;font-size:0.875rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">${safeContractorSpecialty}</div>
-	                    <h1 style="font-size:3rem;font-weight:800;margin:0 0 1rem 0">${safeContractorName}</h1>
+	                    <h1 style="font-size:3rem;font-weight:800;margin:0 0 1rem 0">${safeContractorDisplayName}</h1>
 	                    <p style="font-size:1.25rem;color:#94a3b8;margin:0">${safeContractorDescription}</p>
                 </div>
                 <div style="display:flex; gap:1.5rem;">
@@ -5053,6 +5095,10 @@ async function renderPlanReviewPage(env) {
       <p class="pr-note">Half of permits clear review in ${s.median} days or less, but the slowest 10% take ${s.p90}+ days — the gap is where projects stall.</p>
     </div>
     <div class="card">
+      <h2>How to read these numbers</h2>
+      <p class="pr-note">Plan around the median, budget around the 90th percentile. The average runs higher than the median because a long tail of complex projects — structural changes, new uses, landmark review — pulls it up. And each round of city review comments resets the clock while corrections are prepared, so the review-cycles figure matters as much as raw days.</p>
+    </div>
+    <div class="card">
       <h2>Distribution of plan-review time</h2>
       ${prBarChart(histogramRows)}
     </div>
@@ -5101,39 +5147,14 @@ async function renderPlanReviewPage(env) {
 
 // --- Permit pipeline (applied → issued → completed) -------------------------
 
-async function getPipelineData(env) {
+// ADU/DADU timeline rows, shared by the pipeline API and the ADU tracker page.
+async function getAduTimelineRows(env) {
   const issuedFunnel =
     "applied_date IS NOT NULL AND applied_date != '' AND issued_date IS NOT NULL AND issued_date != '' AND julianday(issued_date) >= julianday(applied_date)";
   const completedFunnel =
     "issued_date IS NOT NULL AND issued_date != '' AND completed_date IS NOT NULL AND completed_date != '' AND julianday(completed_date) >= julianday(issued_date)";
   const aduWhere = "adu_type IN ('ADU', 'DADU')";
-
-  const [stageRow, appliedToIssued, issuedToCompleted, byTypeTiming, aduStage, aduDays, aduCompletedDays, aduByYear, aduRecent] =
-    await Promise.all([
-      safeFirst(
-        env,
-        `SELECT COUNT(*) AS total,
-                SUM(CASE WHEN applied_date IS NOT NULL AND applied_date != '' THEN 1 ELSE 0 END) AS applied,
-                SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
-                SUM(CASE WHEN completed_date IS NOT NULL AND completed_date != '' THEN 1 ELSE 0 END) AS completed
-         FROM permits`,
-      ),
-      safeAll(
-        env,
-        `SELECT CAST(julianday(issued_date) - julianday(applied_date) AS REAL) AS d
-         FROM permits WHERE ${issuedFunnel}`,
-      ),
-      safeAll(
-        env,
-        `SELECT CAST(julianday(completed_date) - julianday(issued_date) AS REAL) AS d
-         FROM permits WHERE ${completedFunnel}`,
-      ),
-      safeAll(
-        env,
-        `SELECT COALESCE(NULLIF(type,''),'unknown') AS label, COUNT(*) AS cnt,
-                AVG(julianday(issued_date) - julianday(applied_date)) AS avg_days
-         FROM permits WHERE ${issuedFunnel} GROUP BY label ORDER BY cnt DESC LIMIT 8`,
-      ),
+  const [aduStage, aduDays, aduCompletedDays, aduByYear, aduRecent] = await Promise.all([
       safeAll(
         env,
         `/* pipeline:adu-stage */
@@ -5175,6 +5196,54 @@ async function getPipelineData(env) {
          LIMIT 8`,
       ),
     ]);
+  return { aduStage, aduDays, aduCompletedDays, aduByYear, aduRecent };
+}
+
+async function getAduTimeline(env) {
+  const rows = await getAduTimelineRows(env);
+  return summarizeAduTimeline({
+    stageRows: rows.aduStage,
+    dayRows: rows.aduDays,
+    completedDayRows: rows.aduCompletedDays,
+    byYearRows: rows.aduByYear,
+    recentRows: rows.aduRecent,
+  });
+}
+
+async function getPipelineData(env) {
+  const issuedFunnel =
+    "applied_date IS NOT NULL AND applied_date != '' AND issued_date IS NOT NULL AND issued_date != '' AND julianday(issued_date) >= julianday(applied_date)";
+  const completedFunnel =
+    "issued_date IS NOT NULL AND issued_date != '' AND completed_date IS NOT NULL AND completed_date != '' AND julianday(completed_date) >= julianday(issued_date)";
+
+  const [stageRow, appliedToIssued, issuedToCompleted, byTypeTiming, aduTimeline] =
+    await Promise.all([
+      safeFirst(
+        env,
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN applied_date IS NOT NULL AND applied_date != '' THEN 1 ELSE 0 END) AS applied,
+                SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
+                SUM(CASE WHEN completed_date IS NOT NULL AND completed_date != '' THEN 1 ELSE 0 END) AS completed
+         FROM permits`,
+      ),
+      safeAll(
+        env,
+        `SELECT CAST(julianday(issued_date) - julianday(applied_date) AS REAL) AS d
+         FROM permits WHERE ${issuedFunnel}`,
+      ),
+      safeAll(
+        env,
+        `SELECT CAST(julianday(completed_date) - julianday(issued_date) AS REAL) AS d
+         FROM permits WHERE ${completedFunnel}`,
+      ),
+      safeAll(
+        env,
+        `SELECT COALESCE(NULLIF(type,''),'unknown') AS label, COUNT(*) AS cnt,
+                AVG(julianday(issued_date) - julianday(applied_date)) AS avg_days
+         FROM permits WHERE ${issuedFunnel} GROUP BY label ORDER BY cnt DESC LIMIT 8`,
+      ),
+      getAduTimeline(env),
+    ]);
 
   const total = Number(stageRow?.total) || 0;
   const applied = Number(stageRow?.applied) || 0;
@@ -5192,13 +5261,7 @@ async function getPipelineData(env) {
       count: Number(r.cnt) || 0,
       avg_days: Math.round(Number(r.avg_days) || 0),
     })),
-    adu_timeline: summarizeAduTimeline({
-      stageRows: aduStage,
-      dayRows: aduDays,
-      completedDayRows: aduCompletedDays,
-      byYearRows: aduByYear,
-      recentRows: aduRecent,
-    }),
+    adu_timeline: aduTimeline,
   };
 }
 
@@ -5256,67 +5319,31 @@ async function renderPipelinePage(env) {
   const [data, freshness] = await Promise.all([getPipelineData(env), getDataFreshness(env)]);
   const st = data.stages;
   const hasData = st.applied > 0 || st.issued > 0;
-  const adu = data.adu_timeline || { ADU: null, DADU: null, by_year: [], recent: [] };
-  const aduHasData = (adu.ADU?.issued || 0) > 0 || (adu.DADU?.issued || 0) > 0;
 
-  const title = "Seattle ADU Permit Timeline: How Long It Takes, Step by Step";
+  // This page owns the GENERAL "seattle permit pipeline" intent; ADU-specific
+  // timing lives on /insights/adu-dadu so the two pages don't cannibalize.
+  const title = "Seattle Permit Pipeline: Applied, Issued & Completed";
   const description =
-    "How long does an ADU or DADU permit take in Seattle? Median days from application to issuance by permit type and year, with each step explained using real SDCI permit records.";
-
-  // Data-grounded FAQ: numbers are only quoted when the tracker actually has
-  // issued ADU/DADU permits with dated records. If the dataset is empty the
-  // page is noindex and no FAQ is emitted, so no fabricated claims can ship.
-  const faqQuestions = [];
-  if (aduHasData) {
-    const aduMed = adu.ADU?.applied_to_issued?.median;
-    const daduMed = adu.DADU?.applied_to_issued?.median;
-    if (Number.isFinite(aduMed) && Number.isFinite(daduMed)) {
-      faqQuestions.push({
-        name: "How long does an ADU permit take in Seattle?",
-        acceptedAnswer: `Across ${adu.ADU.applied_to_issued.count.toLocaleString()} issued ADU permits tracked by Building Seattle, the median time from application to issuance is ${aduMed} days.`,
-      });
-      faqQuestions.push({
-        name: "How long does a DADU (backyard cottage) permit take in Seattle?",
-        acceptedAnswer: `Across ${adu.DADU.applied_to_issued.count.toLocaleString()} issued DADU permits tracked by Building Seattle, the median time from application to issuance is ${daduMed} days.`,
-      });
-    }
-    faqQuestions.push({
-      name: "Does the ADU permit timeline include permits still in review?",
-      acceptedAnswer:
-        "No. Timeline medians are computed only from permits with both application and issuance dates, so permits still in review are counted in stage totals but excluded from duration statistics.",
-    });
-  }
+    "Where Seattle building permits stand: application, issuance, and completion funnel with median days in each stage and timing by permit type, from public SDCI records.";
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
     "@graph": [
       {
         "@type": "Dataset",
-        name: title,
+        name: "Seattle Building Permit Pipeline",
         description,
         url: canonical,
         creator: { "@type": "Organization", name: "Building Seattle" },
         spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
         ...(freshness?.updated_through ? { dateModified: dateOrNull(freshness.updated_through) || undefined } : {}),
       },
-      ...(faqQuestions.length
-        ? [
-            {
-              "@type": "FAQPage",
-              mainEntity: faqQuestions.map((q) => ({
-                "@type": "Question",
-                name: q.name,
-                acceptedAnswer: { "@type": "Answer", text: q.acceptedAnswer },
-              })),
-            },
-          ]
-        : []),
       {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
           { "@type": "ListItem", position: 2, name: "Insights", item: `${BASE_URL}/insights` },
-          { "@type": "ListItem", position: 3, name: "ADU permit timeline", item: canonical },
+          { "@type": "ListItem", position: 3, name: "Permit pipeline", item: canonical },
         ],
       },
     ],
@@ -5345,85 +5372,6 @@ async function renderPipelinePage(env) {
     sub: `${t.count.toLocaleString()} permits`,
   }));
 
-  // --- ADU / DADU timeline section (the rising "adu permit timeline seattle"
-  // --- query): median durations by dwelling type plus a by-year breakdown.
-  const aduRows = aduHasData
-    ? [
-        {
-          label: "ADU (attached)",
-          value: adu.ADU.applied_to_issued.median,
-          display: `${adu.ADU.applied_to_issued.median} days`,
-          sub: `${adu.ADU.applied_to_issued.count.toLocaleString()} issued permits`,
-        },
-        {
-          label: "DADU (detached)",
-          value: adu.DADU.applied_to_issued.median,
-          display: `${adu.DADU.applied_to_issued.median} days`,
-          sub: `${adu.DADU.applied_to_issued.count.toLocaleString()} issued permits`,
-        },
-      ]
-    : [];
-  const aduYearRows = adu.by_year
-    .filter((r) => r.adu_type === "ADU" || r.adu_type === "DADU")
-    .sort((a, b) => String(a.year).localeCompare(String(b.year)))
-    .map(
-      (r) => `<tr>
-        <td>${escapeHtml(r.year)}</td>
-        <td>${r.adu_type === "ADU" ? "ADU" : "DADU"}</td>
-        <td>${r.count.toLocaleString()}</td>
-        <td>${r.avg_days} days</td>
-      </tr>`,
-    )
-    .join("");
-  const aduRecentLinks = adu.recent
-    .map(
-      (r) => `<li>
-        <a class="ent-link" href="/permits/${encodeURIComponent(r.permit_number)}">${escapeHtml(r.permit_number)}</a>
-        <span class="pill" style="margin-left:0.4rem;">${escapeHtml(r.adu_type || "ADU")}</span>
-        ${r.address_slug ? ` <a class="ent-link" href="/address/${encodeURIComponent(r.address_slug)}">${escapeHtml(r.display_address || r.address)}</a>` : ""}
-      </li>`,
-    )
-    .join("");
-
-  const aduSection = aduHasData
-    ? `
-    <div class="card">
-      <h2>ADU vs. DADU: how long to issuance</h2>
-      <div class="stat-row">
-        ${entStat("ADU median to issue", `${adu.ADU.applied_to_issued.median} days`)}
-        ${entStat("DADU median to issue", `${adu.DADU.applied_to_issued.median} days`)}
-        ${entStat("ADU permits issued", adu.ADU.issued.toLocaleString())}
-        ${entStat("DADU permits issued", adu.DADU.issued.toLocaleString())}
-      </div>
-      ${prBarChart(aduRows, "var(--success)")}
-      <p class="pr-note">Median application-to-issuance time across ${adu.ADU.applied_to_issued.count.toLocaleString()} issued ADU and ${adu.DADU.applied_to_issued.count.toLocaleString()} issued DADU permits. Averages run higher: ${adu.ADU.applied_to_issued.mean} days (ADU) and ${adu.DADU.applied_to_issued.mean} days (DADU).</p>
-    </div>
-    <div class="card">
-      <h2>How long each step takes</h2>
-      <ol style="margin:0;padding-left:1.25rem;line-height:1.8;">
-        <li><strong>Application</strong> — the permit is filed with the Seattle Department of Construction and Inspections. ${adu.ADU.applied.toLocaleString()} ADU and ${adu.DADU.applied.toLocaleString()} DADU permits in this dataset have an application date.</li>
-        <li><strong>Review</strong> — plans go through SDCI review, including applicant correction cycles where published. ${adu.ADU.issue_rate}% of applied ADU permits and ${adu.DADU.issue_rate}% of applied DADU permits reach issuance.</li>
-        <li><strong>Issuance</strong> — the permit is issued. Median ${adu.ADU.applied_to_issued.median} days after application for ADUs and ${adu.DADU.applied_to_issued.median} days for DADUs.</li>
-        <li><strong>Completion</strong> — construction finishes and the permit is marked complete. ${adu.ADU.completion_rate}% of issued ADU permits and ${adu.DADU.completion_rate}% of issued DADU permits are marked complete, with a median of ${adu.ADU.issued_to_completed.median} days (ADU) and ${adu.DADU.issued_to_completed.median} days (DADU) from issuance.</li>
-      </ol>
-    </div>
-    ${aduYearRows ? `<div class="card">
-      <h2>Average application → issuance time by year</h2>
-      <div style="overflow-x:auto;">
-        <table class="ent">
-          <thead><tr><th>Year</th><th>Type</th><th>Issued permits</th><th>Average days</th></tr></thead>
-          <tbody>${aduYearRows}</tbody>
-        </table>
-      </div>
-      <p class="pr-note">Grouped by issue date; partial years reflect records ingested so far. Years with a handful of dated permits are noisier than recent full years.</p>
-    </div>` : ""}
-    ${aduRecentLinks ? `<div class="card">
-      <h2>Recent ADU and DADU permits</h2>
-      <ul class="ent-list">${aduRecentLinks}</ul>
-    </div>` : ""}
-    `
-    : "";
-
   const emptyState = `
     <div class="card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No pipeline data yet</h2>
@@ -5431,15 +5379,28 @@ async function renderPipelinePage(env) {
     </div>`;
 
   const body = `
-    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "ADU Permit Timeline" }])}
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Permit Pipeline" }])}
     ${insightsStyles()}
     ${insightsTabs("pipeline")}
     <div class="ent-hero">
-      <div class="ent-kicker">ADU &amp; DADU permit timeline</div>
-      <h1>How long does an ADU permit take in Seattle?</h1>
-      <p style="color:var(--text-muted);max-width:65ch;margin:0;">ADU and DADU permits travel from application to review to issuance to completion. Using public Seattle DCI records, here's how long each step actually takes — by permit type and by year.</p>
+      <div class="ent-kicker">Permit pipeline</div>
+      <h1>Seattle's permit pipeline, from application to completion</h1>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Every Seattle building permit moves through the same funnel — application, issuance, completion. This is where the whole pipeline stands right now, computed from public SDCI records.</p>
     </div>
-    ${aduSection}
+    ${
+      hasData
+        ? `<div class="card">
+      <h2>What the funnel says</h2>
+      <p>Of ${st.applied.toLocaleString()} Seattle permits with an application date in the dataset, ${st.issued.toLocaleString()} have been issued — an issue rate of ${data.issue_rate}%. Permits that do issue take a median of ${data.applied_to_issued.median} days from application (average ${data.applied_to_issued.mean} days; the slowest decile takes ${data.applied_to_issued.p90} days or more).</p>
+      <p>After issuance, ${data.completion_rate}% of permits are marked complete, with a median of ${data.issued_to_completed.median} days of construction time. Permits that never issue don't disappear from this funnel — they keep the applied count honest, which is why the issue rate is the number to watch.</p>
+    </div>`
+        : ""
+    }
+    <div class="card">
+      <h2>Looking for ADU timelines?</h2>
+      <p>Accessory dwelling unit permits have their own tracker with median application-to-issuance times, step-by-step duration breakdowns, and activity by year and neighborhood.</p>
+      <p><a class="ent-link" href="/insights/adu-dadu">See the ADU &amp; DADU permit timeline and tracker &rarr;</a></p>
+    </div>
     ${
       hasData
         ? `
@@ -5618,6 +5579,10 @@ async function renderHousingPage(env) {
         ${entStat("Permits adding homes", t.permits_adding.toLocaleString())}
       </div>
       <p class="pr-note">Across all permits on record, Seattle has permitted a net ${(t.net >= 0 ? "+" : "") + t.net.toLocaleString()} dwelling units (${t.added.toLocaleString()} added, ${t.removed.toLocaleString()} removed).</p>
+    </div>
+    <div class="card">
+      <h2>How to read these numbers</h2>
+      <p class="pr-note">Net units are what count for housing supply: gross additions minus demolitions and conversions that remove homes. A single permit can do both — a teardown replaced by a duplex removes one unit and adds two. Watch the neighborhood rankings too: citywide totals can mask how concentrated new construction is in a handful of areas.</p>
     </div>
     <div class="card">
       <h2>Net new units by year</h2>
@@ -5813,9 +5778,57 @@ async function renderAduDaduPage(env) {
   }
   const totals = data.totals;
   const hasData = totals.total > 0;
-  const title = "Seattle ADU & DADU Permit Tracker | Building Seattle";
+  // This URL owns all ADU intent: the tracker AND the "how long does an ADU
+  // permit take" timeline (moved from /insights/pipeline, which now covers the
+  // general permit funnel) so the two pages stop competing for ADU queries.
+  const title = "Seattle ADU & DADU Permits: Timeline & Tracker";
   const description =
-    "Track Seattle ADU and DADU permits by year, neighborhood, status, declared value, and recent activity using public SDCI permit records.";
+    "How long does an ADU permit take in Seattle? Median application-to-issuance days, step-by-step timing, and ADU/DADU permits by year, neighborhood, and status from public SDCI records.";
+
+  let aduTimeline = null;
+  try {
+    aduTimeline = await getAduTimeline(env);
+  } catch (error) {
+    console.warn("ADU timeline unavailable:", error?.message || error);
+  }
+  const aduTl = aduTimeline || { ADU: null, DADU: null, by_year: [], recent: [] };
+  const aduTlHasData = (aduTl.ADU?.issued || 0) > 0 || (aduTl.DADU?.issued || 0) > 0;
+
+  // Data-grounded FAQ: numbers are only quoted when the tracker actually has
+  // issued ADU/DADU permits with dated records, so no fabricated claims ship.
+  const faqTimelineEntities = [];
+  if (aduTlHasData) {
+    const aduMed = aduTl.ADU?.applied_to_issued?.median;
+    const daduMed = aduTl.DADU?.applied_to_issued?.median;
+    if (Number.isFinite(aduMed) && Number.isFinite(daduMed)) {
+      faqTimelineEntities.push(
+        {
+          "@type": "Question",
+          name: "How long does an ADU permit take in Seattle?",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: `Across ${aduTl.ADU.applied_to_issued.count.toLocaleString()} issued ADU permits tracked by Building Seattle, the median time from application to issuance is ${aduMed} days.`,
+          },
+        },
+        {
+          "@type": "Question",
+          name: "How long does a DADU (backyard cottage) permit take in Seattle?",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: `Across ${aduTl.DADU.applied_to_issued.count.toLocaleString()} issued DADU permits tracked by Building Seattle, the median time from application to issuance is ${daduMed} days.`,
+          },
+        },
+      );
+    }
+    faqTimelineEntities.push({
+      "@type": "Question",
+      name: "Does the ADU permit timeline include permits still in review?",
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: "No. Timeline medians are computed only from permits with both application and issuance dates, so permits still in review are counted in stage totals but excluded from duration statistics.",
+      },
+    });
+  }
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -5840,6 +5853,7 @@ async function renderAduDaduPage(env) {
       {
         "@type": "FAQPage",
         mainEntity: [
+          ...faqTimelineEntities,
           {
             "@type": "Question",
             name: "What is the difference between an ADU and a DADU in Seattle?",
@@ -5877,6 +5891,69 @@ async function renderAduDaduPage(env) {
     ],
   }).replace(/</g, "\\u003c");
 
+  const aduTimelineRows = aduTlHasData
+    ? [
+        {
+          label: "ADU (attached)",
+          value: aduTl.ADU.applied_to_issued.median,
+          display: `${aduTl.ADU.applied_to_issued.median} days`,
+          sub: `${aduTl.ADU.applied_to_issued.count.toLocaleString()} issued permits`,
+        },
+        {
+          label: "DADU (detached)",
+          value: aduTl.DADU.applied_to_issued.median,
+          display: `${aduTl.DADU.applied_to_issued.median} days`,
+          sub: `${aduTl.DADU.applied_to_issued.count.toLocaleString()} issued permits`,
+        },
+      ]
+    : [];
+  const aduTimelineYearRows = aduTl.by_year
+    .filter((r) => r.adu_type === "ADU" || r.adu_type === "DADU")
+    .sort((a, b) => String(a.year).localeCompare(String(b.year)))
+    .map(
+      (r) => `<tr>
+        <td>${escapeHtml(r.year)}</td>
+        <td>${r.adu_type === "ADU" ? "ADU" : "DADU"}</td>
+        <td>${r.count.toLocaleString()}</td>
+        <td>${r.avg_days} days</td>
+      </tr>`,
+    )
+    .join("");
+  const aduTimelineSection = aduTlHasData
+    ? `
+    <div class="card">
+      <h2>How long does an ADU permit take in Seattle?</h2>
+      <div class="stat-row">
+        ${entStat("ADU median to issue", `${aduTl.ADU.applied_to_issued.median} days`)}
+        ${entStat("DADU median to issue", `${aduTl.DADU.applied_to_issued.median} days`)}
+        ${entStat("ADU permits issued", aduTl.ADU.issued.toLocaleString())}
+        ${entStat("DADU permits issued", aduTl.DADU.issued.toLocaleString())}
+      </div>
+      ${prBarChart(aduTimelineRows, "var(--success)")}
+      <p>Detached units take longer: the median DADU runs ${aduTl.DADU.applied_to_issued.median} days from application to issuance against ${aduTl.ADU.applied_to_issued.median} days for an attached ADU. Averages run higher than medians — ${aduTl.ADU.applied_to_issued.mean} days (ADU) and ${aduTl.DADU.applied_to_issued.mean} days (DADU) — because a small number of long reviews pull the average up.</p>
+    </div>
+    <div class="card">
+      <h2>How long each step takes</h2>
+      <ol style="margin:0;padding-left:1.25rem;line-height:1.8;">
+        <li><strong>Application</strong> — the permit is filed with the Seattle Department of Construction and Inspections. ${aduTl.ADU.applied.toLocaleString()} ADU and ${aduTl.DADU.applied.toLocaleString()} DADU permits in this dataset have an application date.</li>
+        <li><strong>Review</strong> — plans go through SDCI review, including applicant correction cycles where published. ${aduTl.ADU.issue_rate}% of applied ADU permits and ${aduTl.DADU.issue_rate}% of applied DADU permits reach issuance.</li>
+        <li><strong>Issuance</strong> — the permit is issued. Median ${aduTl.ADU.applied_to_issued.median} days after application for ADUs and ${aduTl.DADU.applied_to_issued.median} days for DADUs.</li>
+        <li><strong>Completion</strong> — construction finishes and the permit is marked complete. ${aduTl.ADU.completion_rate}% of issued ADU permits and ${aduTl.DADU.completion_rate}% of issued DADU permits are marked complete, with a median of ${aduTl.ADU.issued_to_completed.median} days (ADU) and ${aduTl.DADU.issued_to_completed.median} days (DADU) from issuance.</li>
+      </ol>
+    </div>
+    ${aduTimelineYearRows ? `<div class="card">
+      <h2>Average application → issuance time by year</h2>
+      <div style="overflow-x:auto;">
+        <table class="ent">
+          <thead><tr><th>Year</th><th>Type</th><th>Issued permits</th><th>Average days</th></tr></thead>
+          <tbody>${aduTimelineYearRows}</tbody>
+        </table>
+      </div>
+      <p class="pr-note">Grouped by issue date; partial years reflect records ingested so far. Years with a handful of dated permits are noisier than recent full years.</p>
+    </div>` : ""}
+    `
+    : "";
+
   const yearRows = data.by_year.map((row) => ({
     label: row.year,
     value: row.permits,
@@ -5909,8 +5986,8 @@ async function renderAduDaduPage(env) {
     ${insightsTabs("adu-dadu")}
     <div class="ent-hero">
       <div class="ent-kicker">Seattle housing intelligence</div>
-      <h1>Seattle ADU &amp; DADU permit tracker</h1>
-      <p style="color:var(--text-muted);max-width:70ch;margin:0;">Follow accessory dwelling unit permits across Seattle, compare attached ADUs with detached backyard cottages, and see where new small-scale housing activity is concentrating.</p>
+      <h1>Seattle ADU &amp; DADU permit timeline and tracker</h1>
+      <p style="color:var(--text-muted);max-width:70ch;margin:0;">How long ADU and DADU permits actually take, plus every accessory dwelling unit permit across Seattle by year, neighborhood, and status. Compare attached ADUs with detached backyard cottages, and see where new small-scale housing activity is concentrating.</p>
     </div>
     ${
       hasData
@@ -5927,6 +6004,7 @@ async function renderAduDaduPage(env) {
       <p class="pr-note">These are matching permit records, not a count of guaranteed completed dwellings. One property or project can have multiple related permits.</p>
       ${totals.data_updated_through ? `<p class="pr-note">Source data updated through ${escapeHtml(entDate(totals.data_updated_through))}.</p>` : ""}
     </div>
+    ${aduTimelineSection}
     <div class="card">
       <h2>ADU and DADU permits by year</h2>
       ${prBarChart(yearRows, "var(--success)")}
@@ -6192,6 +6270,7 @@ async function renderMarketSegmentPage(env, segment) {
             ${entStat("Active / in review", data.totals.active.toLocaleString())}
             ${entStat("Declared value", compactMoney(data.totals.total_value))}
           </div></div>
+          <div class="card"><h2>How to read these numbers</h2><p class="pr-note">Active and in-review permits are the forward pipeline — work likely to start or continue in the coming months. Declared value is the cost stated on the application, so it understates true project cost but stays comparable across permits. The neighborhood ranking shows where this segment is actually clustering, usually a better demand signal than the citywide total.</p></div>
           <div class="card"><h2>Permit activity by year</h2>${prBarChart(yearRows, "var(--success)")}</div>
           <div class="card"><h2>Leading Seattle neighborhoods</h2>${prBarChart(neighborhoodRows)}</div>
           <div class="card"><h2>Recent matching permits</h2><div style="overflow-x:auto;"><table class="ent">
@@ -6373,6 +6452,7 @@ async function renderMapPage(env) {
         ${entStat("Permits mapped", data.total_permits.toLocaleString())}
         ${entStat("Total value", compactMoney(data.total_value))}
       </div>
+      <p class="pr-note">Larger, darker bubbles mean more permitted work and higher declared value — the clearest signal of where construction capital is flowing. Only permits with a mappable address appear here, so citywide or multi-site permits are excluded.</p>
     </div>
     <div class="ent-grid">
       <div class="card">
@@ -6531,6 +6611,7 @@ async function renderContractorsPage(env) {
         ${entStat("With permits", data.totals.active_contractors.toLocaleString())}
         ${entStat("Attributed permits", data.totals.attributed_permits.toLocaleString())}
       </div>
+      <p class="pr-note">Attribution comes from the contractor field on each permit, so owner-builder and unspecified permits are not counted here. Value reflects declared permit value, not final construction cost. Median review speed is a rough proxy for process experience — repeat filers tend to clear Seattle review faster.</p>
     </div>
     <div class="ent-grid">
       <div class="card">
@@ -6791,6 +6872,7 @@ async function renderNetworkPage(env) {
       <div class="ent-kicker">Insights</div>
       <h1>Who builds where</h1>
       <p style="color:var(--text-muted);max-width:65ch;margin:0;">A network of Seattle's 16 busiest contractors and the neighborhoods where they pull the most permits. Thicker links mean more shared activity.</p>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0.5rem 0 0;">Read it as a specialization map: contractors bound tightly to one or two neighborhoods tend to be local specialists, while those linked across the city run larger, generalist operations.</p>
     </div>
     ${
       hasData
@@ -6916,9 +6998,9 @@ async function renderInsightsIndex(env) {
       )}
       ${feature(
         "/insights/pipeline",
-        "ADU timeline",
-        "ADU permit timeline",
-        "How long ADU and DADU permits take from application to issuance to completion, plus the full Seattle permit pipeline.",
+        "Pipeline",
+        "Permit pipeline",
+        "Every Seattle permit tracked from application to issuance to completion — stage counts, timing, and where projects stall.",
         pipeTotal ? `${pipeIssued.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">issued of ${pipeTotal.toLocaleString()}</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
       ${feature(
@@ -6931,8 +7013,8 @@ async function renderInsightsIndex(env) {
       ${feature(
         "/insights/adu-dadu",
         "Small-scale housing",
-        "ADU & DADU permit tracker",
-        "Accessory dwelling unit permits by year, neighborhood, status, declared value, and recent activity.",
+        "ADU & DADU timeline and tracker",
+        "How long ADU and DADU permits actually take — medians by year and unit type, plus the full permit tracker.",
         aduTotal ? `${aduTotal.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">matching permits</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
       ${feature(
@@ -7057,7 +7139,7 @@ async function renderAddressPage(slug, env, request) {
   const firstDate = dates[0];
   const lastDate = dates[dates.length - 1];
   const activePermits = permits.filter((p) => ["active", "pending", "new"].includes(String(p.status || "").toLowerCase()));
-  const display = cleanFeedText(address.display_address) || cleanFeedText(address.normalized_address) || "Seattle property";
+  const display = smartTitleCase(cleanFeedText(address.display_address) || cleanFeedText(address.normalized_address)) || "Seattle property";
   const noindex = permitCount === 0;
 
   // Use one shared, source-backed descriptor for the address title, meta, and
@@ -7395,7 +7477,7 @@ async function renderNeighborhoodPage(slug, env, request) {
   const permitCount = Number(totals?.permits) || 0;
   const totalValue = Number(totals?.total_value) || 0;
   const noindex = permitCount === 0;
-  const title = `${nb.name} Seattle Construction Permits & Development Activity`;
+  const title = `${nb.name} Construction Permits — Seattle`;
   const description = `Recent permits, active projects, top contractors, estimated values, and the most active addresses in ${nb.name}, Seattle.`;
 
   const jsonLd = JSON.stringify({
@@ -9137,6 +9219,52 @@ function renderWebMcpScript() {
       } catch (e) { /* WebMCP unavailable; ignore */ }
     })();
   </script>`;
+}
+
+function renderLlmsTxt() {
+  const lines = [
+    "# Building Seattle",
+    "",
+    "> Building Seattle tracks every construction permit in Seattle — applications,",
+    "> issuance, plan-review timelines, contractors, neighborhoods, and housing",
+    "> units — built from daily City of Seattle SDCI open-data feeds.",
+    "",
+    "## Data & methodology",
+    `- ${BASE_URL}/data — datasets, downloads, and licensing`,
+    `- ${BASE_URL}/methodology — how permits are cleaned, clustered, and scored`,
+    `- ${BASE_URL}/about — about the project`,
+    "",
+    "## Programmatic pages",
+    `- ${BASE_URL}/permits — search and browse all permits (detail: /permits/{permit_number})`,
+    `- ${BASE_URL}/contractors — contractor rankings (detail: /contractors/{slug})`,
+    `- ${BASE_URL}/neighborhoods — neighborhood stats (detail: /neighborhoods/{slug})`,
+    `- ${BASE_URL}/projects — clustered multi-permit projects`,
+    `- ${BASE_URL}/addresses — permit history by address`,
+    "",
+    "## Insights",
+    `- ${BASE_URL}/insights — analysis hub`,
+    `- ${BASE_URL}/insights/plan-review — plan-review timing distributions`,
+    `- ${BASE_URL}/insights/pipeline — the full permit pipeline, application to completion`,
+    `- ${BASE_URL}/insights/adu-dadu — ADU & DADU permit timelines and tracker`,
+    `- ${BASE_URL}/insights/housing — net new housing units tracker`,
+    `- ${BASE_URL}/insights/multifamily-pipeline — multifamily construction pipeline`,
+    `- ${BASE_URL}/insights/commercial-projects — commercial project activity`,
+    `- ${BASE_URL}/insights/tenant-improvements — tenant-improvement trends`,
+    `- ${BASE_URL}/insights/map — construction activity map by neighborhood`,
+    `- ${BASE_URL}/insights/contractors — contractor leaderboard`,
+    `- ${BASE_URL}/insights/network — who builds where`,
+    "",
+    "## Machine access",
+    `- ${BASE_URL}/api/stats — current summary stats (JSON)`,
+    `- ${BASE_URL}/api/contractors — contractor data (JSON)`,
+    `- ${BASE_URL}/api-docs — API documentation`,
+    `- ${BASE_URL}/openapi.json — OpenAPI spec`,
+    `- ${BASE_URL}/sitemap.xml — full URL inventory`,
+    "",
+  ];
+  return new Response(lines.join("\n"), {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
 }
 
 function renderRobotsTxt() {

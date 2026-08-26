@@ -220,39 +220,28 @@ test("summarizeAduTimeline buckets ADU/DADU stages and durations", () => {
   assert.equal(summary.recent[0].address_slug, "x-ave");
 });
 
-test("/insights/pipeline renders ADU timeline title, meta, H1, FAQ and internal links", async () => {
+test("/insights/pipeline renders the general permit pipeline (ADU intent lives on /insights/adu-dadu)", async () => {
   const env = createPipelineEnv();
   const response = await worker.fetch(new Request("https://buildingseattle.com/insights/pipeline"), env, createCtx());
   assert.equal(response.status, 200);
   const html = await response.text();
 
-  // Title / meta / H1 directly answer the rising query
-  assert.match(html, /<title>Seattle ADU Permit Timeline: How Long It Takes, Step by Step<\/title>/);
-  assert.match(
-    html,
-    /<meta name="description" content="How long does an ADU or DADU permit take in Seattle\?/,
-  );
-  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/insights\/pipeline">/);
+  // Title / H1 describe the general pipeline, not ADU-only intent
+  assert.match(html, /<title>Seattle Permit Pipeline: Applied, Issued &amp; Completed<\/title>/);
   const h1s = html.match(/<h1[^>]*>.*?<\/h1>/g) || [];
   assert.equal(h1s.length, 1, "exactly one H1");
-  assert.match(h1s[0], /How long does an ADU permit take in Seattle\?/);
+  assert.match(h1s[0], /Seattle's permit pipeline, from application to completion/);
 
-  // Data-grounded stage explanation with real numbers from the mock
-  assert.match(html, /ADU median to issue/);
-  assert.match(html, /Median application-to-issuance time across 3 issued ADU and 2 issued DADU permits/);
-  assert.match(html, /Median 20 days after application for ADUs and 50 days for DADUs/);
-  assert.match(html, /80% of applied ADU permits and 86% of applied DADU permits reach issuance/);
-  assert.match(html, /Average application → issuance time by year/);
-
-  // Internal links to ADU-classified permit and address pages
-  assert.match(html, /href="\/permits\/ADU-2026-0001"/);
-  assert.match(html, /href="\/address\/1234-fake-ave-seattle-wa"/);
-
-  // Structured data: Dataset + data-grounded FAQ + BreadcrumbList
-  assert.match(html, /"@type":"FAQPage"/);
-  assert.match(html, /"How long does an ADU permit take in Seattle\?"/);
-  assert.match(html, /median time from application to issuance is 20 days/);
+  // Pipeline structured data still present
+  assert.match(html, /"@type":"Dataset"/);
   assert.match(html, /"@type":"BreadcrumbList"/);
+
+  // Cross-link to the dedicated ADU timeline page
+  assert.match(html, /href="\/insights\/adu-dadu"/);
+
+  // ADU-specific framing moved off this page
+  assert.doesNotMatch(html, /ADU median to issue/);
+  assert.doesNotMatch(html, /"@type":"FAQPage"/);
 
   // No template leakage
   assert.ok(!html.includes("undefined"), "no undefined leakage");
@@ -284,7 +273,7 @@ test("template-wide HTML edge cache: warm second fetch skips the render's D1 wor
     assert.ok(callsAfterFirst > 1, "first fetch actually queried D1");
     assert.equal(store.size, 1, "fresh page stored in the edge cache");
     const [key] = store.keys();
-    assert.ok(key.includes("__bsv=v2"), `cache key is versioned, got ${key}`);
+    assert.ok(key.includes("__bsv=v3"), `cache key is versioned, got ${key}`);
     assert.match(first.headers.get("Cache-Control") || "", /s-maxage=3600/);
 
     const second = await worker.fetch(request(), env, createCtx());
