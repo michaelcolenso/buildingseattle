@@ -249,6 +249,10 @@ function createEnv() {
               };
             }
 
+            if (sql.includes("GROUP BY neighborhood") && sql.includes("-7 days")) {
+              return { results: [] };
+            }
+
             throw new Error(`Unhandled all() query: ${sql}`);
           },
           async first() {
@@ -432,7 +436,7 @@ function createEnv() {
               return { success: true };
             }
 
-            if (sql.includes("INSERT INTO leads")) {
+            if (sql.includes("INSERT INTO leads") || sql.includes("INSERT OR IGNORE INTO leads")) {
               leads.push({
                 email: params[0],
                 company: params[1],
@@ -747,6 +751,127 @@ test("GET /admin rejects public requests before reading dashboard data", async (
 
   assert.equal(response.status, 401);
   assert.match(response.headers.get("Content-Type") || "", /application\/json/);
+});
+
+test("admin rejects a spoofed CF-Access JWT when Access verification is not configured", async () => {
+  const env = createEnv();
+  env.ADMIN_API_TOKEN = "test-admin-token";
+
+  const response = await worker.fetch(
+    new Request("http://example.com/admin", {
+      headers: { "CF-Access-Jwt-Assertion": "header.payload.signature" },
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 401);
+});
+
+test("admin accepts the configured X-Admin-Token", async () => {
+  const env = createEnv();
+  env.ADMIN_API_TOKEN = "test-admin-token";
+
+  const response = await worker.fetch(
+    new Request("http://example.com/admin", {
+      headers: { "X-Admin-Token": "test-admin-token" },
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /System Health/);
+});
+
+test("api/user rejects a spoofed CF-Access JWT when Access verification is not configured", async () => {
+  const response = await worker.fetch(
+    new Request("http://example.com/api/user", {
+      headers: { "CF-Access-Jwt-Assertion": "header.payload.signature" },
+    }),
+    createEnv(),
+    createCtx(),
+  );
+
+  assert.equal(response.status, 401);
+});
+
+test("POST /leads/batch requires the ingest token", async () => {
+  const env = createEnv();
+  const response = await worker.fetch(
+    new Request("http://example.com/leads/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [{ email: "a@example.com", company: "Acme", interest: "contractor" }] }),
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(env._state.leads.length, 0);
+});
+
+test("POST /leads/batch accepts valid items with the ingest token and rejects invalid rows", async () => {
+  const env = createEnv();
+  const response = await worker.fetch(
+    new Request("http://example.com/leads/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Ingest-Token": "test-ingest-token" },
+      body: JSON.stringify({
+        items: [
+          { email: "A@Example.com", company: "Acme", interest: "contractor" },
+          { email: "not-an-email", company: "Acme", interest: "contractor" },
+          { email: "missing@example.com", company: "", interest: "contractor" },
+        ],
+      }),
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.processed, 3);
+  assert.equal(payload.results.filter((item) => item.status === "success").length, 1);
+  assert.equal(env._state.leads.length, 1);
+  assert.equal(env._state.leads[0].email, "a@example.com");
+});
+
+test("POST /leads/batch caps batch size at 500 records", async () => {
+  const env = createEnv();
+  const items = Array.from({ length: 501 }, (_, index) => ({
+    email: `lead${index}@example.com`,
+    company: "Acme",
+    interest: "contractor",
+  }));
+  const response = await worker.fetch(
+    new Request("http://example.com/leads/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Ingest-Token": "test-ingest-token" },
+      body: JSON.stringify({ items }),
+    }),
+    env,
+    createCtx(),
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal(env._state.leads.length, 0);
+});
+
+test("rendered pages ship a visible :focus-visible ring", async () => {
+  const response = await worker.fetch(new Request("http://example.com/permits"), createEnv(), createCtx());
+  const html = await response.text();
+
+  assert.match(html, /:focus-visible\s*\{\s*outline:\s*2px solid var\(--accent\)/);
+});
+
+test("homepage no longer removes focus outlines from form fields", async () => {
+  const response = await worker.fetch(new Request("http://example.com/"), createEnv(), createCtx());
+  const html = await response.text();
+
+  assert.match(html, /:focus-visible\s*\{\s*outline:\s*2px solid var\(--accent\)/);
+  assert.doesNotMatch(html, /outline:\s*none/);
 });
 
 test("HTML and JSON responses include baseline security headers", async () => {

@@ -153,7 +153,7 @@ export default {
       }
 
       if (path === "/admin") {
-        const authError = requireAdminAuth(request, env);
+        const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
         return secure(await renderAdminDashboard(request, env));
       }
@@ -163,6 +163,10 @@ export default {
       }
 
       if (path === "/leads/batch" && request.method === "POST") {
+        const authError = await requireIngestAuth(request, env);
+        if (authError) {
+          return secure(authError);
+        }
         return secure(await handleLeadBatch(request, env));
       }
 
@@ -315,7 +319,7 @@ export default {
       }
 
       if (path === "/api/admin/stats") {
-        const authError = requireAdminAuth(request, env);
+        const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
         const stats = await getAdminStats(env);
         return secure(
@@ -326,7 +330,7 @@ export default {
       }
 
       if (path === "/api/admin/analytics") {
-        const authError = requireAdminAuth(request, env);
+        const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
         const days = parseInt(url.searchParams.get("days") || "7", 10);
         const since = new Date();
@@ -379,14 +383,14 @@ export default {
       }
 
       if (path === "/admin/build-graph" && request.method === "POST") {
-        const authError = requireAdminAuth(request, env);
+        const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
         const result = await rebuildEntityGraph(env);
         return secure(jsonResponse(result));
       }
 
       if (path === "/admin/entity-report") {
-        const authError = requireAdminAuth(request, env);
+        const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
         const report = await entityGraphReport(env);
         return secure(jsonResponse(report));
@@ -827,13 +831,118 @@ function unauthorizedResponse(message, status = 401) {
   });
 }
 
-function requireAdminAuth(request, env) {
-  if (request.headers.get("CF-Access-Jwt-Assertion")) {
+const ACCESS_CERTS_CACHE = { fetchedAt: 0, keys: null, promise: null };
+const ACCESS_CERTS_TTL_MS = 60 * 60 * 1000;
+
+function base64UrlDecode(value) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (value.length % 4)) % 4);
+  return atob(base64);
+}
+
+function base64UrlBytes(value) {
+  const binary = base64UrlDecode(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function fetchAccessCertKeys(env) {
+  const teamDomain = String(env.CF_ACCESS_TEAM_DOMAIN || "").trim();
+  if (!teamDomain) return null;
+  if (ACCESS_CERTS_CACHE.keys && Date.now() - ACCESS_CERTS_CACHE.fetchedAt < ACCESS_CERTS_TTL_MS) {
+    return ACCESS_CERTS_CACHE.keys;
+  }
+  if (!ACCESS_CERTS_CACHE.promise) {
+    ACCESS_CERTS_CACHE.promise = (async () => {
+      try {
+        const response = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`, {
+          headers: { "User-Agent": "BuildingSeattle-Worker" },
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        const keys = Array.isArray(data?.keys) ? data.keys : [];
+        ACCESS_CERTS_CACHE.keys = keys;
+        ACCESS_CERTS_CACHE.fetchedAt = Date.now();
+        return keys;
+      } catch {
+        return null;
+      } finally {
+        ACCESS_CERTS_CACHE.promise = null;
+      }
+    })();
+  }
+  return ACCESS_CERTS_CACHE.promise;
+}
+
+// Verify a Cloudflare Access JWT (RS256) against the team's published signing
+// keys. Returns the decoded payload only when the signature, audience,
+// issuer, and expiry all check out; returns null otherwise. Requires
+// CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD to be configured, so a bare
+// CF-Access-Jwt-Assertion header is never treated as authentication.
+async function verifyAccessJwt(token, env) {
+  const teamDomain = String(env.CF_ACCESS_TEAM_DOMAIN || "").trim();
+  const audience = String(env.CF_ACCESS_AUD || "");
+  if (!token || !teamDomain || !audience) return null;
+
+  const parts = String(token).split(".");
+  if (parts.length !== 3) return null;
+
+  let header;
+  let payload;
+  try {
+    header = JSON.parse(base64UrlDecode(parts[0]));
+    payload = JSON.parse(base64UrlDecode(parts[1]));
+  } catch {
+    return null;
+  }
+
+  if (typeof payload?.exp !== "number" || payload.exp * 1000 <= Date.now()) return null;
+  if (payload.iss && payload.iss !== `https://${teamDomain}`) return null;
+  const audMatches = audience === payload.aud || (Array.isArray(payload.aud) && payload.aud.includes(audience));
+  if (!audMatches) return null;
+
+  let keys = await fetchAccessCertKeys(env);
+  let key = (keys || []).find((candidate) => candidate.kid === header.kid);
+  if (!key) {
+    // One stale-cache refresh attempt before rejecting an unknown key id.
+    ACCESS_CERTS_CACHE.keys = null;
+    ACCESS_CERTS_CACHE.fetchedAt = 0;
+    keys = await fetchAccessCertKeys(env);
+    key = (keys || []).find((candidate) => candidate.kid === header.kid);
+  }
+  if (!key) return null;
+
+  try {
+    const cryptoKey = await crypto.subtle.importKey(
+      "jwk",
+      { kty: key.kty, n: key.n, e: key.e, kid: key.kid, alg: key.alg || "RS256", use: key.use || "sig" },
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    const data = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+    const valid = await crypto.subtle.verify(
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      cryptoKey,
+      base64UrlBytes(parts[2]),
+      data,
+    );
+    return valid ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+async function requireAdminAuth(request, env) {
+  const jwt = request.headers.get("CF-Access-Jwt-Assertion");
+  if (jwt && (await verifyAccessJwt(jwt, env))) {
     return null;
   }
 
   const configuredToken = env.ADMIN_API_TOKEN;
-  if (configuredToken && request.headers.get(ADMIN_TOKEN_HEADER) === configuredToken) {
+  if (configuredToken && (await timingSafeEqualString(request.headers.get(ADMIN_TOKEN_HEADER), configuredToken))) {
     return null;
   }
 
@@ -901,6 +1010,7 @@ function renderDesignTokens() {
         --container-max: 1200px;
       }
       .global-nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 50; }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       .global-nav-row { height: 4rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
       .global-nav .logo { font-weight: 800; font-size: 1.25rem; color: var(--primary); text-decoration: none; display: flex; align-items: center; gap: 0.5rem; }
       .global-nav .logo-icon { width: 2rem; height: 2rem; background: linear-gradient(135deg, var(--accent), var(--accent-hover)); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 1rem; }
@@ -1202,7 +1312,7 @@ async function handleRoot(request, env) {
         .form-group { margin-bottom: 1.25rem; }
         .form-group label { display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--primary); }
         .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--bg); color: var(--text); font-size: 1rem; transition: border-color 0.2s; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--accent); }
+        .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
         .loader { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: white; animation: spin 1s ease-in-out infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .hidden { display: none; }
@@ -1794,28 +1904,42 @@ async function handleRoot(request, env) {
 }
 
 async function handleLeadCapture(request, env) {
-  const data = await request.json();
-
-  if (!data.email || !data.company || !data.interest) {
-    return new Response(JSON.stringify({ error: "Missing required fields" }), {
+  let data;
+  try {
+    data = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
+  const email = String(data.email || "").trim().toLowerCase();
+  const company = String(data.company || "").trim();
+  const interest = String(data.interest || "").trim();
+  if (!isValidEmail(email) || !company || !interest) {
+    return new Response(JSON.stringify({ error: "A valid email, company, and interest are required" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  const neighborhoods = String(data.neighborhoods || "").trim().slice(0, 500) || null;
+  const source = String(data.source || "website").slice(0, 100);
+  const userAgent = String(data.userAgent || "").slice(0, 300) || null;
+
   const stmt = env.DB.prepare(`
-        INSERT INTO leads (email, company, interest, neighborhoods, source, user_agent, created_at)
+        INSERT OR IGNORE INTO leads (email, company, interest, neighborhoods, source, user_agent, created_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
   await stmt
     .bind(
-      data.email,
-      data.company,
-      data.interest,
-      data.neighborhoods || null,
-      data.source || "website",
-      data.userAgent || null,
+      email,
+      company,
+      interest,
+      neighborhoods,
+      source,
+      userAgent,
     )
     .run();
 
@@ -1824,27 +1948,69 @@ async function handleLeadCapture(request, env) {
   });
 }
 
+const LEAD_BATCH_MAX_ITEMS = 500;
+const LEAD_FIELD_MAX_LENGTH = 500;
+
 async function handleLeadBatch(request, env) {
-  const { items } = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const items = Array.isArray(body?.items) ? body.items : null;
+  if (!items) {
+    return new Response(JSON.stringify({ error: "items must be an array" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  if (items.length > LEAD_BATCH_MAX_ITEMS) {
+    return new Response(
+      JSON.stringify({ error: `items must contain at most ${LEAD_BATCH_MAX_ITEMS} records` }),
+      {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
+    );
+  }
+
   const results = [];
 
   for (const data of items) {
+    const email = String(data?.email || "").trim().toLowerCase();
+    const company = String(data?.company || "").trim();
+    const interest = String(data?.interest || "").trim();
+    if (!isValidEmail(email) || !company || !interest) {
+      results.push({ email, status: "error", error: "invalid" });
+      continue;
+    }
     try {
       const stmt = env.DB.prepare(`
                 INSERT OR IGNORE INTO leads (email, company, interest, neighborhoods, source, created_at)
                 VALUES (?, ?, ?, ?, ?, datetime('now'))
             `);
       await stmt
-        .bind(data.email, data.company, data.interest, data.neighborhoods || null, data.source || "batch")
+        .bind(
+          email,
+          company.slice(0, LEAD_FIELD_MAX_LENGTH),
+          interest.slice(0, LEAD_FIELD_MAX_LENGTH),
+          String(data.neighborhoods || "").trim().slice(0, LEAD_FIELD_MAX_LENGTH) || null,
+          String(data.source || "batch").slice(0, 100),
+        )
         .run();
-      results.push({ email: data.email, status: "success" });
-    } catch (e) {
-      results.push({ email: data.email, status: "error", error: e.message });
+      results.push({ email, status: "success" });
+    } catch {
+      results.push({ email, status: "error", error: "invalid" });
     }
   }
 
   return new Response(JSON.stringify({ processed: results.length, results }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }
 
@@ -4376,7 +4542,7 @@ function entDate(d) {
   const dt = new Date(d);
   return Number.isNaN(dt.getTime())
     ? String(d)
-    : dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    : dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 }
 
 function entStreet(displayAddress) {
@@ -8758,7 +8924,8 @@ async function ingestContractorBatch(request, env) {
 async function checkAuth(request, env) {
   const jwt = request.headers.get("CF-Access-Jwt-Assertion");
 
-  if (!jwt) {
+  const payload = await verifyAccessJwt(jwt, env);
+  if (!payload) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -8767,8 +8934,8 @@ async function checkAuth(request, env) {
 
   return new Response(
     JSON.stringify({
-      email: request.headers.get("CF-Access-Authenticated-User-Email"),
-      id: request.headers.get("CF-Access-Authenticated-User-Id"),
+      email: payload.email || request.headers.get("CF-Access-Authenticated-User-Email"),
+      id: payload.sub || payload.id || request.headers.get("CF-Access-Authenticated-User-Id"),
     }),
     {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
