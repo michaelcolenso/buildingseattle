@@ -273,7 +273,7 @@ export function renderHomepage(snapshot) {
   const ingestLabel = stats.last_ingest_at ? formatDate(stats.last_ingest_at, true) : "Unavailable";
   const recordLabel = stats.latest_record_date ? formatDate(stats.latest_record_date) : "Unavailable";
   const title = "Seattle Construction Permits & Projects — Building Seattle";
-  const description = "Search Seattle construction permits, contractor activity, neighborhoods, addresses, and recent SDCI permit changes.";
+  const description = "Search Seattle construction permits, projects, contractor activity, neighborhoods, addresses, and daily SDCI status changes in one public-record database.";
   const faqItems = [
     {
       q: "What can I search on Building Seattle?",
@@ -394,6 +394,12 @@ export function renderHomepage(snapshot) {
           <article class="market-card"><header><h3>Most active addresses</h3><p>Current active permit count · all active records</p></header>${renderRanking(addresses, "address")}</article>
           <article class="market-card"><header><h3>Contractors with new active work</h3><p>Active permits applied or issued · past 30 days</p></header>${renderRanking(contractors30d, "contractor")}</article>
           <article class="market-card"><header><h3>Neighborhoods with recent activity</h3><p>Permits applied or issued · past 30 days</p></header>${renderRanking(neighborhoods30d, "neighborhood")}</article>
+        </div>
+        <div class="market-context" aria-labelledby="construction-guide-heading" style="max-width:850px;margin:34px auto 0;color:var(--muted);line-height:1.75">
+          <h3 id="construction-guide-heading" style="margin:0 0 10px;color:var(--primary);font-size:1.25rem">How to read Seattle construction activity</h3>
+          <p>Seattle construction activity starts in the public permit record, before every proposed project becomes a finished building. An application shows intent; review and correction cycles show work moving through SDCI; issuance authorizes the permitted scope; and completion records the city’s final status. Start with <a class="text-link" href="/permits?status=active">active Seattle construction permits</a> when you want the current pipeline, or use <a class="text-link" href="/projects">linked projects</a> to group related records at the same site.</p>
+          <p>The <a class="text-link" href="/insights/pipeline">permit pipeline</a> separates applications, issued permits, and completions, while the <a class="text-link" href="/insights/plan-review">plan-review dashboard</a> shows how long review takes and how correction cycles affect timing. Those measures describe the city’s permitting process; they do not prove that construction has started on site.</p>
+          <p>Use <a class="text-link" href="/neighborhoods">neighborhood activity</a> to see where permits cluster and <a class="text-link" href="/contractors">contractor activity</a> to trace firms attached to public records. Declared permit value is useful for comparing the scale of filings, but it is an applicant-reported estimate rather than a verified construction budget.</p>
         </div>
       </div>
     </section>
