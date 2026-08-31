@@ -3165,16 +3165,15 @@ async function renderPermitDetail(permitNumber, env, request) {
   const titleLocation = streetOnly ? `${smartTitleCase(streetOnly)}, Seattle` : "Seattle";
   const rawTitleHighlight =
     permitDescriptor || rawWorkText || `${permitType} (${permit.status || "Unknown"})`;
-  // Keep the <title> around 60 chars so it isn't truncated in SERPs: the work
-  // highlight absorbs all overflow, and the brand suffix drops first.
-  const PERMIT_TITLE_MAX = 60;
+  // Keep the <title> reasonably tight so it isn't truncated in SERPs: the
+  // work highlight absorbs the overflow, but the brand suffix always ships —
+  // Google truncates long titles for display on its own, so a missing brand
+  // suffix is worse than a slightly long title.
+  const PERMIT_TITLE_MAX = 90;
   const brandSuffix = " | Building Seattle";
   const titlePrefix = `${titleLocation} — `;
-  const highlightBudget = PERMIT_TITLE_MAX - titlePrefix.length - brandSuffix.length;
-  const pageTitle =
-    highlightBudget >= 18
-      ? `${titlePrefix}${truncateMetaDescription(rawTitleHighlight, highlightBudget)}${brandSuffix}`
-      : truncateMetaDescription(`${titlePrefix}${rawTitleHighlight}`, PERMIT_TITLE_MAX);
+  const highlightBudget = Math.max(20, PERMIT_TITLE_MAX - titlePrefix.length - brandSuffix.length);
+  const pageTitle = `${titlePrefix}${truncateMetaDescription(rawTitleHighlight, highlightBudget)}${brandSuffix}`;
   const safeTitle = escapeHtml(pageTitle);
 
   // Build the meta description with the required facts (permit number/status)
