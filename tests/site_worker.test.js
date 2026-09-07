@@ -79,6 +79,25 @@ test("homepage is task-first and uses mechanically correct data labels", async (
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/i);
 });
 
+test("homepage gives broad Seattle construction searches a substantive linked guide", async () => {
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), ctx());
+  const html = await response.text();
+
+  const description = html.match(/<meta name="description" content="([^"]+)">/i)?.[1] || "";
+  assert.ok(description.length >= 150 && description.length <= 160, `homepage description is ${description.length} characters`);
+  assert.match(description, /Seattle construction permits/i);
+
+  const guide = html.match(/<div class="market-context"[^>]*>([\s\S]*?)<\/div>/i)?.[1] || "";
+  const guideText = guide.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  assert.ok(guideText.split(" ").length >= 100, `market guide has ${guideText.split(" ").length} words`);
+  assert.match(guide, /How to read Seattle construction activity/);
+  for (const href of ["/permits?status=active", "/projects", "/insights/pipeline", "/insights/plan-review", "/neighborhoods", "/contractors"]) {
+    assert.ok(guide.includes(`href="${href}"`), `market guide should link to ${href}`);
+  }
+  assert.ok(html.indexOf("Seattle construction activity") < html.indexOf("How to read Seattle construction activity"));
+  assert.ok(html.indexOf("How to read Seattle construction activity") < html.indexOf("Get to the useful record"));
+});
+
 test("homepage includes mobile/accessibility protections and has no JS-dependent primary action", async () => {
   const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), ctx());
   const html = await response.text();
