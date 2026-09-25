@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker from "../site_worker.js";
+import worker, { htmlCacheTtl, isHtmlCacheablePath } from "../worker.js";
 
 function createEnv() {
   const queries = [];
@@ -35,6 +35,9 @@ function createEnv() {
             if (sql.includes("homepage:neighborhoods-30d")) return { results: [{ label: "Ballard", permits: 5, total_value: 2000000 }] };
             if (sql.includes("api:active-contractors")) return { results: [{ id: 1, name: "Build Co", slug: "build-co", active_projects: 3 }] };
             throw new Error(`Unhandled all query: ${sql}`);
+          },
+          async run() {
+            return {};
           },
         };
       },
@@ -71,12 +74,47 @@ test("homepage is task-first and uses mechanically correct data labels", async (
 
   assert.doesNotMatch(html, /updated hourly/i);
   assert.doesNotMatch(html, /real-time market intelligence/i);
-  assert.doesNotMatch(html, /How does this help with SEO and traffic/i);
   assert.doesNotMatch(html, /Get Early Access/i);
   assert.doesNotMatch(html, /View Live Data/i);
   assert.doesNotMatch(html, /Permit Value Radar/i);
   assert.doesNotMatch(html, /<script>alert\("x"\)<\/script>/);
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/i);
+});
+
+test("homepage ships complete social metadata, a skip link, and no orphaned /about", async () => {
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), ctx());
+  const html = await response.text();
+
+  assert.match(html, /<meta property="og:image" content="https:\/\/buildingseattle\.com\/social\/insight\.png">/);
+  assert.match(html, /<meta property="og:image:width" content="1200">/);
+  assert.match(html, /<meta property="og:image:height" content="630">/);
+  assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+  assert.match(html, /<meta name="twitter:image" content="https:\/\/buildingseattle\.com\/social\/insight\.png">/);
+  assert.match(html, /<a class="skip-link" href="#main-content">Skip to content<\/a>/);
+  assert.match(html, /<main id="main-content">/);
+  // Footer coverage: the public pages the monitor treats as required links.
+  for (const href of ["/about", "/permits", "/contractors", "/neighborhoods", "/projects", "/addresses", "/insights", "/data", "/methodology", "/api-docs"]) {
+    assert.ok(html.includes(`href="${href}"`), `homepage should link to ${href}`);
+  }
+});
+
+test("homepage gives broad Seattle construction searches a substantive linked guide", async () => {
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), ctx());
+  const html = await response.text();
+
+  const description = html.match(/<meta name="description" content="([^"]+)">/i)?.[1] || "";
+  assert.ok(description.length >= 150 && description.length <= 160, `homepage description is ${description.length} characters`);
+  assert.match(description, /Seattle construction permits/i);
+
+  const guide = html.match(/<div class="market-context"[^>]*>([\s\S]*?)<\/div>/i)?.[1] || "";
+  const guideText = guide.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  assert.ok(guideText.split(" ").length >= 100, `market guide has ${guideText.split(" ").length} words`);
+  assert.match(guide, /How to read Seattle construction activity/);
+  for (const href of ["/permits?status=active", "/projects", "/insights/pipeline", "/insights/plan-review", "/neighborhoods", "/contractors"]) {
+    assert.ok(guide.includes(`href="${href}"`), `market guide should link to ${href}`);
+  }
+  assert.ok(html.indexOf("Seattle construction activity") < html.indexOf("How to read Seattle construction activity"));
+  assert.ok(html.indexOf("How to read Seattle construction activity") < html.indexOf("Get to the useful record"));
 });
 
 test("homepage includes mobile/accessibility protections and has no JS-dependent primary action", async () => {
@@ -90,6 +128,24 @@ test("homepage includes mobile/accessibility protections and has no JS-dependent
   assert.doesNotMatch(html, /onclick=/);
 });
 
+test("homepage is edge-cacheable and advertises discovery resources", async () => {
+  const env = createEnv();
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), env, ctx());
+
+  // "/" must be cacheable like every other public HTML page, and the TTL the
+  // edge cache would apply comes from the page's own max-age.
+  assert.equal(isHtmlCacheablePath("/"), true);
+  assert.equal(htmlCacheTtl(response), 300);
+  assert.match(response.headers.get("Cache-Control") || "", /max-age=300/);
+  assert.match(response.headers.get("Cache-Control") || "", /s-maxage=300/);
+
+  // The homepage previously missed the RFC 8288 discovery links that every
+  // other worker-rendered page sends.
+  const link = response.headers.get("Link") || "";
+  assert.match(link, /rel="sitemap"/);
+  assert.match(link, /rel="llms-txt"/);
+});
+
 test("GET /api/stats uses linked-contractor semantics and exposes freshness", async () => {
   const env = createEnv();
   const response = await worker.fetch(new Request("https://buildingseattle.com/api/stats"), env, ctx());
@@ -100,6 +156,7 @@ test("GET /api/stats uses linked-contractor semantics and exposes freshness", as
   assert.equal(payload.contractors, 2);
   assert.equal(payload.active_contractors, 2);
   assert.equal(payload.total_value, 12500000);
+  assert.equal(payload.latest_record_date, "2026-08-23");
   assert.equal(payload.last_ingest_at, "2026-08-24 08:15:00");
   const statsSql = env._queries.find((sql) => sql.includes("homepage:canonical-stats"));
   assert.match(statsSql, /COUNT\(DISTINCT CASE WHEN contractor_id IS NOT NULL THEN contractor_id END\)/);

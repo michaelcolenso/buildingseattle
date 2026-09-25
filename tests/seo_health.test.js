@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  decodedTitleLength,
   entityHubItemCount,
   expectedSchemaType,
   htmlMetadata,
   pngDimensions,
   schemaTypes,
   summarizeHistory,
+  titleBudget,
   xmlLocations,
 } from "../scripts/check_seo_health.mjs";
 
@@ -75,7 +77,30 @@ test("expectedSchemaType defines representative production page contracts", () =
   assert.equal(expectedSchemaType("/contractor/example"), "LocalBusiness");
   assert.equal(expectedSchemaType("/address/example"), "Place");
   assert.equal(expectedSchemaType("/project/example"), "CreativeWork");
-  assert.equal(expectedSchemaType("/neighborhood/example"), null);
+  assert.equal(expectedSchemaType("/neighborhood/example"), "CollectionPage");
+  assert.equal(expectedSchemaType("/insights"), "CollectionPage");
+  assert.equal(expectedSchemaType("/insights/plan-review"), "Dataset");
+  assert.equal(expectedSchemaType("/insights/network"), "Dataset");
+  assert.equal(expectedSchemaType("/about"), "AboutPage");
+  assert.equal(expectedSchemaType("/methodology"), "AboutPage");
+  assert.equal(expectedSchemaType("/data"), "Dataset");
+  assert.equal(expectedSchemaType("/api-docs"), "TechArticle");
+  assert.equal(expectedSchemaType("/not-a-real-route"), null);
+});
+
+test("titleBudget keeps address titles inside SERP truncation while allowing permit detail titles", () => {
+  assert.equal(titleBudget("/address/10-e-allison-st-seattle-wa"), 62);
+  assert.equal(titleBudget("/neighborhood/beacon-hill"), 70);
+  assert.equal(titleBudget("/permits/6641818-CN"), 92);
+  assert.ok(titleBudget("/address/example") < titleBudget("/permits/example"));
+});
+
+test("decodedTitleLength measures rendered text rather than HTML entities", () => {
+  assert.equal(decodedTitleLength("Seattle Construction Permits &amp; Projects — Building Seattle"), 58);
+  const raw = "A &amp; B &#39;quoted&#39;";
+  const rendered = "A & B 'quoted'";
+  assert.equal(decodedTitleLength(raw), rendered.length);
+  assert.ok(decodedTitleLength(raw) < raw.length);
 });
 
 test("pngDimensions reads width and height from the IHDR chunk", () => {

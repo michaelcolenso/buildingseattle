@@ -870,7 +870,7 @@ test("homepage no longer removes focus outlines from form fields", async () => {
   const response = await worker.fetch(new Request("http://example.com/"), createEnv(), createCtx());
   const html = await response.text();
 
-  assert.match(html, /:focus-visible\s*\{\s*outline:\s*2px solid var\(--accent\)/);
+  assert.match(html, /:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--focus\)/);
   assert.doesNotMatch(html, /outline:\s*none/);
 });
 
@@ -1022,6 +1022,60 @@ test("GET /data renders the dataset landing page with live stats", async () => {
   assert.match(html, /\$0\.06B/);
 });
 
+test("trust, dataset, API, and error pages ship complete metadata and schema", async () => {
+  const pages = [
+    { path: "/about", expectedType: "AboutPage" },
+    { path: "/data", expectedType: "Dataset" },
+    { path: "/api-docs", expectedType: "TechArticle" },
+  ];
+
+  for (const { path, expectedType } of pages) {
+    const response = await worker.fetch(new Request(`http://example.com${path}`), createEnv(), createCtx());
+    const html = await response.text();
+    assert.equal(response.status, 200, `${path} should render`);
+
+    const title = html.match(/<title>([^<]+)<\/title>/)?.[1] || "";
+    assert.ok(title.length > 0 && title.length <= 70, `${path} title is ${title.length} characters`);
+    const description = html.match(/<meta name="description" content="([^"]+)"/i)?.[1] || "";
+    assert.ok(description.length > 0 && description.length <= 160, `${path} description is ${description.length} characters`);
+
+    assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/, `${path} robots`);
+    assert.ok(html.includes(`<link rel="canonical" href="https://buildingseattle.com${path}">`), `${path} canonical`);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/, `${path} twitter card`);
+    assert.match(html, /<meta name="twitter:image" content="https:\/\/buildingseattle\.com\/social\/insight\.png">/, `${path} twitter image`);
+    assert.match(html, /<meta property="og:image:width" content="1200">/, `${path} og image width`);
+    assert.match(html, /<a class="skip-link" href="#main-content">Skip to content<\/a>/, `${path} skip link`);
+    assert.match(html, /<main id="main-content"/, `${path} main landmark`);
+
+    // Heading levels must nest without skipping.
+    const levels = [...html.matchAll(/<h([1-6])[\s>]/gi)].map((match) => Number(match[1]));
+    assert.equal(levels.filter((level) => level === 1).length, 1, `${path} has exactly one h1`);
+    for (let i = 1; i < levels.length; i += 1) {
+      assert.ok(levels[i] - levels[i - 1] <= 1, `${path} heading skip: h${levels[i - 1]} to h${levels[i]}`);
+    }
+
+    // Every JSON-LD block must parse, and the route must declare its own type.
+    const blocks = [...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((match) => match[1]);
+    assert.ok(blocks.length > 0, `${path} ships JSON-LD`);
+    const types = [];
+    const visit = (value) => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) { value.forEach(visit); return; }
+      if (value["@type"]) [].concat(value["@type"]).forEach((type) => typeof type === "string" && types.push(type));
+      Object.values(value).forEach(visit);
+    };
+    blocks.map((block) => JSON.parse(block)).forEach(visit);
+    assert.ok(types.includes(expectedType), `${path} should declare ${expectedType}, found ${types.join(", ")}`);
+    assert.ok(types.includes("BreadcrumbList"), `${path} should declare BreadcrumbList`);
+  }
+
+  const notFound = await worker.fetch(new Request("http://example.com/definitely-missing-page"), createEnv(), createCtx());
+  const notFoundHtml = await notFound.text();
+  assert.equal(notFound.status, 404);
+  assert.match(notFoundHtml, /<meta name="robots" content="noindex">/);
+  assert.doesNotMatch(notFoundHtml, /rel="canonical"/);
+});
+
 test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const env = createSitemapEnv({
     statsByType: {
@@ -1033,7 +1087,8 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 20);
+  assert.equal((xml.match(/<url>/g) || []).length, 21);
+  assert.match(xml, /https:\/\/buildingseattle\.com\/api-docs/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/network/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/commercial-projects/);
@@ -1058,7 +1113,7 @@ test("GET /sitemaps/static.xml omits the ADU tracker while its page is noindex",
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 19);
+  assert.equal((xml.match(/<url>/g) || []).length, 20);
   assert.doesNotMatch(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
 });
 
@@ -2697,7 +2752,11 @@ test("permit and address pages promote source-backed project descriptors and ent
   const addressResponse = await worker.fetch(new Request("http://example.com/address/760-aloha-st"), env, createCtx());
   const addressHtml = await addressResponse.text();
   assert.equal(addressResponse.status, 200);
-  assert.match(addressHtml, /<title>760 Aloha St, Seattle, WA — MangoApps Tenant improvement/);
+  // Address titles must stay inside SERP truncation: address + brand suffix
+  // always ship, and the work descriptor only ships when it fits the budget.
+  const addressTitle = addressHtml.match(/<title>([^<]+)<\/title>/)?.[1] || "";
+  assert.equal(addressTitle, "760 Aloha St, Seattle, WA | Building Seattle");
+  assert.ok(addressTitle.length <= 62, `address title is ${addressTitle.length} characters`);
   assert.match(addressHtml, /<meta name="description" content="[^>]*MangoApps/);
   assert.match(addressHtml, /<h1>760 Aloha St, Seattle, WA<\/h1>[\s\S]*MangoApps/);
   assert.match(addressHtml, /href="\/permits\/7120268-CN"/);
@@ -2756,37 +2815,25 @@ test("permit and address pages use safe, useful fallbacks for sparse records", a
   assert.doesNotMatch(addressHtml, /undefined|null|NaN/);
 });
 
-test("homepage aligns with Seattle construction intent and preserves existing FAQ copy", async () => {
+test("homepage ships a single task-first implementation inside SERP title/description budgets", async () => {
   const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), createCtx());
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.ok(html.includes("<h1>Seattle construction: permits, projects & market data</h1>"));
+
+  // The retired duplicate homepage template must not come back: it was only
+  // reachable on non-GET requests, so metadata edits to it never shipped.
+  assert.doesNotMatch(html, /Seattle construction: permits, projects & market data/);
+  assert.doesNotMatch(html, /id="leadModal"/);
+  assert.match(html, /<h1>Seattle construction permits, projects &amp; contractor activity<\/h1>/);
+
+  const title = (html.match(/<title>([^<]+)<\/title>/)?.[1] || "").replaceAll("&amp;", "&");
+  assert.ok(title.length <= 60, `homepage title is ${title.length} characters`);
+  assert.match(title, /Building Seattle/);
 
   const description = html.match(/<meta name="description" content="([^"]+)"/i)?.[1] || "";
   assert.ok(description.length <= 160, `homepage description is ${description.length} characters`);
   assert.match(description, /Seattle construction/i);
-  assert.match(html, /public permit records from the Seattle Department of Construction and Inspections/i);
-
-  const editorialLinks = html.match(/<p class="editorial-links">([\s\S]*?)<\/p>/i)?.[1] || "";
-  for (const href of ["/permits", "/projects", "/addresses", "/neighborhoods", "/contractors"]) {
-    assert.ok(editorialLinks.includes(`href="${href}"`), `editorial copy should link to ${href}`);
-  }
-
-  const visibleFaqQuestions = [
-    "What can I search on Building Seattle?",
-    "Where does the permit data come from?",
-    "How does this help with SEO and traffic?",
-  ];
-  for (const question of visibleFaqQuestions) {
-    assert.ok(html.includes(`<h3>${question}</h3>`), `visible FAQ missing: ${question}`);
-  }
-
-  const structuredFaqQuestions = [
-    "What can I search on Building Seattle?",
-    "Where does the permit data come from?",
-    "How does Building Seattle help with construction lead generation?",
-  ];
-  for (const question of structuredFaqQuestions) {
-    assert.ok(html.includes(`"name":"${question}"`), `JSON-LD FAQ missing: ${question}`);
-  }
+  assert.match(html, /Seattle Department of Construction and Inspections/);
+  assert.match(html, /"@type":"FAQPage"/);
+  assert.match(html, /"@type":"WebSite"/);
 });
