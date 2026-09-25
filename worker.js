@@ -54,7 +54,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v3";
+const HTML_CACHE_VERSION = "v4";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
@@ -1031,6 +1031,8 @@ function renderDesignTokens() {
       @media (min-width: 768px) { .global-footer-row { flex-direction: row; justify-content: space-between; text-align: left; } }
       .global-footer a { color: var(--text-muted); text-decoration: none; }
       .global-footer a:hover { color: var(--accent); }
+      .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; background: var(--primary); color: #fff; padding: 0.65rem 1rem; border-radius: 0 0 var(--radius-sm) 0; font-weight: 700; text-decoration: none; }
+      .skip-link:focus { left: 0; color: #fff; }
     </style>`;
 }
 
@@ -1062,845 +1064,452 @@ function renderFooter() {
   return `<footer class="global-footer">
       <div class="global-footer-row">
         <div>Building Seattle &mdash; Seattle construction intelligence</div>
-        <div><a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/insights">Insights</a> &middot; <a href="/data">Dataset</a> &middot; <a href="/methodology">Methodology</a> &middot; <a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></div>
+        <div><a href="/about">About</a> &middot; <a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/insights">Insights</a> &middot; <a href="/data">Dataset</a> &middot; <a href="/methodology">Methodology</a> &middot; <a href="/api-docs">API</a> &middot; <a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></div>
       </div>
     </footer>`;
 }
 
-// Server-rendered homepage modules backed by the entity graph: top addresses,
-// top contractors, neighborhoods, and latest activity. Renders nothing until
-// the graph has been built at least once.
-function renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighborhoods, latestActivity }) {
-  const money = (n) => {
-    const v = Number(n);
-    return Number.isFinite(v) && v > 0 ? `$${Math.round(v).toLocaleString()}` : "—";
-  };
-  const dateShort = (d) => {
-    if (!d) return "";
-    const dt = new Date(d);
-    return Number.isNaN(dt.getTime()) ? "" : dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  };
+// ===========================================================================
+// Homepage ("/") — task-first landing page shared by the HTML and Markdown
+// representations. This is the single source of truth for the root route: the
+// retired duplicate homepage template (and its lead-capture modal) was removed
+// so homepage SEO/metadata edits can no longer land on a template that never
+// ships.
+// ===========================================================================
 
-  const addrItems = (topAddresses || [])
-    .map(
-      (a) => `<li class="list-item" onclick="location.href='/address/${encodeURIComponent(a.slug)}'">
-        <div><div class="list-item-title">${escapeHtml(a.display_address)}</div><div class="list-item-meta">${money(a.total_value)} total value</div></div>
-        <span class="badge badge-blue">${a.permits}</span></li>`,
-    )
-    .join("");
-
-  const contractorItems = (topGraphContractors || [])
-    .map(
-      (c) => `<li class="list-item" onclick="location.href='/contractor/${encodeURIComponent(c.slug)}'">
-        <div><div class="list-item-title">${escapeHtml(c.name)}</div><div class="list-item-meta">${c.permits} permits</div></div>
-        <span class="badge badge-green">View</span></li>`,
-    )
-    .join("");
-
-  const activityItems = (latestActivity || [])
-    .map((p) => {
-      const href = p.addr_slug ? `/address/${encodeURIComponent(p.addr_slug)}` : `/permits/${encodeURIComponent(p.permit_number)}`;
-      return `<li class="list-item" onclick="location.href='${href}'">
-        <div><div class="list-item-title">${escapeHtml(p.display_address || p.permit_number)}</div><div class="list-item-meta">${escapeHtml(p.type || "permit")} · ${money(p.value)} · ${escapeHtml(dateShort(p.issued_date || p.applied_date))}</div></div>
-        <span class="badge badge-blue">${escapeHtml(p.status || "new")}</span></li>`;
-    })
-    .join("");
-
-  const neighborhoodChips = (topNeighborhoods || [])
-    .map(
-      (n) => `<a href="/neighborhood/${encodeURIComponent(n.slug)}" style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.4rem 0.85rem;border-radius:999px;border:1px solid var(--border);background:var(--bg);color:var(--text);text-decoration:none;font-size:0.85rem;font-weight:600;">${escapeHtml(n.name)} <span style="color:var(--text-muted);font-weight:500;">${n.addresses}</span></a>`,
-    )
-    .join("");
-
-  // Only render panels that have data, skip empty ones
-  const panels = [
-    addrItems && `<div class="data-panel">
-                    <div class="panel-header"><h3>Top Addresses</h3></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${addrItems}</ul></div>
-                </div>`,
-    contractorItems && `<div class="data-panel">
-                    <div class="panel-header"><h3>Top Contractors</h3></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${contractorItems}</ul></div>
-                </div>`,
-    activityItems && `<div class="data-panel">
-                    <div class="panel-header"><h3>Latest Activity</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
-                    <div class="panel-content"><ul style="list-style:none;margin:0;padding:0;">${activityItems}</ul></div>
-                </div>`,
-    neighborhoodChips && `<div class="data-panel">
-                    <div class="panel-header"><h3>Neighborhoods</h3></div>
-                    <div class="panel-content"><div style="display:flex;flex-wrap:wrap;gap:0.5rem;">${neighborhoodChips}</div></div>
-                </div>`,
-  ].filter(Boolean);
-
-  if (panels.length === 0) return "";
-
-  return `<section class="live-data" id="graph" style="background:var(--bg-alt);">
-        <div class="container">
-            <div class="section-header">
-                <h2>Explore the construction graph</h2>
-                <p>Permits rolled up into properties, projects, contractors, and neighborhoods.</p>
-            </div>
-            <div class="data-grid">
-                ${panels.join("\n                ")}
-            </div>
-        </div>
-    </section>`;
+function compactNumber(value) {
+  const number = Number(value) || 0;
+  if (Math.abs(number) >= 1e9) return `${(number / 1e9).toFixed(number >= 10e9 ? 1 : 2).replace(/\.0+$|(?<=\.[0-9])0$/, "")}B`;
+  if (Math.abs(number) >= 1e6) return `${(number / 1e6).toFixed(number >= 10e6 ? 1 : 2).replace(/\.0+$|(?<=\.[0-9])0$/, "")}M`;
+  if (Math.abs(number) >= 1e3) return `${(number / 1e3).toFixed(number >= 10e3 ? 0 : 1).replace(/\.0$/, "")}K`;
+  return Math.round(number).toLocaleString("en-US");
 }
 
-async function handleRoot(request, env) {
-  const canonical = BASE_URL + "/";
-  const lastRun = await env.DB.prepare(
-    `SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`,
-  ).first();
-  const lastUpdated = lastRun?.end_time ? timeAgo(new Date(lastRun.end_time)) : "Recently";
+function compactMetricMoney(value) {
+  return `$${compactNumber(value)}`;
+}
 
-  if (wantsMarkdown(request)) {
-    return markdownResponse(request, homeMarkdown(lastUpdated));
+function parseUtcDate(value) {
+  if (!value) return null;
+  const source = String(value).trim();
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(source)
+    ? `${source.replace(" ", "T")}Z`
+    : source;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDate(value, includeTime = false) {
+  const date = parseUtcDate(value);
+  if (!date) return "Unavailable";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: includeTime ? undefined : "numeric",
+    hour: includeTime ? "numeric" : undefined,
+    minute: includeTime ? "2-digit" : undefined,
+    timeZone: "America/Los_Angeles",
+  }).format(date);
+}
+function humanize(value, fallback = "Permit") {
+  const text = String(value || fallback)
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .trim();
+  return text ? text.replace(/\b\w/g, (letter) => letter.toUpperCase()) : fallback;
+}
+
+async function dbFirst(env, sql, binds = []) {
+  try {
+    if (!env?.DB?.prepare) return null;
+    const statement = env.DB.prepare(sql);
+    return binds.length ? await statement.bind(...binds).first() : await statement.first();
+  } catch (error) {
+    console.warn("Building Seattle homepage query failed:", error?.message || error);
+    return null;
   }
+}
 
-  // Entity-graph modules for the homepage (gracefully empty before first build).
-  const [topAddresses, topGraphContractors, topNeighborhoods, latestActivity] = await Promise.all([
-    safeAll(
+async function dbAll(env, sql, binds = []) {
+  try {
+    if (!env?.DB?.prepare) return [];
+    const statement = env.DB.prepare(sql);
+    const payload = binds.length ? await statement.bind(...binds).all() : await statement.all();
+    return payload?.results || [];
+  } catch (error) {
+    console.warn("Building Seattle homepage query failed:", error?.message || error);
+    return [];
+  }
+}
+
+export async function getCanonicalStats(env) {
+  const [stats, ingest] = await Promise.all([
+    dbFirst(
       env,
-      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
-       FROM addresses a JOIN permits p ON p.address_id = a.id
-       GROUP BY a.id ORDER BY permits DESC, total_value DESC LIMIT 8`,
+      `/* homepage:canonical-stats */
+       SELECT
+         COUNT(*) AS permits,
+         SUM(CASE WHEN lower(COALESCE(status,'')) = 'active' THEN 1 ELSE 0 END) AS active_permits,
+         COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL THEN contractor_id END) AS contractors,
+         COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL AND lower(COALESCE(status,'')) = 'active' THEN contractor_id END) AS active_contractors,
+         COALESCE(SUM(value), 0) AS total_value,
+         MAX(COALESCE(issued_date, applied_date)) AS latest_record_date
+       FROM permits`,
     ),
-    safeAll(
+    dbFirst(
       env,
-      `SELECT o.name, o.slug, COUNT(*) AS permits FROM people_orgs o
-       JOIN permit_participants pp ON pp.people_org_id = o.id AND pp.role = 'contractor'
-       GROUP BY o.id ORDER BY permits DESC LIMIT 8`,
-    ),
-    safeAll(
-      env,
-      `SELECT n.name, n.slug, COUNT(DISTINCT an.address_id) AS addresses
-       FROM neighborhoods n JOIN address_neighborhoods an ON an.neighborhood_id = n.id
-       GROUP BY n.id ORDER BY addresses DESC LIMIT 12`,
-    ),
-    safeAll(
-      env,
-      `SELECT p.permit_number, p.type, p.value, p.status, p.issued_date, p.applied_date,
-              a.slug AS addr_slug, a.display_address
-       FROM permits p LEFT JOIN addresses a ON a.id = p.address_id
-       ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 8`,
+      `/* homepage:last-ingest */
+       SELECT end_time FROM ingest_logs
+       WHERE status = 'success'
+       ORDER BY end_time DESC LIMIT 1`,
     ),
   ]);
 
-  const graphSection = renderHomeGraphSection({ topAddresses, topGraphContractors, topNeighborhoods, latestActivity });
+  return {
+    permits: Number(stats?.permits) || 0,
+    active_permits: Number(stats?.active_permits) || 0,
+    contractors: Number(stats?.contractors) || 0,
+    active_contractors: Number(stats?.active_contractors) || 0,
+    total_value: Number(stats?.total_value) || 0,
+    latest_record_date: stats?.latest_record_date || null,
+    last_ingest_at: ingest?.end_time || null,
+  };
+}
 
-  const html = `<!DOCTYPE html>
+export async function getActiveContractors(env) {
+  return dbAll(
+    env,
+    `/* api:active-contractors */
+     SELECT c.*, COUNT(p.id) AS active_projects
+     FROM contractors c
+     JOIN permits p
+       ON c.id = p.contractor_id
+      AND lower(COALESCE(p.status,'')) = 'active'
+     GROUP BY c.id
+     HAVING COUNT(p.id) > 0
+     ORDER BY active_projects DESC, c.name ASC
+     LIMIT 20`,
+  );
+}
+
+export async function buildHomeSnapshot(env) {
+  const [stats, changes, addresses, contractors30d, neighborhoods30d] = await Promise.all([
+    getCanonicalStats(env),
+    dbAll(
+      env,
+      `/* homepage:what-changed */
+       SELECT sc.id, sc.permit_number, sc.previous_status, sc.new_status, sc.changed_at,
+              p.address, p.neighborhood, p.type, p.value
+       FROM permit_status_changes sc
+       LEFT JOIN permits p ON p.permit_number = sc.permit_number
+       ORDER BY datetime(sc.changed_at) DESC, sc.id DESC
+       LIMIT 6`,
+    ),
+    dbAll(
+      env,
+      `/* homepage:active-addresses */
+       SELECT p.address AS label, COUNT(*) AS active_permits, COALESCE(SUM(p.value), 0) AS total_value
+       FROM permits p
+       WHERE lower(COALESCE(p.status,'')) = 'active'
+         AND p.address IS NOT NULL AND trim(p.address) != ''
+       GROUP BY p.address
+       ORDER BY active_permits DESC, total_value DESC, p.address ASC
+       LIMIT 5`,
+    ),
+    dbAll(
+      env,
+      `/* homepage:contractors-30d */
+       SELECT c.name AS label, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value), 0) AS total_value
+       FROM contractors c
+       JOIN permits p ON p.contractor_id = c.id
+       WHERE lower(COALESCE(p.status,'')) = 'active'
+         AND date(COALESCE(p.issued_date, p.applied_date)) >= date('now', '-30 days')
+       GROUP BY c.id
+       ORDER BY permits DESC, total_value DESC, c.name ASC
+       LIMIT 5`,
+    ),
+    dbAll(
+      env,
+      `/* homepage:neighborhoods-30d */
+       SELECT p.neighborhood AS label, COUNT(*) AS permits, COALESCE(SUM(p.value), 0) AS total_value
+       FROM permits p
+       WHERE p.neighborhood IS NOT NULL AND trim(p.neighborhood) != ''
+         AND date(COALESCE(p.issued_date, p.applied_date)) >= date('now', '-30 days')
+       GROUP BY p.neighborhood
+       ORDER BY permits DESC, total_value DESC, p.neighborhood ASC
+       LIMIT 5`,
+    ),
+  ]);
+
+  return { stats, changes, addresses, contractors30d, neighborhoods30d };
+}
+
+function transitionLabel(change) {
+  const previous = humanize(change?.previous_status, "New").toUpperCase();
+  const next = humanize(change?.new_status, "Updated").toUpperCase();
+  return `${previous} → ${next}`;
+}
+
+function renderChanges(changes) {
+  if (!changes.length) {
+    return `<div class="empty-state">No recent status changes are available in the current data snapshot.</div>`;
+  }
+
+  return changes
+    .map((change) => {
+      const permit = encodeURIComponent(String(change.permit_number || ""));
+      const title = change.address ? smartTitleCase(change.address) : change.permit_number || "Seattle permit";
+      const metadata = [
+        humanize(change.type, "Permit"),
+        change.value ? `${compactMetricMoney(change.value)} declared value` : null,
+        change.changed_at ? formatDate(change.changed_at, true) : null,
+      ].filter(Boolean);
+      return `<a class="change-row" href="/permits/${permit}">
+        <span class="transition">${escapeHtml(transitionLabel(change))}</span>
+        <span class="change-title">${escapeHtml(title)}</span>
+        <span class="change-meta">${escapeHtml(metadata.join(" · "))}</span>
+      </a>`;
+    })
+    .join("");
+}
+
+function renderRanking(rows, type) {
+  if (!rows.length) return `<div class="empty-state compact">No qualifying records in this snapshot.</div>`;
+
+  return rows
+    .map((row, index) => {
+      const rawLabel = row.label || "Unclassified";
+      const label = type === "address" ? smartTitleCase(rawLabel) : rawLabel;
+      let href = "/permits";
+      let metric = "";
+      if (type === "address") {
+        href = `/permits?q=${encodeURIComponent(rawLabel)}`;
+        metric = `${Number(row.active_permits) || 0} active permits`;
+      } else if (type === "contractor") {
+        href = row.slug ? `/contractor/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(label)}`;
+        metric = `${Number(row.permits) || 0} new active permits`;
+      } else {
+        href = `/permits?neighborhood=${encodeURIComponent(label)}`;
+        metric = `${Number(row.permits) || 0} recent permits`;
+      }
+      return `<a class="rank-row" href="${href}">
+        <span class="rank-index">${index + 1}</span>
+        <span class="rank-copy"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(metric)}</small></span>
+        <span class="rank-value">${escapeHtml(compactMetricMoney(row.total_value || 0))}<small>declared</small></span>
+      </a>`;
+    })
+    .join("");
+}
+
+export function renderHomepage(snapshot) {
+  const { stats, changes, addresses, contractors30d, neighborhoods30d } = snapshot;
+  const ingestLabel = stats.last_ingest_at ? formatDate(stats.last_ingest_at, true) : "Unavailable";
+  const recordLabel = stats.latest_record_date ? formatDate(stats.latest_record_date) : "Unavailable";
+  const title = "Seattle Construction Permits & Projects — Building Seattle";
+  const description = "Search Seattle construction permits, contractor activity, neighborhoods, addresses, and recent SDCI permit changes.";
+  const faqItems = [
+    {
+      q: "What can I search on Building Seattle?",
+      a: "Search permit records by address, permit number, contractor, neighborhood, project description, permit type, status, and other fields exposed by the permit browser.",
+    },
+    {
+      q: "Where does the data come from?",
+      a: "The base records come from Seattle Department of Construction and Inspections public data. Building Seattle cleans, links, and enriches those records into research views.",
+    },
+    {
+      q: "How current is the data?",
+      a: "The ingestion pipeline is scheduled daily. This page reports the latest successful ingest separately from the latest permit event date so freshness is not confused with source activity.",
+    },
+    {
+      q: "What does \u201cpermit value\u201d mean?",
+      a: "It is the declared value attached to the permit record. It is not a verified total project cost and may exclude land, design, financing, related permits, later changes, and other project costs.",
+    },
+  ];
+  const structuredData = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+    name: "Building Seattle",
+    url: BASE_URL,
+    description,
+    potentialAction: {
+        "@type": "SearchAction",
+        target: `${BASE_URL}/permits?q={search_term_string}`,
+        "query-input": "required name=search_term_string",
+      },
+      },
+      {
+        "@type": "FAQPage",
+        mainEntity: faqItems.map((item) => ({
+          "@type": "Question",
+          name: item.q,
+          acceptedAnswer: { "@type": "Answer", text: item.a },
+        })),
+      },
+    ],
+  }).replaceAll("<", "\\u003c");
+
+  return `<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Seattle Construction Permits & Data — Building Seattle</title>
-    <meta name="description" content="Seattle construction intelligence from public SDCI records: search permits, projects, properties, neighborhoods, and contractors.">
-    <meta name="robots" content="index,follow,max-image-preview:large">
-    <link rel="canonical" href="${canonical}">
-    <meta property="og:title" content="Seattle Construction Permits & Data — Building Seattle">
-    <meta property="og:description" content="Seattle construction intelligence from public SDCI records: search permits, projects, properties, neighborhoods, and contractors.">
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="${canonical}">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta property="og:image" content="${BASE_URL}/og-image.png">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-	    <meta name="twitter:image" content="${BASE_URL}/og-image.png">
-	    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
-	    <link rel="manifest" href="/site.webmanifest">
-    ${renderDesignTokens()}
-    <style>
-        :root { --primary: #0f172a; --accent: #3b82f6; --bg: #ffffff; --bg-alt: #f8fafc; --text: #1e293b; --text-muted: #64748b; --border: #e2e8f0; --steel: #475569; --amber: #f59e0b; --success: #10b981; --danger: #ef4444; --shadow: 0 22px 60px rgba(15,23,42,0.14); }
-        @media (prefers-color-scheme: dark) { :root { --primary: #f8fafc; --bg: #0f172a; --bg-alt: #1e293b; --text: #e2e8f0; --text-muted: #94a3b8; --border: #334155; } }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
-        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; font-size: 0.875rem; }
-        .btn-primary { background: var(--accent); color: white; }
-        .btn-primary:hover { background: #2563eb; transform: translateY(-1px); }
-        .hero { padding-top: 8rem; padding-bottom: 4rem; position: relative; overflow: hidden; min-height: 760px; display: flex; align-items: center; }
-        .hero::before { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(180deg, rgba(15,23,42,0.25) 0%, rgba(15,23,42,0.6) 100%); z-index: 1; pointer-events: none; }
-        .hero::after { content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: 0.22; background-image: linear-gradient(rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px); background-size: 72px 72px; mask-image: linear-gradient(90deg, transparent, #000 18%, #000 78%, transparent); }
-        #skyline { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; }
-        .hero .container { position: relative; z-index: 2; }
-        .hero h1, .hero .stat-value { color: #ffffff; text-shadow: 0 2px 20px rgba(0,0,0,0.4); }
-        .hero p, .hero .stat-label { color: rgba(255,255,255,0.8); text-shadow: 0 1px 10px rgba(0,0,0,0.3); }
-        .hero-stats { border-top-color: rgba(255,255,255,0.15); }
-        .hero-badge { display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(59,130,246,0.2); color: #93c5fd; padding: 0.5rem 1rem; border-radius: 9999px; font-size: 0.875rem; font-weight: 600; margin-bottom: 1.5rem; border: 1px solid rgba(59,130,246,0.35); backdrop-filter: blur(8px); }
-        .hero .btn-secondary { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); border-color: rgba(255,255,255,0.2); backdrop-filter: blur(8px); }
-        .hero .btn-secondary:hover { background: rgba(255,255,255,0.18); }
-        .hero-grid { display: grid; grid-template-columns: 1fr; gap: 3rem; align-items: center; }
-        @media (min-width: 1024px) { .hero-grid { grid-template-columns: 1fr 1fr; } }
-        .hero h1 { font-size: 3rem; line-height: 1.1; font-weight: 800; margin-bottom: 1.5rem; letter-spacing: -0.02em; }
-        @media (min-width: 768px) { .hero h1 { font-size: 4rem; } }
-        .hero p { font-size: 1.25rem; margin-bottom: 2rem; max-width: 620px; }
-        .hero-proof { display: grid; grid-template-columns: 1fr; gap: 0.75rem; margin: 1.5rem 0 0; max-width: 680px; }
-        .proof-item { display: flex; gap: 0.65rem; align-items: flex-start; padding: 0.85rem 1rem; border: 1px solid rgba(255,255,255,0.16); background: rgba(15,23,42,0.38); color: rgba(255,255,255,0.86); backdrop-filter: blur(10px); }
-        .proof-item strong { display: block; color: #fff; font-size: 0.9rem; line-height: 1.25; }
-        .proof-item span { display: block; color: rgba(255,255,255,0.72); font-size: 0.78rem; margin-top: 0.15rem; }
-        @media (min-width: 768px) { .hero-proof { grid-template-columns: repeat(3, 1fr); } }
-        .ops-strip { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.25rem 0 2rem; }
-        .ops-chip { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2.25rem; padding: 0.45rem 0.7rem; border: 1px solid rgba(255,255,255,0.18); background: rgba(15,23,42,0.42); color: rgba(255,255,255,0.86); backdrop-filter: blur(10px); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-        .ops-dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; background: var(--success); box-shadow: 0 0 0 0 rgba(16,185,129,0.45); animation: radarPulse 1.8s infinite; }
-        @keyframes radarPulse { 70% { box-shadow: 0 0 0 9px rgba(16,185,129,0); } 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); } }
-        .hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.85rem; margin-top: 3rem; padding-top: 0; border-top: 0; }
-        .stat-tile { position: relative; min-height: 112px; padding: 1rem; background: rgba(15,23,42,0.5); border: 1px solid rgba(255,255,255,0.16); box-shadow: 0 16px 50px rgba(2,6,23,0.22); backdrop-filter: blur(12px); overflow: hidden; }
-        .stat-tile::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: linear-gradient(90deg, var(--success), var(--accent), var(--amber)); transform-origin: left; transform: scaleX(var(--load, 0.18)); transition: transform 900ms cubic-bezier(.16,1,.3,1); }
-        .stat-kicker { color: rgba(255,255,255,0.58); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.35rem; }
-        .stat-value { font-size: 2rem; font-weight: 800; color: var(--primary); }
-        .stat-label { font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem; }
-        .stat-delta { margin-top: 0.5rem; color: rgba(255,255,255,0.68); font-size: 0.72rem; font-weight: 650; }
-        .section-header { text-align: center; max-width: 600px; margin: 0 auto 4rem; }
-        .section-header h2 { font-size: 2.5rem; font-weight: 800; color: var(--primary); margin-bottom: 1rem; }
-        .section-header p { color: var(--text-muted); font-size: 1.125rem; }
-        .live-data { padding: 6rem 0; background: var(--bg); }
-        .data-grid { display: grid; grid-template-columns: 1fr; gap: 2rem; margin-top: 3rem; }
-        .seo-grid { display: grid; grid-template-columns: 1fr; gap: 1.25rem; margin-top: 2.5rem; }
-        @media (min-width: 768px) { .seo-grid { grid-template-columns: repeat(3, 1fr); } }
-        .seo-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; box-shadow: 0 8px 30px rgba(15,23,42,0.04); }
-        .seo-card h3 { color: var(--primary); font-size: 1.05rem; margin-bottom: 0.65rem; }
-        .seo-card p { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 1rem; }
-        .seo-card a { color: var(--accent); font-weight: 700; text-decoration: none; }
-        .seo-card a:hover { text-decoration: underline; }
-        .editorial-links { margin-top: 1.5rem; font-weight: 700; }
-        .editorial-links a { color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; }
-        .faq-list { max-width: 880px; margin: 2.5rem auto 0; display: grid; gap: 1rem; }
-        .faq-item { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem 1.5rem; }
-        .faq-item h3 { color: var(--primary); font-size: 1rem; margin-bottom: 0.45rem; }
-        .faq-item p { color: var(--text-muted); margin: 0; }
-        @media (min-width: 768px) { .data-grid { grid-template-columns: repeat(2, 1fr); } }
-        .data-panel { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 0.75rem; overflow: hidden; box-shadow: 0 14px 45px rgba(15,23,42,0.06); }
-        .panel-header { padding: 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-        .panel-header h3 { font-weight: 700; display: flex; align-items: center; gap: 0.5rem; }
-        .live-indicator { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; font-weight: 600; color: #10b981; }
-        .pulse { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: pulse 2s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .panel-content { padding: 1.5rem; }
-        .ops-panel-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.65rem; padding: 0 1.5rem 1.35rem; border-bottom: 1px solid var(--border); }
-        .summary-cell { min-height: 76px; padding: 0.75rem; border: 1px solid var(--border); background: var(--bg); }
-        .summary-value { font-size: 1.2rem; font-weight: 850; color: var(--primary); line-height: 1.1; }
-        .summary-label { margin-top: 0.35rem; color: var(--text-muted); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
-        .density-map { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; padding: 1.25rem 1.5rem 0; }
-        .density-cell { height: 18px; background: color-mix(in srgb, var(--accent) calc(var(--heat) * 1%), var(--border)); border: 1px solid color-mix(in srgb, var(--accent) calc(var(--heat) * 0.8%), transparent); transform: scaleY(0.35); transform-origin: bottom; animation: growCell 760ms cubic-bezier(.16,1,.3,1) forwards; animation-delay: calc(var(--i) * 24ms); }
-        @keyframes growCell { to { transform: scaleY(1); } }
-        .list-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; margin: 0 -0.75rem; border-radius: 0.5rem; cursor: pointer; transition: all 0.2s ease; border-bottom: 1px solid var(--border); }
-        .list-item:last-child { border-bottom: none; }
-        .list-item:hover { background: rgba(59, 130, 246, 0.05); transform: translateX(4px); }
-        .list-item-title { font-weight: 600; font-size: 0.875rem; color: var(--text); }
-        .list-item-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
-        .badge { font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 9999px; font-weight: 600; }
-        .badge-blue { background: rgba(59,130,246,0.1); color: var(--accent); }
-        .badge-green { background: rgba(16,185,129,0.1); color: #10b981; }
-        .cta { padding: 6rem 0; background: var(--primary); color: white; position: relative; overflow: hidden; }
-
-        .cta-content { position: relative; z-index: 1; text-align: center; max-width: 700px; margin: 0 auto; }
-        .cta h2 { font-size: 3rem; font-weight: 800; margin-bottom: 1.5rem; }
-        .cta p { font-size: 1.25rem; opacity: 0.9; margin-bottom: 2rem; }
-        .btn-white { background: white; color: var(--primary); font-size: 1rem; padding: 1rem 2rem; }
-        .btn-white:hover { background: rgba(255,255,255,0.9); transform: translateY(-2px); }
-        .loading { padding: 2rem; text-align: center; color: var(--text-muted); }
-        .skeleton-stack { display: grid; gap: 0.85rem; }
-        .skeleton-row { height: 54px; border-radius: 0.5rem; background: linear-gradient(90deg, color-mix(in srgb, var(--border), transparent 20%), color-mix(in srgb, var(--bg), var(--border) 28%), color-mix(in srgb, var(--border), transparent 20%)); background-size: 240% 100%; animation: skeletonSweep 1.35s infinite; }
-        @keyframes skeletonSweep { to { background-position: -240% 0; } }
-        .error { padding: 2rem; text-align: center; color: #ef4444; }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; backdrop-filter: blur(4px); align-items: center; justify-content: center; }
-        .modal.active { display: flex; }
-        .modal-content { background: var(--bg); padding: 2rem; border-radius: 1rem; width: 90%; max-width: 500px; position: relative; box-shadow: var(--shadow-lg); animation: slideUp 0.3s ease-out; }
-        @keyframes slideUp { from { transform: translateY(50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        .modal-close { position: absolute; top: 1rem; right: 1rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); }
-        .form-group { margin-bottom: 1.25rem; }
-        .form-group label { display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--primary); }
-        .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--bg); color: var(--text); font-size: 1rem; transition: border-color 0.2s; }
-        .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
-        .loader { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: white; animation: spin 1s ease-in-out infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .hidden { display: none; }
-        @media (max-width: 767px) {
-          .hero { min-height: 690px; padding-top: 7rem; }
-          .hero-stats, .ops-panel-summary { grid-template-columns: 1fr; }
-          .stat-tile { min-height: 92px; }
-          .density-map { grid-template-columns: repeat(6, 1fr); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.001ms !important; }
-        }
-    </style>
-    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","name":"Building Seattle","url":"https://buildingseattle.com","logo":"https://buildingseattle.com/og-image.png","description":"Real-time Seattle construction permits, contractor profiles, and development opportunities."},{"@type":"WebSite","name":"Building Seattle","url":"https://buildingseattle.com","potentialAction":{"@type":"SearchAction","target":"https://buildingseattle.com/permits?q={search_term_string}","query-input":"required name=search_term_string"}},{"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What can I search on Building Seattle?","acceptedAnswer":{"@type":"Answer","text":"Browse Seattle construction permits by address, neighborhood, permit type, status, contractor, project value, and recent activity."}},{"@type":"Question","name":"Where does the permit data come from?","acceptedAnswer":{"@type":"Answer","text":"Building Seattle aggregates public Seattle Department of Construction and Inspections permit records and enriches them into property, contractor, and neighborhood views."}},{"@type":"Question","name":"How does Building Seattle help with construction lead generation?","acceptedAnswer":{"@type":"Answer","text":"The site highlights active permits, contractors, project values, addresses, and neighborhoods so teams can prioritize outreach and market research."}}]},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"}]}]}</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <meta name="description" content="${escapeHtml(description)}">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <link rel="canonical" href="${BASE_URL}/">
+  <link rel="manifest" href="/site.webmanifest">
+  <link rel="icon" href="/favicon.ico">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="${escapeHtml(title)}">
+  <meta property="og:description" content="${escapeHtml(description)}">
+  <meta property="og:url" content="${BASE_URL}/">
+  <meta property="og:image" content="${BASE_URL}/social/insight.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Building Seattle — Seattle construction permit data">
+  <meta name="twitter:title" content="${escapeHtml(title)}">
+  <meta name="twitter:description" content="${escapeHtml(description)}">
+  <meta name="twitter:image" content="${BASE_URL}/social/insight.png">
+  <meta name="twitter:image:alt" content="Building Seattle — Seattle construction permit data">
+  <script type="application/ld+json">${structuredData}</script>
+  <style>
+    .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:#0f172a;color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:800;text-decoration:none}.skip-link:focus{left:0}
+    :root{color-scheme:light;--primary:#0f172a;--accent:#2563eb;--accent-hover:#1d4ed8;--success:#047857;--warning:#b45309;--bg:#fff;--bg-alt:#f8fafc;--panel:#fff;--text:#1e293b;--muted:#64748b;--border:#cbd5e1;--soft:#e2e8f0;--focus:#1d4ed8;--max:1200px}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0f172a}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:#0f172a;color:#fff;font-size:16px}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:#0f172a;background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(15,23,42,.14);z-index:40}.mobile-nav a{text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:#334155}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:54px 0 36px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#1d4ed8;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,8vw,4.9rem);line-height:.98;letter-spacing:-.045em}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#475569}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.search-form input{min-height:52px;width:100%;border:1px solid #94a3b8;border-radius:9px;padding:0 16px;background:#fff;color:#0f172a}.search-form button{min-height:52px;border:0;border-radius:9px;padding:0 24px;background:var(--accent);color:#fff;font-weight:800;cursor:pointer}.search-form button:hover{background:var(--accent-hover)}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:30px;max-width:820px}.metric{border-top:3px solid #0f172a;padding:12px 4px 0;text-decoration:none;color:inherit}.metric:hover strong{color:var(--accent)}.metric strong{display:block;color:var(--primary);font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05;letter-spacing:-.025em}.metric span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35}.freshness{max-width:820px;margin:18px 0 0;color:#475569;font-size:13px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#475569}.text-link{font-weight:800;color:#1d4ed8;text-underline-offset:4px;white-space:nowrap}.changes{border-top:1px solid var(--border)}.change-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:center;padding:17px 2px;border-bottom:1px solid var(--border);text-decoration:none}.change-row:hover .change-title{text-decoration:underline;text-underline-offset:4px}.transition{font-size:12px;font-weight:850;letter-spacing:.04em;color:#0f172a}.change-title{font-weight:800;color:#0f172a}.change-meta{font-size:13px;color:#475569;text-align:right}.empty-state{border:1px dashed #94a3b8;border-radius:10px;padding:18px;color:#475569;background:var(--bg-alt)}.empty-state.compact{font-size:14px}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0f172a;font-size:16px}.market-card p{margin:5px 0 0;color:#475569;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#64748b;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0f172a;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#64748b;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0f172a;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0f172a;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#475569;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0f172a;padding:4px 0 4px 18px;color:#475569}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0f172a}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0f172a}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#475569}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#475569}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0f172a;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#cbd5e1}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0f172a;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0f172a}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#475569;text-underline-offset:3px}
+    @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form button{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.change-row{grid-template-columns:1fr;gap:5px;padding:16px 2px}.change-meta{text-align:left}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
+    @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.metric strong{font-size:1.16rem}.metric span{font-size:11px}.hero h1{font-size:2.05rem}}
+    @media(prefers-color-scheme:dark){:root{color-scheme:dark;--primary:#f8fafc;--bg:#0f172a;--bg-alt:#111c30;--panel:#172033;--text:#e2e8f0;--muted:#94a3b8;--border:#475569;--soft:#334155;--focus:#93c5fd}.site-header{background:rgba(15,23,42,.96)}.brand,.nav a,.hero h1,.metric strong,.section h2,.change-title,.transition,.market-card h3,.rank-copy strong,.rank-value,.task strong,.trust-meta dd,summary,.footer-brand{color:#f8fafc}.brand-mark{background:#f8fafc;color:#0f172a}.hero-copy,.freshness,.section-deck,.change-meta,.market-card p,.rank-index,.rank-copy small,.rank-value small,.task p,.trust-note,.answer,.footer-nav a{color:#cbd5e1}.search-form input{background:#172033;color:#f8fafc;border-color:#64748b}.metric{border-top-color:#f8fafc}.trust-note{border-left-color:#f8fafc}.alert-panel{background:#020617}.alert-button{background:#f8fafc;color:#0f172a}.nav-toggle>summary{color:#f8fafc;background:#172033;border-color:#475569}.mobile-nav{background:#172033;border-color:#475569}.mobile-nav a{color:#f8fafc}.mobile-nav a:hover{background:#111c30}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  </style>
 </head>
 <body>
-    ${renderNav("home")}
-
-    <section class="hero">
-        <canvas id="skyline"></canvas>
-        <div class="container">
-            <div class="hero-grid">
-                <div class="hero-content">
-                    <div class="hero-badge"><span class="ops-dot"></span><span>Now tracking live permits</span></div>
-                    <h1>Seattle construction: permits, projects & market data</h1>
-                    <p>Search live Seattle construction permits, compare contractor activity, and spot new development leads by address, neighborhood, permit type, status, and project value.</p>
-                    <div class="ops-strip">
-                        <div class="ops-chip"><span class="ops-dot"></span><span>Seattle DCI feed</span></div>
-                        <div class="ops-chip">Daily ingest</div>
-                        <div class="ops-chip">Permit value radar</div>
-                    </div>
-                    <div class="hero-proof" aria-label="Building Seattle use cases">
-                        <div class="proof-item"><div aria-hidden="true">⌕</div><div><strong>Find projects earlier</strong><span>Monitor applications, issued permits, and status changes.</span></div></div>
-                        <div class="proof-item"><div aria-hidden="true">▦</div><div><strong>Research any property</strong><span>Jump from permits to addresses, projects, and neighborhoods.</span></div></div>
-                        <div class="proof-item"><div aria-hidden="true">↗</div><div><strong>Prioritize outreach</strong><span>Use value, type, and contractor signals to qualify leads.</span></div></div>
-                    </div>
-                    <div style="display:flex;gap:1rem;flex-wrap:wrap;">
-                        <a class="btn btn-primary" href="/permits">Browse Live Permits</a>
-                        <button class="btn" style="background:var(--bg-alt);color:var(--text);border:1px solid var(--border);" onclick="document.getElementById('data').scrollIntoView({behavior:'smooth'})">View Live Data</button>
-                    </div>
-                    <div class="hero-stats" id="hero-stats">
-                        <div class="stat-tile"><div class="stat-kicker">Permits</div><div class="stat-value">—</div><div class="stat-label">Loading</div><div class="stat-delta">Waiting for D1</div></div>
-                        <div class="stat-tile"><div class="stat-kicker">Contractors</div><div class="stat-value">—</div><div class="stat-label">Loading</div><div class="stat-delta">Resolving links</div></div>
-                        <div class="stat-tile"><div class="stat-kicker">Pipeline</div><div class="stat-value">$—</div><div class="stat-label">Loading</div><div class="stat-delta">Summing project value</div></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <section style="padding:4rem 0;background:var(--bg-alt);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
-        <div class="container" style="max-width:800px;">
-            <h2 style="font-size:2rem;font-weight:800;color:var(--primary);margin-bottom:1.5rem;">Seattle Construction Market Activity</h2>
-            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
-                Building Seattle organizes public permit records from the Seattle Department of Construction and Inspections into a searchable research layer — from commercial towers in South Lake Union to residential renovations in Ballard and Capitol Hill. That source-backed layer helps you track who's building what, where, and with whom.
-            </p>
-            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;margin-bottom:1rem;">
-                The Seattle construction market covers everything from tenant improvements and new residential construction to major commercial projects and demolitions. Whether you're a contractor scoping new work, a developer tracking competition, or a property owner researching permit timelines, Building Seattle gives you the real-time market intelligence you need.
-            </p>
-            <p style="color:var(--text-muted);font-size:1.125rem;line-height:1.8;">
-                Browse thousands of active permits by neighborhood, contractor, or project type. Monitor permit valuations, track review timelines, and discover which contractors are winning work in Seattle's most active development areas.
-            </p>
-            <p class="editorial-links">Start with <a href="/permits">Seattle construction permits</a>, then follow the public record into <a href="/projects">projects</a>, <a href="/addresses">properties</a>, <a href="/neighborhoods">neighborhoods</a>, or <a href="/contractors">contractors</a>.</p>
-        </div>
-    </section>
-
-    <section class="live-data" id="data">
-        <div class="container">
-            <div class="section-header">
-                <h2>Live market data</h2>
-                <p>Permits and contractors updated hourly from public records. <span style="color:var(--text-muted);font-size:0.875rem;">Updated ${lastUpdated}</span></p>
-            </div>
-            <div class="data-grid" id="data-panels">
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Latest Permits</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
-                    <div class="ops-panel-summary" id="permit-summary">
-                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Latest active</div></div>
-                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Latest pending</div></div>
-                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Avg value</div></div>
-                    </div>
-                    <div class="density-map" id="permit-density" aria-label="Permit density by recent record"></div>
-                    <div class="panel-content"><div class="skeleton-stack"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div></div>
-                </div>
-                <div class="data-panel">
-                    <div class="panel-header"><h3>Top Contractors</h3><div class="live-indicator"><div class="pulse"></div>LIVE</div></div>
-                    <div class="ops-panel-summary" id="contractor-summary">
-                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Shown</div></div>
-                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">With active work</div></div>
-                        <div class="summary-cell"><div class="summary-value">—</div><div class="summary-label">Top workload</div></div>
-                    </div>
-                    <div class="panel-content"><div class="skeleton-stack"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div></div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    ${graphSection}
-,
-    <section class="live-data" id="use-cases" style="background:var(--bg-alt);">
-        <div class="container">
-            <div class="section-header">
-                <h2>Built for Seattle permit research and lead generation</h2>
-                <p>Building Seattle turns public records into crawlable, searchable pages that help owners, contractors, developers, and real estate teams understand what is being built.</p>
-            </div>
-            <div class="seo-grid">
-                <article class="seo-card"><h3>For contractors and suppliers</h3><p>Discover active building permits, remodels, additions, and high-value projects before competitors find them manually.</p><a href="/permits">Search Seattle permits</a></article>
-                <article class="seo-card"><h3>For developers and investors</h3><p>Track neighborhood development activity, project values, permit velocity, and active addresses across Seattle.</p><a href="/insights/pipeline">View pipeline insights</a></article>
-                <article class="seo-card"><h3>For market researchers</h3><p>Use contractor profiles, public API access, and structured permit pages to monitor the Seattle construction market.</p><a href="/api-docs">Explore the API</a></article>
-            </div>
-            <div class="faq-list" aria-label="Seattle permit data FAQ">
-                <div class="faq-item"><h3>What can I search on Building Seattle?</h3><p>You can browse Seattle construction permits by address, neighborhood, permit type, status, contractor, project value, and recent activity.</p></div>
-                <div class="faq-item"><h3>Where does the permit data come from?</h3><p>The site aggregates public Seattle Department of Construction and Inspections permit records and enriches them into property, contractor, and neighborhood views.</p></div>
-                <div class="faq-item"><h3>How does this help with SEO and traffic?</h3><p>Each crawlable permit, contractor, address, project, neighborhood, and insight page creates internal links around high-intent Seattle construction search terms.</p></div>
-            </div>
-        </div>
-    </section>
-
-    <section class="cta">
-        <div class="container">
-            <div class="cta-content">
-                <h2>Explore active work before your competitors do</h2>
-                <a class="btn btn-white" href="/permits">Browse Permits</a>
-            </div>
-        </div>
-    </section>
-
-    ${renderFooter()}
-
-    <script>
-        var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-	        function compactNumber(value) {
-	            if (!value) return '0';
-            if (value >= 1000000000) return '$' + (value / 1000000000).toFixed(1) + 'B';
-            if (value >= 1000000) return '$' + (value / 1000000).toFixed(0) + 'M';
-            if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
-	            return String(value);
-	        }
-
-	        function escapeText(value) {
-	            return String(value == null ? '' : value)
-	                .replace(/&/g, '&amp;')
-	                .replace(/</g, '&lt;')
-	                .replace(/>/g, '&gt;')
-	                .replace(/"/g, '&quot;')
-	                .replace(/'/g, '&#39;');
-	        }
-
-        function animateTextNumber(el, target, formatter) {
-            if (!el) return;
-            formatter = formatter || function(v) { return Math.round(v).toLocaleString(); };
-            if (reduceMotion) {
-                el.textContent = formatter(target);
-                return;
-            }
-            var start = performance.now();
-            var duration = 950;
-            function frame(now) {
-                var t = Math.min(1, (now - start) / duration);
-                var eased = 1 - Math.pow(1 - t, 4);
-                el.textContent = formatter(target * eased);
-                if (t < 1) requestAnimationFrame(frame);
-            }
-            requestAnimationFrame(frame);
-        }
-
-        function setHeroStats(stats) {
-            var totalValue = stats.total_value || 0;
-            var tiles = document.querySelectorAll('#hero-stats .stat-tile');
-            if (!tiles.length) return;
-            tiles[0].style.setProperty('--load', '1');
-            tiles[1].style.setProperty('--load', '0.74');
-            tiles[2].style.setProperty('--load', '0.92');
-            tiles[0].innerHTML = '<div class="stat-kicker">Permits</div><div class="stat-value" data-count="permits">0</div><div class="stat-label">Total permits</div><div class="stat-delta">' + (stats.active_permits || 0).toLocaleString() + ' active right now</div>';
-            tiles[1].innerHTML = '<div class="stat-kicker">Contractors</div><div class="stat-value" data-count="contractors">0</div><div class="stat-label">Tracked firms</div><div class="stat-delta">Linked to live permits</div>';
-            tiles[2].innerHTML = '<div class="stat-kicker">Pipeline</div><div class="stat-value" data-count="value">$0</div><div class="stat-label">Project value</div><div class="stat-delta">Average ' + compactNumber(stats.avg_value || 0) + ' per permit</div>';
-            animateTextNumber(document.querySelector('[data-count="permits"]'), stats.permits || 0);
-            animateTextNumber(document.querySelector('[data-count="contractors"]'), stats.contractors || 0);
-            animateTextNumber(document.querySelector('[data-count="value"]'), totalValue, compactNumber);
-        }
-
-        function normalizePermitPayload(payload) {
-            if (Array.isArray(payload)) return payload;
-            if (payload && Array.isArray(payload.results)) return payload.results;
-            return [];
-        }
-
-        function updatePermitSummary(permits) {
-            var active = 0, pending = 0, totalValue = 0;
-            for (var i = 0; i < permits.length; i++) {
-                if (permits[i].status === 'active') active++;
-                if (permits[i].status === 'pending') pending++;
-                totalValue += permits[i].value || 0;
-            }
-            var avg = permits.length ? totalValue / permits.length : 0;
-            document.getElementById('permit-summary').innerHTML =
-                '<div class="summary-cell"><div class="summary-value">' + active.toLocaleString() + '</div><div class="summary-label">Latest active</div></div>' +
-                '<div class="summary-cell"><div class="summary-value">' + pending.toLocaleString() + '</div><div class="summary-label">Latest pending</div></div>' +
-                '<div class="summary-cell"><div class="summary-value">' + compactNumber(avg) + '</div><div class="summary-label">Avg value</div></div>';
-
-            var density = document.getElementById('permit-density');
-            var sample = permits.slice(0, 36);
-            var maxValue = sample.reduce(function(max, p) { return Math.max(max, p.value || 0); }, 1);
-            density.innerHTML = sample.map(function(p, index) {
-                var heat = Math.max(18, Math.round(((p.value || 0) / maxValue) * 100));
-	                return '<div class="density-cell" title="' + escapeText(p.neighborhood || 'Seattle') + ' · ' + compactNumber(p.value || 0) + '" style="--heat:' + heat + ';--i:' + index + '"></div>';
-            }).join('');
-        }
-
-	        window.__permitsPromise = fetch('/api/permits')
-	            .then(function(r) { return r.json(); })
-	            .then(function(payload) {
-	                var permits = normalizePermitPayload(payload);
-                window.__permitsData = permits;
-
-                // Latest permits panel
-                var panel = document.querySelectorAll('#data-panels .data-panel')[0].querySelector('.panel-content');
-                var recent = permits.slice(0, 6);
-                updatePermitSummary(permits);
-                var panelHtml = '';
-                for (var i = 0; i < recent.length; i++) {
-                    var p = recent[i];
-                    var address = p.address ? p.address.split(',')[0] : 'Unknown';
-                    var type = p.type || 'Project';
-                    var value = (p.value || 0).toLocaleString();
-                    var status = p.status || 'New';
-                    var badgeClass = status === 'active' ? 'green' : 'blue';
-                    panelHtml += '<div class="list-item" style="cursor: pointer; animation: slideUp 420ms cubic-bezier(.16,1,.3,1) both; animation-delay:' + (i * 45) + 'ms" onclick="window.location=&grave;/permits/' + encodeURIComponent(p.permit_number) + '&grave;">';
-	                    panelHtml += '<div><div class="list-item-title">' + escapeText(address) + '</div>';
-	                    panelHtml += '<div class="list-item-meta">' + escapeText(type) + ' &bull; $' + value + '</div></div>';
-	                    panelHtml += '<span class="badge badge-' + badgeClass + '">' + escapeText(status) + '</span></div>';
-                }
-	                panel.innerHTML = panelHtml;
-	                return permits;
-	            })
-	            .catch(function(e) {
-	                var panel = document.querySelectorAll('#data-panels .data-panel')[0].querySelector('.panel-content');
-	                if (panel) panel.innerHTML = '<div class="error">Error loading permits</div>';
-	                return [];
-	            });
-
-        fetch('/api/stats')
-            .then(function(r) { return r.json(); })
-            .then(function(stats) {
-                setHeroStats(stats);
-            });
-
-        fetch('/api/contractors')
-            .then(function(r) { return r.json(); })
-            .then(function(contractors) {
-                var panel = document.querySelectorAll('#data-panels .data-panel')[1].querySelector('.panel-content');
-                var topContractors = contractors.slice(0, 6);
-
-                if (topContractors.length === 0) {
-                    panel.innerHTML = '<div class="loading">No contractors found</div>';
-                    return;
-                }
-
-                var html = '';
-                var activeContractors = 0;
-                var topWorkload = 0;
-                for (var s = 0; s < contractors.length; s++) {
-                    if ((contractors[s].active_projects || 0) > 0) activeContractors++;
-                    topWorkload = Math.max(topWorkload, contractors[s].active_projects || 0);
-                }
-                document.getElementById('contractor-summary').innerHTML =
-                    '<div class="summary-cell"><div class="summary-value">' + contractors.length.toLocaleString() + '</div><div class="summary-label">Shown</div></div>' +
-                    '<div class="summary-cell"><div class="summary-value">' + activeContractors.toLocaleString() + '</div><div class="summary-label">With active work</div></div>' +
-                    '<div class="summary-cell"><div class="summary-value">' + topWorkload.toLocaleString() + '</div><div class="summary-label">Top workload</div></div>';
-                for (var i = 0; i < topContractors.length; i++) {
-                    var c = topContractors[i];
-                    html += '<div class="list-item" style="cursor: pointer; animation: slideUp 420ms cubic-bezier(.16,1,.3,1) both; animation-delay:' + (i * 45) + 'ms" onclick="window.location=&grave;/contractor/' + encodeURIComponent(c.slug) + '&grave;">';
-	                    html += '<div><div class="list-item-title">' + escapeText(c.name) + '</div>';
-	                    html += '<div class="list-item-meta">' + escapeText(c.specialty || 'Contractor') + ' &bull; ' + (c.active_projects || 0) + ' active projects</div></div>';
-                    html += '<span class="badge badge-green">Active</span></div>';
-                }
-                panel.innerHTML = html;
-            })
-            .catch(function(e) {
-                var panel = document.querySelectorAll('#data-panels .data-panel')[1].querySelector('.panel-content');
-                panel.innerHTML = '<div class="error">Error loading contractors</div>';
-            });
-    </script>
-
-    <script>
-    (function(){
-      var prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      var canvas = document.getElementById('skyline');
-      if (!canvas) return;
-      var ctx = canvas.getContext('2d');
-      var width, height, dpr, time = 0, lastTime = 0;
-      var buildings = [], cranes = [], particles = [], stars = [];
-      var mouseX = 0, mouseY = 0, targetMouseX = 0, targetMouseY = 0;
-      var animId;
-      var BUILDING_COLORS = ['#0f172a','#1e293b','#334155'];
-
-      function resize(){
-        dpr = Math.min(window.devicePixelRatio, 2);
-        width = canvas.offsetWidth; height = canvas.offsetHeight;
-        canvas.width = width * dpr; canvas.height = height * dpr;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      }
-
-      function Building(x, w, targetH, zonePermits){
-        this.x = x; this.w = w; this.targetH = targetH; this.currentH = 0;
-        this.permits = zonePermits || []; this.windows = [];
-        this.growSpeed = prefersReducedMotion ? 100 : 1.5 + Math.random() * 2.5;
-        this.pulsePhase = Math.random() * Math.PI * 2;
-        this.beaconActive = this.permits.some(function(p){ return (p.value || 0) > 5000000; });
-        var cols = Math.max(1, Math.floor(this.w / 10));
-        var rows = Math.max(1, Math.floor(this.targetH / 14));
-        for (var r = 2; r < rows - 1; r++){
-          for (var c = 1; c < cols - 1; c++){
-            if (Math.random() > 0.25){
-              var status = this.permits.length > 0 ? this.permits[Math.floor(Math.random() * this.permits.length)].status : 'new';
-              this.windows.push({ cx: 3 + c * 10, cy: 3 + r * 14, on: Math.random() > 0.35, status: status });
-            }
-          }
-        }
-      }
-      Building.prototype.update = function(dt){
-        if (this.currentH < this.targetH){
-          this.currentH += this.growSpeed * (dt / 16);
-          if (this.currentH > this.targetH) this.currentH = this.targetH;
-        }
-      };
-      Building.prototype.draw = function(ctx, parallaxX){
-        var x = this.x + parallaxX;
-        var y = height - 80 - this.currentH;
-        var colorIdx = Math.floor((this.x / width) * BUILDING_COLORS.length) % BUILDING_COLORS.length;
-        ctx.fillStyle = BUILDING_COLORS[colorIdx];
-        ctx.fillRect(x, y, this.w, this.currentH);
-        ctx.fillStyle = '#020617';
-        ctx.fillRect(x - 1, y - 3, this.w + 2, 3);
-        if (this.currentH > 30){
-          var pulse = prefersReducedMotion ? 1 : Math.sin(time * 0.002 + this.pulsePhase) * 0.25 + 0.75;
-          for (var i = 0; i < this.windows.length; i++){
-            var win = this.windows[i];
-            if (win.cy > this.currentH - 5) continue;
-            var wx = x + win.cx, wy = y + win.cy;
-            if (win.status === 'active'){
-              ctx.fillStyle = 'rgba(16,185,129,' + pulse + ')';
-              ctx.shadowColor = 'rgba(16,185,129,0.5)'; ctx.shadowBlur = 6;
-            } else if (win.status === 'new'){
-              ctx.fillStyle = 'rgba(59,130,246,' + pulse + ')';
-              ctx.shadowColor = 'rgba(59,130,246,0.4)'; ctx.shadowBlur = 4;
-            } else {
-              ctx.fillStyle = win.on ? '#fbbf24' : '#1e293b';
-              ctx.shadowBlur = 0;
-            }
-            ctx.fillRect(wx, wy, 5, 7);
-            ctx.shadowBlur = 0;
-          }
-        }
-        if (this.beaconActive && this.currentH >= this.targetH * 0.95){
-          var beaconPulse = prefersReducedMotion ? 0.8 : Math.sin(time * 0.004) * 0.4 + 0.6;
-          ctx.fillStyle = 'rgba(239,68,68,' + beaconPulse + ')';
-          ctx.shadowColor = '#ef4444'; ctx.shadowBlur = 16;
-          ctx.beginPath(); ctx.arc(x + this.w / 2, y - 6, 3, 0, Math.PI * 2); ctx.fill();
-          ctx.shadowBlur = 0;
-        }
-      };
-
-      function Crane(x, baseY){
-        this.x = x; this.baseY = baseY;
-        this.height = 100 + Math.random() * 60;
-        this.armLength = 60 + Math.random() * 50;
-        this.armAngle = 0;
-        this.swingSpeed = 0.0003 + Math.random() * 0.0007;
-        this.swingAmp = 0.08 + Math.random() * 0.12;
-        this.cableLength = 25 + Math.random() * 35;
-      }
-      Crane.prototype.update = function(){
-        this.armAngle = Math.sin(time * this.swingSpeed) * this.swingAmp;
-      };
-      Crane.prototype.draw = function(ctx, parallaxX){
-        var bx = this.x + parallaxX, by = this.baseY;
-        var topX = bx, topY = by - this.height;
-        ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2.5;
-        ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(topX, topY); ctx.stroke();
-        var cjLen = this.armLength * 0.25;
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(topX, topY);
-        ctx.lineTo(topX - cjLen * Math.cos(this.armAngle), topY - cjLen * Math.sin(this.armAngle));
-        ctx.stroke();
-        var jibEndX = topX + this.armLength * Math.cos(this.armAngle);
-        var jibEndY = topY + this.armLength * Math.sin(this.armAngle);
-        ctx.beginPath(); ctx.moveTo(topX, topY); ctx.lineTo(jibEndX, jibEndY); ctx.stroke();
-        var loadY = jibEndY + this.cableLength + Math.sin(time * 0.001) * 3;
-        ctx.lineWidth = 1; ctx.strokeStyle = '#475569';
-        ctx.beginPath(); ctx.moveTo(jibEndX, jibEndY); ctx.lineTo(jibEndX, loadY); ctx.stroke();
-        ctx.fillStyle = '#334155'; ctx.fillRect(jibEndX - 5, loadY, 10, 8);
-      };
-
-      function Particle(x, y){
-        this.x = x; this.y = y;
-        this.vx = (Math.random() - 0.5) * 3;
-        this.vy = -Math.random() * 4 - 1;
-        this.life = 1;
-        this.decay = 0.008 + Math.random() * 0.015;
-        this.size = 1.5 + Math.random() * 2.5;
-        this.color = ['#fbbf24','#3b82f6','#10b981','#f472b6'][Math.floor(Math.random() * 4)];
-      }
-      Particle.prototype.update = function(){ this.x += this.vx; this.y += this.vy; this.vy += 0.04; this.life -= this.decay; };
-      Particle.prototype.draw = function(ctx){ ctx.globalAlpha = this.life; ctx.fillStyle = this.color; ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; };
-
-      function drawSky(){
-        var grad = ctx.createLinearGradient(0, 0, 0, height);
-        grad.addColorStop(0, '#020617'); grad.addColorStop(0.5, '#1e293b');
-        grad.addColorStop(0.85, '#3f1810'); grad.addColorStop(1, '#7c2d12');
-        ctx.fillStyle = grad; ctx.fillRect(0, 0, width, height);
-        for (var i = 0; i < stars.length; i++){
-          var s = stars[i];
-          var twinkle = prefersReducedMotion ? 0.7 : Math.sin(time * 0.001 + s.phase) * 0.4 + 0.6;
-          ctx.fillStyle = 'rgba(255,255,255,' + (twinkle * s.brightness) + ')';
-          ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2); ctx.fill();
-        }
-      }
-      function drawMountains(parx){
-        ctx.fillStyle = '#020617';
-        ctx.beginPath(); ctx.moveTo(0, height - 60);
-        for (var x = 0; x <= width; x += 40){
-          var h = 25 + Math.sin(x * 0.008) * 15 + Math.sin(x * 0.003 + 1) * 30 + Math.cos(x * 0.015) * 10;
-          ctx.lineTo(x + parx * 0.15, height - 60 - h);
-        }
-        ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.fill();
-      }
-      function drawFog(){
-        var grad = ctx.createLinearGradient(0, height - 100, 0, height);
-        grad.addColorStop(0, 'rgba(248,250,252,0)');
-        grad.addColorStop(0.4, 'rgba(248,250,252,0.15)');
-        grad.addColorStop(1, 'rgba(248,250,252,0.5)');
-        ctx.fillStyle = grad; ctx.fillRect(0, height - 100, width, 100);
-      }
-      function generateSkyline(permits){
-        buildings = []; cranes = []; stars = [];
-        for (var i = 0; i < 120; i++){
-          stars.push({ x: Math.random() * width, y: Math.random() * height * 0.55, size: Math.random() * 1.5 + 0.3, brightness: Math.random() * 0.5 + 0.3, phase: Math.random() * Math.PI * 2 });
-        }
-        if (!permits || permits.length === 0){
-          var count = Math.floor(width / 50);
-          for (var i = 0; i < count; i++) buildings.push(new Building(i * 55 + 15, 25 + Math.random() * 45, 40 + Math.random() * 200, []));
-        } else {
-          var groups = {};
-          for (var i = 0; i < permits.length; i++){
-            var p = permits[i]; var n = p.neighborhood || 'Seattle';
-            if (!groups[n]) groups[n] = []; groups[n].push(p);
-          }
-          var names = Object.keys(groups);
-          var zoneW = width / Math.max(names.length, 6);
-          for (var zi = 0; zi < names.length; zi++){
-            var nPermits = groups[names[zi]];
-            var totalValue = 0;
-            for (var i = 0; i < nPermits.length; i++) totalValue += (nPermits[i].value || 0);
-            var avgValue = totalValue / nPermits.length;
-            var bCount = 1 + Math.floor(Math.random() * 2);
-            for (var b = 0; b < bCount; b++){
-              var w = 35 + Math.random() * 50;
-              var x = zi * zoneW + b * (zoneW / bCount) + 8;
-              var h = 50 + (avgValue / 1000000) * 25 + Math.random() * 60;
-              buildings.push(new Building(x, w, Math.min(h, height * 0.55), nPermits));
-            }
-          }
-        }
-        var tallBuildings = [];
-        for (var i = 0; i < buildings.length; i++) if (buildings[i].targetH > 120) tallBuildings.push(buildings[i]);
-        tallBuildings = tallBuildings.slice(0, 4);
-        for (var i = 0; i < tallBuildings.length; i++) cranes.push(new Crane(tallBuildings[i].x + tallBuildings[i].w / 2, height - 80));
-        if (!prefersReducedMotion){
-          for (var i = 0; i < 25; i++) particles.push(new Particle(width / 2 + (Math.random() - 0.5) * 300, height - 120));
-        }
-      }
-      function render(timestamp){
-        var dt = Math.min(timestamp - lastTime, 50); lastTime = timestamp; time = timestamp;
-        targetMouseX += (mouseX - targetMouseX) * 0.04;
-        targetMouseY += (mouseY - targetMouseY) * 0.04;
-        var parallaxX = (targetMouseX / width - 0.5) * 30;
-        ctx.clearRect(0, 0, width, height);
-        drawSky(); drawMountains(parallaxX);
-        for (var i = 0; i < buildings.length; i++){ buildings[i].update(dt); buildings[i].draw(ctx, parallaxX * 0.4); }
-        for (var i = 0; i < cranes.length; i++){ cranes[i].update(); cranes[i].draw(ctx, parallaxX * 0.6); }
-        var newParticles = [];
-        for (var i = 0; i < particles.length; i++){ particles[i].update(); particles[i].draw(ctx); if (particles[i].life > 0) newParticles.push(particles[i]); }
-        particles = newParticles;
-        drawFog();
-        animId = requestAnimationFrame(render);
-      }
-      window.addEventListener('resize', resize);
-      document.addEventListener('mousemove', function(e){ mouseX = e.clientX; mouseY = e.clientY; });
-      resize();
-      function normalizePermitPayload(payload) {
-        if (Array.isArray(payload)) return payload;
-        if (payload && Array.isArray(payload.results)) return payload.results;
-        return [];
-      }
-	      (window.__permitsPromise || fetch('/api/permits').then(function(r){ return r.json(); }).then(normalizePermitPayload))
-	        .then(function(permits){ generateSkyline(permits); })
-	        .catch(function(){ generateSkyline([]); });
-      animId = requestAnimationFrame(render);
-    })();
-    </script>
-
-    <div id="leadModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
-        <div class="modal-content">
-            <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
-            <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">Get Early Access</h3>
-            <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Join 200+ contractors and suppliers tracking Seattle's construction market.</p>
-            <form id="leadForm" onsubmit="submitLead(event)">
-                <div class="form-group">
-                    <label for="lead-email">Email *</label>
-                    <input id="lead-email" type="email" name="email" required placeholder="you@company.com">
-                </div>
-                <div class="form-group">
-                    <label for="lead-company">Company Name *</label>
-                    <input id="lead-company" type="text" name="company" required placeholder="Your Company">
-                </div>
-                <div class="form-group">
-                    <label for="lead-interest">Interest Type *</label>
-                    <select id="lead-interest" name="interest" required>
-                        <option value="">Select...</option>
-                        <option value="contractor">General Contractor</option>
-                        <option value="subcontractor">Subcontractor</option>
-                        <option value="supplier">Material Supplier</option>
-                        <option value="service">Professional Services</option>
-                        <option value="investor">Investor/Developer</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="lead-neighborhoods">Target Neighborhoods (optional)</label>
-                    <input id="lead-neighborhoods" type="text" name="neighborhoods" placeholder="e.g., Capitol Hill, Ballard, Downtown">
-                </div>
-                <button type="submit" class="btn btn-primary" style="width:100%;">
-                    <span id="submitText">Join Waitlist</span>
-                    <span id="submitLoader" class="loader hidden"></span>
-                </button>
-            </form>
-            <div id="formSuccess" class="hidden" style="text-align:center;padding:2rem;">
-                <div style="font-size:3rem;margin-bottom:1rem;">&#10003;</div>
-                <h4>You're on the list!</h4>
-                <p style="color:var(--text-muted);">We'll reach out within 24 hours with access credentials.</p>
-            </div>
-        </div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/" aria-label="Building Seattle home"><span class="brand-mark" aria-hidden="true">B</span><span>Building Seattle</span></a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a>
+      </nav>
+      <details class="nav-toggle">
+        <summary aria-label="Open navigation menu">&#9776;</summary>
+        <nav class="mobile-nav" aria-label="Mobile navigation">
+          <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a><a href="/api-docs">API</a>
+        </nav>
+      </details>
     </div>
+  </header>
+  <main id="main-content">
+    <section class="hero">
+      <div class="container">
+        <p class="eyebrow">Seattle SDCI permit data</p>
+        <h1>Seattle construction permits, projects &amp; contractor activity</h1>
+        <p class="hero-copy">Search current Seattle permit records by address, permit number, contractor, neighborhood, or project description.</p>
+        <form class="search-form" action="/permits" method="get" role="search">
+          <label for="home-search">Search Seattle construction permits</label>
+          <input id="home-search" name="q" type="search" autocomplete="off" placeholder="Address, permit #, contractor, neighborhood…">
+          <button type="submit">Search</button>
+        </form>
+        <div class="hero-subactions"><a href="/permits">Browse all permits →</a><a href="/projects">Explore projects →</a></div>
+        <div class="metric-strip" aria-label="Current database metrics">
+          <a class="metric" href="/permits?status=active"><strong>${escapeHtml(stats.active_permits.toLocaleString("en-US"))}</strong><span>active permits</span></a>
+          <a class="metric" href="/contractors"><strong>${escapeHtml(stats.contractors.toLocaleString("en-US"))}</strong><span>contractors linked to permits</span></a>
+          <a class="metric" href="/permits"><strong>${escapeHtml(compactMetricMoney(stats.total_value))}</strong><span>declared permit value</span></a>
+        </div>
+        <p class="freshness">Seattle SDCI Open Data · Scheduled daily ingest · Last successful ingest <strong>${escapeHtml(ingestLabel)}</strong> · Latest permit event <strong>${escapeHtml(recordLabel)}</strong> · <a href="/methodology">Methodology</a></p>
+      </div>
+    </section>
 
-    <script>
-        function openModal() { document.getElementById('leadModal').classList.add('active'); var field = document.getElementById('lead-email'); if (field) field.focus(); }
-        function closeModal() { document.getElementById('leadModal').classList.remove('active'); }
-        document.getElementById('leadModal').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeModal(); });
-        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+    <section class="section" aria-labelledby="changes-heading">
+      <div class="container">
+        <div class="section-head"><div><p class="section-kicker">Current signal</p><h2 id="changes-heading">What changed</h2><p class="section-deck">Recent status transitions recorded in the Building Seattle permit history.</p></div><a class="text-link" href="/permits">Browse permits →</a></div>
+        <div class="changes">${renderChanges(changes)}</div>
+      </div>
+    </section>
 
-        async function submitLead(e) {
-            e.preventDefault();
-            var form = e.target;
-            var submitBtn = form.querySelector('button[type="submit"]');
-            var loader = document.getElementById('submitLoader');
-            var text = document.getElementById('submitText');
-            text.classList.add('hidden');
-            loader.classList.remove('hidden');
-            submitBtn.disabled = true;
-            var data = {
-                email: form.email.value,
-                company: form.company.value,
-                interest: form.interest.value,
-                neighborhoods: form.neighborhoods.value,
-                source: 'homepage_modal',
-                userAgent: navigator.userAgent
-            };
-            try {
-                var response = await fetch('/leads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-                if (response.ok) {
-                    form.style.display = 'none';
-                    document.getElementById('formSuccess').classList.remove('hidden');
-                } else {
-                    throw new Error('Submission failed');
-                }
-            } catch (err) {
-                alert('Error submitting form. Please try again.');
-                text.classList.remove('hidden');
-                loader.classList.add('hidden');
-                submitBtn.disabled = false;
-            }
-        }
-    </script>
-    ${renderWebMcpScript()}
+    <section class="section alt" aria-labelledby="market-heading">
+      <div class="container">
+        <div class="section-head"><div><p class="section-kicker">Market activity</p><h2 id="market-heading">Seattle construction activity</h2><p class="section-deck">Explicit rankings with the metric and timeframe shown. Declared values are source-reported permit values, not verified total project costs.</p></div></div>
+        <div class="market-grid">
+          <article class="market-card"><header><h3>Most active addresses</h3><p>Current active permit count · all active records</p></header>${renderRanking(addresses, "address")}</article>
+          <article class="market-card"><header><h3>Contractors with new active work</h3><p>Active permits applied or issued · past 30 days</p></header>${renderRanking(contractors30d, "contractor")}</article>
+          <article class="market-card"><header><h3>Neighborhoods with recent activity</h3><p>Permits applied or issued · past 30 days</p></header>${renderRanking(neighborhoods30d, "neighborhood")}</article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="tasks-heading">
+      <div class="container">
+        <div class="section-head"><div><p class="section-kicker">Start with a task</p><h2 id="tasks-heading">Get to the useful record</h2></div></div>
+        <div class="tasks">
+          <a class="task" href="/permits?status=active"><strong><span>Find prospective work</span><span aria-hidden="true">→</span></strong><p>Start with active permits, then narrow by neighborhood, project type, contractor, or declared value.</p></a>
+          <a class="task" href="/addresses"><strong><span>Research an address</span><span aria-hidden="true">→</span></strong><p>Move from an address into its permit history, related projects, and public-record participants.</p></a>
+          <a class="task" href="/neighborhoods"><strong><span>Track a neighborhood</span><span aria-hidden="true">→</span></strong><p>Compare construction activity across Seattle neighborhoods and drill into the supporting permits.</p></a>
+          <a class="task" href="/data"><strong><span>Use the data</span><span aria-hidden="true">→</span></strong><p>Download the dataset or use the public read-only API for your own analysis and workflows.</p></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" aria-labelledby="trust-heading">
+      <div class="container trust">
+        <div class="trust-copy"><p class="section-kicker">Source &amp; methodology</p><h2 id="trust-heading">Built from Seattle public records</h2><p>Building Seattle organizes Seattle Department of Construction and Inspections records into searchable permits, addresses, projects, contractors, and neighborhoods.</p><p class="trust-note">Permit values are <strong>declared permit values</strong>, not verified total project costs. Some project and entity relationships are inferred from source records and should be read with the methodology in mind.</p><p><a class="text-link" href="/methodology">Read the methodology →</a> &nbsp; <a class="text-link" href="/data">Explore the dataset →</a></p></div>
+        <aside class="trust-meta" aria-label="Data freshness"><dl><div><dt>Source</dt><dd>Seattle SDCI Open Data</dd></div><div><dt>Ingest cadence</dt><dd>Scheduled daily</dd></div><div><dt>Last successful ingest</dt><dd>${escapeHtml(ingestLabel)}</dd></div><div><dt>Latest permit event</dt><dd>${escapeHtml(recordLabel)}</dd></div></dl></aside>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="faq-heading">
+      <div class="container"><div class="section-head"><div><p class="section-kicker">Common questions</p><h2 id="faq-heading">About the data</h2></div></div><div class="faq">
+        <details><summary>What can I search on Building Seattle?</summary><div class="answer">Search permit records by address, permit number, contractor, neighborhood, project description, permit type, status, and other fields exposed by the permit browser.</div></details>
+        <details><summary>Where does the data come from?</summary><div class="answer">The base records come from Seattle Department of Construction and Inspections public data. Building Seattle cleans, links, and enriches those records into research views.</div></details>
+        <details><summary>How current is the data?</summary><div class="answer">The ingestion pipeline is scheduled daily. This page reports the latest successful ingest separately from the latest permit event date so freshness is not confused with source activity.</div></details>
+        <details><summary>What does “permit value” mean?</summary><div class="answer">It is the declared value attached to the permit record. It is not a verified total project cost and may exclude land, design, financing, related permits, later changes, and other project costs.</div></details>
+      </div></div>
+    </section>
+
+    <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:#93c5fd">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Building Seattle already supports free per-permit alerts with confirmation and one-click unsubscribe.</p></div><a class="alert-button" href="/permits">Find a permit to watch</a></div></div></section>
+  </main>
+  <footer class="site-footer"><div class="container footer-inner"><div><div class="footer-brand">Building Seattle</div><div style="margin-top:4px;color:#64748b;font-size:12px">Seattle construction intelligence</div></div><nav class="footer-nav" aria-label="Footer navigation"><a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/projects">Projects</a><a href="/addresses">Addresses</a><a href="/insights">Insights</a><a href="/data">Dataset</a><a href="/methodology">Methodology</a><a href="/about">About</a><a href="/api-docs">API</a><a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav></div></footer>
 </body>
 </html>`;
+}
+function renderHomeMarkdown(snapshot) {
+  const { stats, changes } = snapshot;
+  const lines = [
+    "# Seattle construction permits, projects & contractor activity",
+    "",
+    "Search current Seattle permit records by address, permit number, contractor, neighborhood, or project description.",
+    "",
+    `- ${stats.active_permits.toLocaleString("en-US")} active permits`,
+    `- ${stats.contractors.toLocaleString("en-US")} contractors linked to permits`,
+    `- ${compactMetricMoney(stats.total_value)} declared permit value`,
+    `- Scheduled daily ingest; last successful ingest: ${stats.last_ingest_at ? formatDate(stats.last_ingest_at, true) : "Unavailable"}`,
+    `- Latest permit event in the dataset: ${stats.latest_record_date ? formatDate(stats.latest_record_date) : "Unavailable"}`,
+    "",
+    `Search: ${BASE_URL}/permits?q=SEARCH_TERM`,
+    "",
+    "## What changed",
+    "",
+  ];
+  if (!changes.length) lines.push("No recent status changes are available in the current snapshot.");
+  for (const change of changes) {
+    lines.push(`- ${transitionLabel(change)} — ${change.address || change.permit_number || "Seattle permit"} — ${change.changed_at ? formatDate(change.changed_at, true) : "date unavailable"}`);
+  }
+  lines.push("", "## Methodology", "", "Permit values are declared values, not verified total project costs. Some project and entity relationships are inferred from public records.", "", `${BASE_URL}/methodology`);
+  return lines.join("\n");
+}
 
-  return new Response(html, { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } });
+// Root route: content-negotiates Markdown for agents, otherwise renders the
+// shared task-first homepage. Cache-Control drives the edge TTL applied by
+// withHtmlEdgeCache, and withSecurityHeaders adds the discovery Link header.
+async function handleRoot(request, env) {
+  const snapshot = await buildHomeSnapshot(env);
+  if (wantsMarkdown(request)) return markdownResponse(request, renderHomeMarkdown(snapshot));
+  return new Response(renderHomepage(snapshot), {
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300, s-maxage=300" },
+  });
 }
 
 async function handleLeadCapture(request, env) {
@@ -2639,7 +2248,7 @@ async function renderPermitBrowser(request, env) {
     <meta property="og:description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${permitCanonical}">
-    <meta name="twitter:card" content="summary">
+    <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="${escapeHtml(browserTitle)}">
     <meta name="twitter:description" content="Search Seattle building permits, project descriptions, status changes, contractors, valuations, and property history in public SDCI records refreshed daily.">
     <meta property="og:image" content="${BASE_URL}/og-image.png">
@@ -2695,6 +2304,7 @@ async function renderPermitBrowser(request, env) {
     <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://buildingseattle.com/"},{"@type":"ListItem","position":2,"name":"Permits","item":"https://buildingseattle.com/permits"}]}</script>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav("permits")}
     <div class="global-nav-spacer"></div>
     <div class="container" style="padding-top:1.25rem;">
@@ -2702,7 +2312,7 @@ async function renderPermitBrowser(request, env) {
             <a href="/" style="color:var(--text-muted);text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <span style="color:var(--text);font-weight:600;">Permits</span>
         </nav>
     </div>
-    <main class="container">
+    <main class="container" id="main-content">
         <section class="hero">
             <h1>Seattle Construction Permits</h1>
             <p>Search live Seattle construction permits from public SDCI records. Filter the active permit stream by neighborhood and permit type — or look up any address, permit number, or contractor — then drill into the projects that matter to your team.</p>
@@ -3544,6 +3154,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 	    <script type="application/ld+json">${permitJsonLd}</script>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav("permits")}
 	    <div class="container" style="padding-top:5.25rem;">
         <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:var(--text-muted);">
@@ -3551,7 +3162,7 @@ async function renderPermitDetail(permitNumber, env, request) {
         </nav>
     </div>
 
-    <main>
+    <main id="main-content">
         <div class="container">
             <div class="permit-header">
 	                <div class="permit-number">PERMIT #${safePermitNumber}</div>
@@ -3697,51 +3308,56 @@ async function renderPermitDetail(permitNumber, env, request) {
 }
 
 async function getContractors(request, env) {
-  const { results } = await env.DB.prepare(
-    `
-        SELECT c.*, COUNT(p.id) as active_projects 
-        FROM contractors c
-        LEFT JOIN permits p ON c.id = p.contractor_id AND p.status = 'active'
-        GROUP BY c.id
-        ORDER BY active_projects DESC
-        LIMIT 20
-    `,
-  ).all();
+  // Only contractors with active permit work qualify (the JOIN + HAVING do the
+  // filtering), ranked by active project count.
+  const results = await dbAll(
+    env,
+    `/* api:active-contractors */
+     SELECT c.*, COUNT(p.id) AS active_projects
+     FROM contractors c
+     JOIN permits p
+       ON c.id = p.contractor_id
+      AND lower(COALESCE(p.status,'')) = 'active'
+     GROUP BY c.id
+     HAVING COUNT(p.id) > 0
+     ORDER BY active_projects DESC, c.name ASC
+     LIMIT 20`,
+  );
 
   return new Response(JSON.stringify(results), {
-    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "public, max-age=300, s-maxage=300",
+    },
   });
 }
 
 async function getStats(env) {
-  const [leads, permits, contractors, permitAggs] = await Promise.all([
-    env.DB.prepare("SELECT COUNT(*) as count FROM leads").first(),
-    env.DB.prepare("SELECT COUNT(*) as count FROM permits").first(),
-    env.DB.prepare("SELECT COUNT(*) as count FROM contractors").first(),
-    env.DB.prepare(
-      `
-      SELECT 
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
-        SUM(value) as total_value,
-        AVG(value) as avg_value
-      FROM permits
-    `,
-    ).first(),
-  ]);
+  const stats = await getCanonicalStats(env);
+  const avgValue = await dbFirst(
+    env,
+    `/* api:mean-permit-value */ SELECT AVG(value) AS avg_value FROM permits`,
+  );
 
   return new Response(
     JSON.stringify({
-      leads: leads.count,
-      permits: permits.count,
-      contractors: contractors.count,
-      active_permits: permitAggs.active || 0,
-      total_value: permitAggs.total_value || 0,
-      avg_value: permitAggs.avg_value || 0,
+      permits: stats.permits,
+      contractors: stats.contractors,
+      active_contractors: stats.active_contractors,
+      active_permits: stats.active_permits,
+      total_value: stats.total_value,
+      avg_value: Number(avgValue?.avg_value) || 0,
+      latest_record_date: stats.latest_record_date,
+      last_ingest_at: stats.last_ingest_at,
       timestamp: new Date().toISOString(),
     }),
     {
-      headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=60" },
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "public, max-age=300, s-maxage=300",
+      },
     },
   );
 }
@@ -4683,9 +4299,10 @@ function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogTyp
     ${jsonLd ? `<script type="application/ld+json">${jsonLd}</script>` : ""}
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav(activeNav)}
     <div class="global-nav-spacer"></div>
-    <main class="container" style="padding:2rem 1.5rem 4rem;">
+    <main class="container" id="main-content" style="padding:2rem 1.5rem 4rem;">
         ${body}
     </main>
     ${renderFooter()}
@@ -5697,11 +5314,24 @@ async function renderHousingPage(env) {
     "Net new housing units permitted in Seattle: units added vs. removed over time and the neighborhoods adding the most homes.";
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
-    "@type": "Dataset",
-    name: "Seattle Housing Units Permitted",
-    description,
-    url: canonical,
-    creator: { "@type": "Organization", name: "Building Seattle" },
+    "@graph": [
+      {
+        "@type": "Dataset",
+        name: "Seattle Housing Units Permitted",
+        description,
+        url: canonical,
+        creator: { "@type": "Organization", name: "Building Seattle" },
+        spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Insights", item: `${BASE_URL}/insights` },
+          { "@type": "ListItem", position: 3, name: "Housing units", item: canonical },
+        ],
+      },
+    ],
   }).replace(/</g, "\\u003c");
 
   const yearRows = data.by_year.map((y) => ({
@@ -7317,15 +6947,31 @@ async function renderAddressPage(slug, env, request) {
   const valueStr = totalValue ? `$${parseInt(totalValue).toLocaleString()}` : "";
   const latestContractor = permits[0]?.contractor_name || "";
 
-  const title = featuredDescriptor
-    ? `${display} — ${featuredDescriptor} | Seattle Construction`
+  // Keep the whole title inside typical SERP truncation (~60 chars). The
+  // address and brand suffix always ship; the source-backed work descriptor
+  // only ships when it fits, and otherwise degrades to a short static phrase
+  // (or is dropped) instead of pushing the brand suffix out of the title.
+  const ADDRESS_TITLE_MAX = 62;
+  const addressBrandSuffix = " | Building Seattle";
+  const addressTitlePrefix = `${display} — `;
+  const descriptorBudget = ADDRESS_TITLE_MAX - addressTitlePrefix.length - addressBrandSuffix.length;
+  const descriptorCandidates = featuredDescriptor
+    ? [featuredDescriptor]
     : activePermits.length > 0
-      ? `${display} — Active ${permitTypeLabelForAddress} | Building Seattle`
-      : `${display} — Construction Activity | Building Seattle`;
+      ? [`Active ${permitTypeLabelForAddress}`, "Active Permits"]
+      : ["Construction Activity", "Permit History"];
+  let titleDescriptor = descriptorCandidates.find((value) => value.length <= descriptorBudget) || "";
+  if (!titleDescriptor && featuredDescriptor && descriptorBudget >= 24) {
+    titleDescriptor = truncateMetaDescription(featuredDescriptor, descriptorBudget);
+  }
+  const title = titleDescriptor
+    ? `${addressTitlePrefix}${titleDescriptor}${addressBrandSuffix}`
+    : `${display}${addressBrandSuffix}`;
 
+  const displayMentionsSeattle = /\bseattle\b/i.test(display);
   let description = featuredDescriptor
     ? `${featuredDescriptor} at ${display}. `
-    : `${display} in Seattle. `;
+    : `${display}${displayMentionsSeattle ? "" : " in Seattle"}. `;
   description += `${permitCount} construction permit${permitCount !== 1 ? "s" : ""} on record`;
   if (activePermits.length > 0) description += `, ${activePermits.length} active`;
   if (valueStr) description += `, ${valueStr} combined declared value`;
@@ -7647,11 +7293,32 @@ async function renderNeighborhoodPage(slug, env, request) {
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
-    "@type": "BreadcrumbList",
-    itemListElement: [
-      { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-      { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
-      { "@type": "ListItem", position: 3, name: nb.name, item: canonical },
+    "@graph": [
+      {
+        "@type": "CollectionPage",
+        name: `${nb.name} construction permits`,
+        description,
+        url: canonical,
+        isPartOf: { "@type": "WebSite", name: "Building Seattle", url: `${BASE_URL}/` },
+        about: {
+          "@type": "Place",
+          name: `${nb.name}, Seattle, Washington`,
+          address: {
+            "@type": "PostalAddress",
+            addressLocality: "Seattle",
+            addressRegion: "WA",
+            addressCountry: "US",
+          },
+        },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Neighborhoods", item: `${BASE_URL}/neighborhoods` },
+          { "@type": "ListItem", position: 3, name: nb.name, item: canonical },
+        ],
+      },
     ],
   }).replace(/</g, "\\u003c");
 
@@ -7659,7 +7326,7 @@ async function renderNeighborhoodPage(slug, env, request) {
     rows.length ? `<ul class="ent-list">${rows.map(fn).join("")}</ul>` : `<p style="color:var(--text-muted);">${empty}</p>`;
 
   const body = `
-    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Permits", href: "/permits" }, { label: nb.name }])}
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Neighborhoods", href: "/neighborhoods" }, { label: nb.name }])}
     <div class="ent-hero">
       <div class="ent-kicker">Neighborhood</div>
       <h1>${escapeHtml(nb.name)}</h1>
@@ -9086,6 +8753,37 @@ function renderOpenApiSpec() {
 
 // Human-readable API documentation (service-doc target).
 function renderApiDocs() {
+  const canonical = `${BASE_URL}/api-docs`;
+  const title = "Seattle Permit & Contractor API | Building Seattle";
+  const description =
+    "Read-only JSON API for Seattle construction permits, contractors, and aggregate stats. Endpoints, parameters, and examples — no authentication required.";
+  const socialImage = `${BASE_URL}/social/insight.png`;
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "TechArticle",
+        headline: title,
+        description,
+        url: canonical,
+        publisher: { "@type": "Organization", name: "Building Seattle", url: `${BASE_URL}/` },
+        about: {
+          "@type": "WebAPI",
+          name: "Building Seattle public API",
+          documentation: canonical,
+          provider: { "@type": "Organization", name: "Building Seattle", url: `${BASE_URL}/` },
+          termsOfService: `${BASE_URL}/methodology`,
+        },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "API documentation", item: canonical },
+        ],
+      },
+    ],
+  }).replaceAll("<", "\\u003c");
   const endpoint = (method, path, desc, params) => `
       <div class="endpoint">
         <h3><span class="method">${method}</span> <code>${escapeHtml(path)}</code></h3>
@@ -9098,12 +8796,27 @@ function renderApiDocs() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API Documentation | Building Seattle</title>
-    <meta name="description" content="Public read-only API for Seattle construction permit and contractor data.">
-    <link rel="canonical" href="${BASE_URL}/api-docs">
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}">
+    <meta name="robots" content="index,follow,max-image-preview:large">
+    <link rel="canonical" href="${canonical}">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="${escapeHtml(title)}">
+    <meta property="og:description" content="${escapeHtml(description)}">
+    <meta property="og:url" content="${canonical}">
+    <meta property="og:image" content="${socialImage}">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Seattle permit and contractor API — Building Seattle">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="${escapeHtml(title)}">
+    <meta name="twitter:description" content="${escapeHtml(description)}">
+    <meta name="twitter:image" content="${socialImage}">
     <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
+    <script type="application/ld+json">${jsonLd}</script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; min-height: 100vh; }
@@ -9123,14 +8836,17 @@ function renderApiDocs() {
     </style>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav("api")}
-    <main>
+    <main id="main-content">
       <div class="container">
         <h1>API Documentation</h1>
         <p class="lede">Read-only JSON access to aggregated Seattle construction permit and contractor data. No authentication required. Base URL <code>${BASE_URL}</code>.</p>
+        <h2>Endpoints</h2>
         ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1)."), param("per_page", "Results per page (1-100, default 50).")].join(""))}
         ${endpoint("GET", "/api/contractors", "List the top 20 contractors ranked by active project count. Each record includes an active_projects count.", "")}
         ${endpoint("GET", "/api/stats", "Aggregate counts and permit value totals for the dashboard.", "")}
+        <h2>Machine-readable resources</h2>
         <div class="resources">
           Machine-readable: <a href="/openapi.json">OpenAPI spec</a> &middot; <a href="/.well-known/api-catalog">API catalog</a>
         </div>
@@ -9208,30 +8924,6 @@ async function renderAgentSkillsIndex() {
 function mdCell(value) {
   if (value === null || value === undefined || value === "") return "—";
   return String(value).replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
-}
-
-function homeMarkdown(lastUpdated) {
-  return `# Building Seattle
-
-Construction intelligence for Seattle: live permit data and contractor profiles
-aggregated from public Seattle DCI records.
-
-_Data last updated: ${lastUpdated}_
-
-## Explore
-
-- [Browse permits](${BASE_URL}/permits)
-- [API documentation](${BASE_URL}/api-docs)
-
-## Public API (no authentication)
-
-- \`GET ${BASE_URL}/api/permits\` — query permits (filters: \`neighborhood\`, \`type\`, \`status\`, \`q\`, \`page\`, \`per_page\`)
-- \`GET ${BASE_URL}/api/contractors\` — top contractors by active project count
-- \`GET ${BASE_URL}/api/stats\` — aggregate statistics
-
-Machine-readable discovery: [OpenAPI spec](${BASE_URL}/openapi.json) ·
-[API catalog](${BASE_URL}/.well-known/api-catalog)
-`;
 }
 
 function permitBrowserMarkdown({ permits, total, page, totalPages, neighborhood, type, status, q }) {
@@ -9323,70 +9015,6 @@ ${rows || "| _No permits on record_ | | | |"}
 `;
 }
 
-// WebMCP: expose read-only site tools to AI agents running in the browser.
-function renderWebMcpScript() {
-  return `<script>
-    (function () {
-      if (!navigator.modelContext || typeof navigator.modelContext.provideContext !== "function") return;
-      var json = function (res) { return res.json(); };
-      var qs = function (args) {
-        var p = new URLSearchParams();
-        Object.keys(args || {}).forEach(function (k) {
-          if (args[k] !== undefined && args[k] !== null && args[k] !== "") p.set(k, args[k]);
-        });
-        var s = p.toString();
-        return s ? "?" + s : "";
-      };
-      try {
-        navigator.modelContext.provideContext({
-          tools: [
-            {
-              name: "search_permits",
-              description: "Search Seattle construction permits with optional filters and pagination.",
-              inputSchema: {
-                type: "object",
-                properties: {
-                  neighborhood: { type: "string" },
-                  type: { type: "string" },
-                  status: { type: "string" },
-                  q: { type: "string", description: "Free-text search" },
-                  page: { type: "integer", minimum: 1 },
-                  per_page: { type: "integer", minimum: 1, maximum: 100 }
-                }
-              },
-              execute: function (args) {
-                return fetch("/api/permits" + qs(args), { headers: { Accept: "application/json" } })
-                  .then(json)
-                  .then(function (d) { return { content: [{ type: "text", text: JSON.stringify(d) }] }; });
-              }
-            },
-            {
-              name: "list_contractors",
-              description: "List the top Seattle contractors ranked by active project count.",
-              inputSchema: { type: "object", properties: {} },
-              execute: function () {
-                return fetch("/api/contractors", { headers: { Accept: "application/json" } })
-                  .then(json)
-                  .then(function (d) { return { content: [{ type: "text", text: JSON.stringify(d) }] }; });
-              }
-            },
-            {
-              name: "get_stats",
-              description: "Get aggregate Seattle permit, contractor, and value statistics.",
-              inputSchema: { type: "object", properties: {} },
-              execute: function () {
-                return fetch("/api/stats", { headers: { Accept: "application/json" } })
-                  .then(json)
-                  .then(function (d) { return { content: [{ type: "text", text: JSON.stringify(d) }] }; });
-              }
-            }
-          ]
-        });
-      } catch (e) { /* WebMCP unavailable; ignore */ }
-    })();
-  </script>`;
-}
-
 function renderLlmsTxt() {
   const lines = [
     "# Building Seattle",
@@ -9472,6 +9100,7 @@ const SITEMAP_STATIC_PATHS = [
   "/insights/map",
   "/insights/contractors",
   "/insights/network",
+  "/api-docs",
 ];
 
 const SITEMAP_SECTIONS = {
@@ -10385,7 +10014,42 @@ async function renderMethodologyPage(env) {
 function renderAboutPage() {
   const canonical = `${BASE_URL}/about`;
   const title = "About Building Seattle — Construction Permit Intelligence";
-  const description = "Building Seattle tracks construction permits across the Seattle metro area, aggregating public SDCI records into searchable property, contractor, and neighborhood views.";
+  const description =
+    "Building Seattle turns public Seattle SDCI permit records into searchable property, contractor, project, and neighborhood views for the metro area.";
+  const socialImage = `${BASE_URL}/social/insight.png`;
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "AboutPage",
+        name: title,
+        description,
+        url: canonical,
+        isPartOf: { "@type": "WebSite", name: "Building Seattle", url: `${BASE_URL}/` },
+      },
+      {
+        "@type": "Organization",
+        name: "Building Seattle",
+        url: `${BASE_URL}/`,
+        description,
+        logo: { "@type": "ImageObject", url: `${BASE_URL}/icons/icon-512.png`, width: 512, height: 512 },
+        knowsAbout: [
+          "Seattle construction permits",
+          "Seattle Department of Construction and Inspections records",
+          "Seattle contractors",
+          "Seattle neighborhood construction activity",
+          "Seattle housing pipeline",
+        ],
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "About", item: canonical },
+        ],
+      },
+    ],
+  }).replaceAll("<", "\\u003c");
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -10394,16 +10058,25 @@ function renderAboutPage() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}">
-    <meta name="robots" content="index,follow">
+    <meta name="robots" content="index,follow,max-image-preview:large">
     <link rel="canonical" href="${canonical}">
     <meta property="og:title" content="About Building Seattle | Seattle Construction Intelligence">
     <meta property="og:description" content="${escapeHtml(description)}">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
-    <meta name="twitter:card" content="summary">
+    <meta property="og:image" content="${socialImage}">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="About Building Seattle — Seattle construction permit data">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="About Building Seattle | Seattle Construction Intelligence">
+    <meta name="twitter:description" content="${escapeHtml(description)}">
+    <meta name="twitter:image" content="${socialImage}">
     <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
+    <script type="application/ld+json">${jsonLd}</script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.7; }
@@ -10426,8 +10099,9 @@ function renderAboutPage() {
     </style>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav("about")}
-    <main>
+    <main id="main-content">
         <section class="hero">
             <div class="container">
                 <h1>About Building Seattle</h1>
@@ -10488,9 +10162,9 @@ const GUMROAD_UTM = "utm_source=buildingseattle&utm_medium=site&utm_campaign=dat
 
 async function renderDataPage(env) {
   const canonical = `${BASE_URL}/data`;
-  const title = "Seattle Construction Permit Dataset — CSV Download | Building Seattle";
+  const title = "Seattle Permit Dataset — CSV Download | Building Seattle";
   const description =
-    "The complete Building Seattle permit dataset as a ready-to-use CSV: every Seattle construction permit, enriched with parcel numbers, review levels, and contractor licenses. Free 100-row sample.";
+    "Every Seattle construction permit as a ready-to-use CSV, enriched with parcel numbers, review levels, and contractor licenses. Free 100-row sample.";
 
   let stats = { permits: 0, contractors: 0, neighborhoods: 0, total_value: 0 };
   try {
@@ -10513,6 +10187,45 @@ async function renderDataPage(env) {
   const permitCount = stats.permits ? Number(stats.permits).toLocaleString() : "13,000+";
   const contractorCount = stats.contractors ? Number(stats.contractors).toLocaleString() : "2,000+";
   const buyUrl = `${GUMROAD_PRODUCT_URL}?${GUMROAD_UTM}`;
+  const socialImage = `${BASE_URL}/social/insight.png`;
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Dataset",
+        name: "Seattle construction permit dataset",
+        description,
+        url: canonical,
+        creator: { "@type": "Organization", name: "Building Seattle", url: `${BASE_URL}/` },
+        spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
+        isAccessibleForFree: false,
+        isBasedOn: "https://data.seattle.gov/",
+      },
+      {
+        "@type": "Product",
+        name: "Building Seattle permit dataset",
+        description,
+        url: canonical,
+        brand: { "@type": "Organization", name: "Building Seattle" },
+        offers: {
+          "@type": "AggregateOffer",
+          priceCurrency: "USD",
+          lowPrice: "49",
+          highPrice: "89",
+          offerCount: 2,
+          availability: "https://schema.org/InStock",
+          url: buyUrl,
+        },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Permit dataset", item: canonical },
+        ],
+      },
+    ],
+  }).replaceAll("<", "\\u003c");
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -10521,16 +10234,25 @@ async function renderDataPage(env) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}">
-    <meta name="robots" content="index,follow">
+    <meta name="robots" content="index,follow,max-image-preview:large">
     <link rel="canonical" href="${canonical}">
     <meta property="og:title" content="Seattle Construction Permit Dataset | Building Seattle">
     <meta property="og:description" content="${escapeHtml(description)}">
     <meta property="og:type" content="website">
     <meta property="og:url" content="${canonical}">
-    <meta name="twitter:card" content="summary">
+    <meta property="og:image" content="${socialImage}">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Seattle construction permit dataset — Building Seattle">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Seattle Construction Permit Dataset | Building Seattle">
+    <meta name="twitter:description" content="${escapeHtml(description)}">
+    <meta name="twitter:image" content="${socialImage}">
     <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
+    <script type="application/ld+json">${jsonLd}</script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.7; }
@@ -10562,8 +10284,9 @@ async function renderDataPage(env) {
     </style>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav("data")}
-    <main>
+    <main id="main-content">
         <section class="hero">
             <div class="container">
                 <h1>The Seattle Permit Dataset</h1>
@@ -10649,7 +10372,8 @@ function render404(options) {
     <title>${escapeHtml(heading)} | Building Seattle</title>
     <meta name="description" content="${escapeHtml(message)}">
     <meta name="robots" content="noindex">
-    <link rel="canonical" href="${BASE_URL}/">
+    <!-- No canonical on error responses: the page is noindex and a cross-page
+         canonical on a 404 is an anti-pattern. -->
     <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
     <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
@@ -10670,8 +10394,9 @@ function render404(options) {
     </style>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav()}
-    <main>
+    <main id="main-content">
       <section class="error-section">
           <div class="container">
               <h1>404</h1>
