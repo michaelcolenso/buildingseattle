@@ -6,6 +6,22 @@ const MAX_CHILD_SITEMAPS = 20;
 const MAX_SAMPLE_PAGES = 30;
 const MAX_LINK_CHECKS = 30;
 const ENTITY_HUB_PATHS = ["/contractors", "/neighborhoods", "/projects", "/addresses"];
+// Public pages the homepage must link to, so no important page is orphaned
+// (reachable only from the sitemap). "/about" regressed this way once.
+const REQUIRED_HOME_LINKS = [
+  "/about",
+  "/permits",
+  "/contractors",
+  "/neighborhoods",
+  "/projects",
+  "/addresses",
+  "/insights",
+  "/data",
+  "/methodology",
+  "/api-docs",
+];
+// Path probed to prove the shared not-found template stays a real 404.
+const NOT_FOUND_PROBE_PATH = "/seo-monitor-404-probe";
 const FILTER_POLICY_PATHS = [
   "/contractors?activity=active", "/contractors?permit_type=construction", "/contractors?min_value=1000000",
   "/contractors?neighborhood=capitol-hill", "/projects?view=recent", "/projects?view=active",
@@ -128,12 +144,45 @@ export function schemaTypes(jsonLdBlocks) {
 export function expectedSchemaType(pathname) {
   if (pathname === "/") return "WebSite";
   if (ENTITY_HUB_PATHS.includes(pathname) || pathname === "/insights") return "CollectionPage";
+  if (pathname.startsWith("/insights/")) return "Dataset";
   if (pathname.startsWith("/permits/")) return "Report";
   if (pathname.startsWith("/contractor/")) return "LocalBusiness";
   if (pathname.startsWith("/address/")) return "Place";
   if (pathname.startsWith("/project/")) return "CreativeWork";
+  if (pathname.startsWith("/neighborhood/")) return "CollectionPage";
   if (pathname === "/methodology") return "AboutPage";
+  if (pathname === "/about") return "AboutPage";
+  if (pathname === "/data") return "Dataset";
+  if (pathname === "/api-docs") return "TechArticle";
   return null;
+}
+
+// Maximum <title> length per route. Google truncates around 60 characters, so
+// dynamic templates must spend their budget on the address/record rather than
+// pushing the brand suffix out of the SERP snippet. Permit pages intentionally
+// allow a longer title so the brand suffix always survives.
+export function titleBudget(pathname) {
+  if (pathname === "/") return 62;
+  if (pathname.startsWith("/address/")) return 62;
+  if (pathname.startsWith("/neighborhood/")) return 70;
+  if (pathname.startsWith("/project/")) return 70;
+  if (pathname.startsWith("/contractor/")) return 70;
+  if (pathname.startsWith("/permits/")) return 92;
+  return 70;
+}
+
+// <title> text is measured after decoding the entities that inflate raw length
+// (e.g. "&amp;"), so a 58-character title is not counted as 62.
+export function decodedTitleLength(title) {
+  const decoded = String(title || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&nbsp;", " ");
+  return decoded.length;
 }
 
 function result(check, url, ok, detail) {
@@ -208,11 +257,18 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
 
   const samplePages = [...discoveredPages].slice(0, MAX_SAMPLE_PAGES);
   const internalLinks = new Set();
+  const homeLinks = new Set();
   for (const pageUrl of samplePages) {
     const page = await fetchText(pageUrl);
     const meta = htmlMetadata(page.text);
+    const pathname = new URL(pageUrl).pathname;
     checks.push(result("page-status", pageUrl, page.response.status === 200, `HTTP ${page.response.status}`));
     checks.push(result("page-title", pageUrl, Boolean(meta.title), meta.title || "Missing title"));
+    const budget = titleBudget(pathname);
+    if (meta.title && budget) {
+      const titleLength = decodedTitleLength(meta.title);
+      checks.push(result("page-title-length", pageUrl, titleLength <= budget, `${titleLength} chars (budget ${budget}): ${meta.title}`));
+    }
     checks.push(result("page-description", pageUrl, Boolean(meta.description), meta.description || "Missing description"));
     checks.push(result("page-canonical", pageUrl, sameCanonicalHost(meta.canonical, base.href), meta.canonical || "Missing canonical"));
     const expectedCanonical = new URL(new URL(pageUrl).pathname, base).href;
@@ -232,6 +288,9 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
     if (requiredType) {
       const types = schemaTypes(meta.jsonLd);
       checks.push(result("page-schema-type", pageUrl, types.includes(requiredType), types.length ? `Found ${types.join(", ")}; expected ${requiredType}` : `Missing ${requiredType}`));
+    }
+    if (pageUrl === new URL("/", base).href) {
+      for (const href of meta.links) homeLinks.add(href);
     }
     if (ENTITY_HUB_PATHS.includes(new URL(pageUrl).pathname)) {
       const itemCount = entityHubItemCount(meta.jsonLd);
@@ -263,6 +322,22 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   const brokenLinks = internalLinkChecks.filter((check) => !check.ok);
   const brokenRate = internalLinkChecks.length ? brokenLinks.length / internalLinkChecks.length : 0;
   checks.push(result("internal-link-404-rate", base.href, brokenRate <= 0.05, `${brokenLinks.length}/${internalLinkChecks.length} broken (${(brokenRate * 100).toFixed(1)}%)`));
+
+  // Orphan guard: every important public page must be reachable from the
+  // homepage footer/nav, not just from sitemap.xml.
+  for (const path of REQUIRED_HOME_LINKS) {
+    const linked = homeLinks.has(path) || homeLinks.has(`${path}/`);
+    checks.push(result("homepage-link-coverage", new URL(path, base).href, linked, linked ? "Linked from /" : "Not linked from homepage"));
+  }
+
+  // The shared not-found template must stay a real 404 (no soft 404) with a
+  // noindex directive and no cross-page canonical.
+  const notFoundUrl = new URL(NOT_FOUND_PROBE_PATH, base).href;
+  const notFound = await fetchText(notFoundUrl);
+  const notFoundMeta = htmlMetadata(notFound.text);
+  checks.push(result("notfound-status", notFoundUrl, notFound.response.status === 404, `HTTP ${notFound.response.status}`));
+  checks.push(result("notfound-noindex", notFoundUrl, /noindex/i.test(notFoundMeta.robots || ""), notFoundMeta.robots || "Missing robots directive"));
+  checks.push(result("notfound-no-canonical", notFoundUrl, !notFoundMeta.canonical, notFoundMeta.canonical || "No canonical (expected)"));
 
   for (const path of FILTER_POLICY_PATHS) {
     const url = new URL(path, base).href;
