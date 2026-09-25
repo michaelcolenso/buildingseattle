@@ -39,18 +39,20 @@ self-referencing canonicals, and publishes `/methodology`.
 ## Search Console baseline
 
 The sitemap submission and Google indexed, discovered, crawled, and excluded
-counts require access to the site’s Google Search Console property. Record
-those values here after submitting:
+counts were pending property access on 2026-07-27. They were recorded on
+2026-09-25 from the Page Indexing export; the aggregate trend, search
+performance baseline, and the reports still outstanding are tracked in
+`docs/search-baseline-2026-09-25.md`.
 
-| Measurement | Baseline |
+| Measurement | Baseline (2026-09-25) |
 |---|---:|
-| Sitemap submitted | Pending Search Console access |
-| Sitemap status | Pending |
-| Indexed pages | Pending |
-| Discovered — currently not indexed | Pending |
-| Crawled — currently not indexed | Pending |
-| Excluded by `noindex` | Pending |
-| Duplicate/canonical exclusions | Pending |
+| Sitemap submitted | Yes — scope "All known pages" |
+| Sitemap status | Pending Sitemaps report (per-child read/indexed counts) |
+| Indexed pages | 27,656 |
+| Discovered — currently not indexed | 6,652 |
+| Crawled — currently not indexed | 4,832 |
+| Excluded by `noindex` | 1,196 |
+| Duplicate/canonical exclusions | 0 |
 
 ## Reproduction
 
