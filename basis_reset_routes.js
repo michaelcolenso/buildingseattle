@@ -50,6 +50,11 @@ export async function ingestBasisResetEvent(request, env) {
   const target = await resolveBasisResetTarget(env, body);
   if (!target) return json({ error: "Could not resolve event to an existing address/project" }, 422);
 
+  const duplicate = await env.DB.prepare(
+    "SELECT id FROM basis_reset_events WHERE source_url=? AND event_type=? AND event_date=? LIMIT 1",
+  ).bind(body.source_url, body.event_type, body.event_date).first();
+  if (duplicate) return json({ error: "Duplicate evidence event", id: duplicate.id }, 409);
+
   const result = await env.DB.prepare(`
     INSERT INTO basis_reset_events
       (address_id, project_id, event_type, event_date, prior_basis, current_basis, asking_price,
