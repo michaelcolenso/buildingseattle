@@ -6876,6 +6876,13 @@ async function renderInsightsIndex(env) {
         "A network linking Seattle's busiest contractors to the neighborhoods they build in.",
         activeContractors ? `<span style="font-size:1.1rem;">Explore the network &rarr;</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
       )}
+      ${feature(
+        "/insights/basis-reset",
+        "Capital signals",
+        "Basis Reset Radar",
+        "Properties where sales, distress, developer exits, or shovel-ready listings intersect with real permit and project activity.",
+        `<span style="font-size:1.1rem;">Find reset opportunities &rarr;</span>`,
+      )}
     </div>
     ${renderDataTrustNote(null, "Each report prints its inclusion rules and suppresses indexing when the supporting dataset is unavailable.")}`;
 
