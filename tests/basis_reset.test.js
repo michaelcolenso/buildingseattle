@@ -13,6 +13,8 @@ test("calculates the Plaza 600-style basis reset correctly", () => {
 
 test("rejects missing or invalid prior basis instead of inventing a reset", () => {
   assert.equal(calculateResetPct(null, 12_000_000), null);
+  assert.equal(calculateResetPct(97_000_000, null), null);
+  assert.equal(calculateResetPct(97_000_000, ""), null);
   assert.equal(calculateResetPct(0, 12_000_000), null);
 });
 
@@ -43,4 +45,12 @@ test("large reset plus project readiness produces a high opportunity score", () 
   assert.equal(result.resetPct, 87.6);
   assert.ok(result.opportunityScore >= 80);
   assert.match(result.explanation, /Basis reset 87\.6%/);
+});
+
+
+test("unknown current basis is explicitly unverified and cannot fabricate a 100% reset", () => {
+  const result = scoreBasisReset({ priorBasis: 97_000_000, currentBasis: null, eventType: "sale", confidence: 90 });
+  assert.equal(result.basisVerified, false);
+  assert.equal(result.resetPct, null);
+  assert.match(result.explanation, /Basis unverified/);
 });
