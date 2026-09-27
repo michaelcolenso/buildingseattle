@@ -48,15 +48,17 @@ export function scoreBasisReset(input) {
   const reset = resetMagnitudeScore(resetPct);
   const readiness = readinessScore(input);
   const signal = signalStrengthScore(input);
+  const basisVerified = resetPct != null;
   const opportunity = clamp(reset * 0.45 + readiness * 0.35 + signal * 0.20);
   return {
+    basisVerified,
     resetPct,
     resetScore: reset,
     readinessScore: readiness,
     signalScore: signal,
     opportunityScore: opportunity,
     explanation: [
-      resetPct == null ? "Basis change unknown" : `Basis reset ${resetPct}%`,
+      resetPct == null ? "Basis unverified — reset magnitude unknown" : `Basis reset ${resetPct}%`,
       `readiness ${readiness}/100`,
       `signal ${signal}/100`,
     ].join("; "),
