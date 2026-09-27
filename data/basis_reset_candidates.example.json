@@ -1,0 +1,26 @@
+{
+  "candidates": [
+    {
+      "address": "600 Stewart St, Seattle, WA 98101",
+      "event_type": "sale",
+      "event_date": "2026-09-17",
+      "current_basis": 12500000,
+      "source_url": "https://portal.djc.com/re/re-sales.php?id=4395589",
+      "source_name": "Seattle Daily Journal of Commerce property sales",
+      "source_type": "public_record",
+      "confidence": 95,
+      "notes": "Recorded sale signal. Prior basis intentionally omitted until independently verified."
+    },
+    {
+      "address": "1412 23rd Ave, Seattle, WA 98122",
+      "event_type": "permit_ready_sale",
+      "event_date": "2026-09-25",
+      "asking_price": 9000000,
+      "source_url": "https://platform.reverecre.com/project/93f09c8e-4c15-4893-9fb8-00b62cb2cc23",
+      "source_name": "LightBox Revere / Heartland listing",
+      "source_type": "listing",
+      "confidence": 90,
+      "notes": "117-unit fully entitled/shovel-ready development listing. Prior basis intentionally omitted."
+    }
+  ]
+}

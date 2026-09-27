@@ -16,6 +16,7 @@ import {
 } from "./adu.js";
 import { ENTITY_HUBS } from "./entity_hubs.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
+import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadar } from "./basis_reset_routes.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -215,6 +216,10 @@ export default {
         return secure(await getStatusChanges(request, env));
       }
 
+      if (path === "/api/basis-reset") {
+        return secure(await getBasisResetRadar(request, env));
+      }
+
       if (path === "/api/plan-review") {
         return secure(await getPlanReviewStats(env));
       }
@@ -296,6 +301,11 @@ export default {
       if (path === "/insights/network") {
         ctx.waitUntil(logPageView(request, env, "/insights/network"));
         return secure(await renderNetworkPage(env));
+      }
+
+      if (path === "/insights/basis-reset") {
+        ctx.waitUntil(logPageView(request, env, "/insights/basis-reset"));
+        return secure(await renderBasisResetRadar(env));
       }
 
       if (["/contractors", "/neighborhoods", "/projects", "/addresses"].includes(path)) {
@@ -422,6 +432,12 @@ export default {
           return secure(authError);
         }
         return secure(await ingestPermitEnrichmentBatch(request, env));
+      }
+
+      if (path === "/ingest/basis-reset" && request.method === "POST") {
+        const authError = await requireIngestAuth(request, env);
+        if (authError) return secure(authError);
+        return secure(await ingestBasisResetEvent(request, env));
       }
 
       if (path === "/ingest/contractor" && request.method === "POST") {
@@ -6859,6 +6875,13 @@ async function renderInsightsIndex(env) {
         "Who builds where",
         "A network linking Seattle's busiest contractors to the neighborhoods they build in.",
         activeContractors ? `<span style="font-size:1.1rem;">Explore the network &rarr;</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+      )}
+      ${feature(
+        "/insights/basis-reset",
+        "Capital signals",
+        "Basis Reset Radar",
+        "Properties where sales, distress, developer exits, or shovel-ready listings intersect with real permit and project activity.",
+        `<span style="font-size:1.1rem;">Find reset opportunities &rarr;</span>`,
       )}
     </div>
     ${renderDataTrustNote(null, "Each report prints its inclusion rules and suppresses indexing when the supporting dataset is unavailable.")}`;
