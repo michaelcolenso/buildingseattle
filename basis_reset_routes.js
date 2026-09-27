@@ -101,15 +101,16 @@ export async function materializeBasisResetScore(env, eventId) {
       (address_id, project_id, latest_event_id, reset_pct, reset_score, readiness_score,
        signal_score, opportunity_score, explanation, scored_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(address_id, project_id) DO UPDATE SET
-      latest_event_id=excluded.latest_event_id, reset_pct=excluded.reset_pct,
-      reset_score=excluded.reset_score, readiness_score=excluded.readiness_score,
-      signal_score=excluded.signal_score, opportunity_score=excluded.opportunity_score,
-      explanation=excluded.explanation, scored_at=CURRENT_TIMESTAMP
   `).bind(
     event.address_id, event.project_id, event.id, score.resetPct, score.resetScore,
     score.readinessScore, score.signalScore, score.opportunityScore, score.explanation,
-  ).run();
+  );
+  if (event.project_id != null) {
+    await env.DB.prepare("DELETE FROM basis_reset_scores WHERE project_id=?").bind(event.project_id).run();
+  } else {
+    await env.DB.prepare("DELETE FROM basis_reset_scores WHERE address_id=? AND project_id IS NULL").bind(event.address_id).run();
+  }
+  await statement.run();
   return score;
 }
 
