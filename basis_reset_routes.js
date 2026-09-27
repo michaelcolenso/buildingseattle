@@ -96,7 +96,7 @@ export async function materializeBasisResetScore(env, eventId) {
     projectCount: Number(projectCountRow?.project_count || 0),
     hasIssuedPermit: Number(readiness?.issued_count || 0) > 0,
   });
-  await env.DB.prepare(`
+  const statement = env.DB.prepare(`
     INSERT INTO basis_reset_scores
       (address_id, project_id, latest_event_id, reset_pct, reset_score, readiness_score,
        signal_score, opportunity_score, explanation, scored_at)
