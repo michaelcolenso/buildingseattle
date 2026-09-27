@@ -11,6 +11,7 @@ const EVENT_WEIGHTS = {
 };
 
 export function calculateResetPct(priorBasis, currentBasis) {
+  if (priorBasis == null || currentBasis == null || String(priorBasis).trim() === "" || String(currentBasis).trim() === "") return null;
   const prior = Number(priorBasis);
   const current = Number(currentBasis);
   if (!Number.isFinite(prior) || !Number.isFinite(current) || prior <= 0 || current < 0) return null;
