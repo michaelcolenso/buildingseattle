@@ -1,4 +1,12 @@
-from scripts.basis_reset_candidates import validate_candidate
+import importlib.util
+from pathlib import Path
+
+MODULE = Path(__file__).resolve().parents[1] / "scripts" / "basis_reset_candidates.py"
+spec = importlib.util.spec_from_file_location("basis_reset_candidates", MODULE)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+validate_candidate = module.validate_candidate
 
 
 def test_valid_candidate_can_leave_prior_basis_unknown():
