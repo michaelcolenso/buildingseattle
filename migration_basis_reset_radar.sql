@@ -48,3 +48,8 @@ CREATE INDEX IF NOT EXISTS idx_basis_reset_events_address ON basis_reset_events(
 CREATE INDEX IF NOT EXISTS idx_basis_reset_events_project ON basis_reset_events(project_id);
 CREATE INDEX IF NOT EXISTS idx_basis_reset_events_type ON basis_reset_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_basis_reset_scores_opportunity ON basis_reset_scores(opportunity_score DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_basis_reset_scores_address_only
+ON basis_reset_scores(address_id) WHERE project_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_basis_reset_scores_project
+ON basis_reset_scores(project_id) WHERE project_id IS NOT NULL;
