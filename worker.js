@@ -54,7 +54,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v4";
+const HTML_CACHE_VERSION = "v5";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
@@ -2538,7 +2538,7 @@ async function renderPermitDetail(permitNumber, env, request) {
     FROM permits p
     LEFT JOIN contractors c ON p.contractor_id = c.id
     LEFT JOIN addresses a ON a.id = p.address_id
-    LEFT JOIN projects pr ON pr.id = p.project_id
+    LEFT JOIN projects pr ON pr.id = p.project_id AND ${MULTI_PERMIT_PROJECT_SQL}
     WHERE p.permit_number = ?
   `,
     )
@@ -3590,7 +3590,7 @@ async function renderContractorPage(slug, env, request) {
     safeAll(
       env,
       `SELECT DISTINCT pr.slug, pr.name, pr.latest_activity_date, pr.total_estimated_value
-       FROM permits p JOIN projects pr ON pr.id = p.project_id
+       FROM permits p JOIN projects pr ON pr.id = p.project_id AND ${MULTI_PERMIT_PROJECT_SQL}
        WHERE p.contractor_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 12`,
       [contractor.id],
     ),
@@ -4346,6 +4346,12 @@ export function latestPermitActivity(permits) {
 const ENTITY_HUB_PAGE_SIZE = 48;
 const ACTIVE_PERMIT_SQL =
   "lower(COALESCE(p.status, '')) IN ('active', 'pending', 'new', 'in review', 'under review')";
+// A cluster of one permit is not a project: it repeats the record its address
+// page already publishes. Only multi-permit clusters are listed, linked, and
+// advertised as projects; single-permit cluster pages canonicalize onto the
+// address page instead. `pr` is the projects alias in every query using this.
+const MULTI_PERMIT_PROJECT_SQL =
+  "(SELECT COUNT(*) FROM project_permits mpp WHERE mpp.project_id = pr.id) > 1";
 export { buildEntityHubQuery, buildEntityHubState };
 
 function boundedHubChoice(value, allowed, fallback) {
@@ -4387,6 +4393,7 @@ function buildEntityHubQuery(type, state) {
   const where = [];
   const havingParts = [];
   const binds = [];
+  if (type === "projects") havingParts.push(MULTI_PERMIT_PROJECT_SQL);
   if (state.neighborhood) {
     where.push("p.neighborhood = ?");
     binds.push(state.neighborhood);
@@ -6904,7 +6911,9 @@ async function renderAddressPage(slug, env, request) {
     ),
     safeAll(
       env,
-      "SELECT * FROM projects WHERE address_id = ? ORDER BY latest_activity_date DESC",
+      `SELECT pr.* FROM projects pr
+       WHERE pr.address_id = ? AND ${MULTI_PERMIT_PROJECT_SQL}
+       ORDER BY pr.latest_activity_date DESC`,
       [address.id],
     ),
     safeAll(
@@ -6935,13 +6944,26 @@ async function renderAddressPage(slug, env, request) {
   ]);
 
   const permitCount = permits.length;
+  // An address with no permits on record has nothing to publish: the records
+  // we mirrored from the SDCI feed are gone. Answering 410 makes Google drop
+  // the URL instead of spending crawl budget on a 200 that only says
+  // `noindex`. These URLs are neither sitemapped nor linked internally.
+  if (permitCount === 0) {
+    return renderGone({
+      heading: "This address has no permits on record",
+      message:
+        "We no longer have construction permit records for this address in the public Seattle DCI data we publish. Try browsing permits or searching for another address.",
+    });
+  }
   const totalValue = permits.reduce((s, p) => s + (Number(p.value) || 0), 0);
   const dates = permits.map((p) => p.issued_date || p.applied_date).filter(Boolean).sort();
   const firstDate = dates[0];
   const lastDate = dates[dates.length - 1];
   const activePermits = permits.filter((p) => ["active", "pending", "new"].includes(String(p.status || "").toLowerCase()));
   const display = smartTitleCase(cleanFeedText(address.display_address) || cleanFeedText(address.normalized_address)) || "Seattle property";
-  const noindex = permitCount === 0;
+  // Zero-permit addresses return 410 above, so every address page that renders
+  // has records on it and stays indexable.
+  const noindex = false;
 
   // Use one shared, source-backed descriptor for the address title, meta, and
   // first screen. Prefer a distinctive tenant/project phrase when available,
@@ -7111,7 +7133,7 @@ async function renderAddressPage(slug, env, request) {
 }
 
 async function renderProjectPage(slug, env, request) {
-  const canonical = `${BASE_URL}/project/${encodeURIComponent(slug)}`;
+  const selfUrl = `${BASE_URL}/project/${encodeURIComponent(slug)}`;
   const project = await safeFirst(
     env,
     `SELECT pr.*, a.display_address, a.slug AS address_slug, a.city, a.state
@@ -7145,6 +7167,14 @@ async function renderProjectPage(slug, env, request) {
   ]);
 
   const noindex = permits.length === 0;
+  // A cluster of one permit is not a project: it repeats the record the
+  // address page already publishes. Canonicalize the duplicate onto the
+  // property page so the two URLs consolidate instead of competing, and keep
+  // serving the page so existing links still resolve.
+  const duplicatesAddress = permits.length === 1 && Boolean(project.address_slug);
+  const canonical = duplicatesAddress
+    ? `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}`
+    : selfUrl;
   const title = `${project.name} | Seattle Construction Activity`;
   const description = `Track permits, contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
 
@@ -7155,7 +7185,7 @@ async function renderProjectPage(slug, env, request) {
         "@type": "CreativeWork",
         name: project.name,
         abstract: project.description_summary || undefined,
-        url: canonical,
+        url: selfUrl,
         dateCreated: project.first_seen_date || undefined,
         dateModified: project.latest_activity_date || undefined,
       },
@@ -7166,7 +7196,7 @@ async function renderProjectPage(slug, env, request) {
           ...(project.address_slug
             ? [{ "@type": "ListItem", position: 2, name: project.display_address, item: `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}` }]
             : []),
-          { "@type": "ListItem", position: project.address_slug ? 3 : 2, name: project.name, item: canonical },
+          { "@type": "ListItem", position: project.address_slug ? 3 : 2, name: project.name, item: selfUrl },
         ],
       },
     ],
@@ -7261,7 +7291,8 @@ async function renderNeighborhoodPage(slug, env, request) {
        FROM projects pr
        JOIN address_neighborhoods an ON an.address_id = pr.address_id
        LEFT JOIN addresses a ON a.id = pr.address_id
-       WHERE an.neighborhood_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 10`,
+       WHERE an.neighborhood_id = ? AND ${MULTI_PERMIT_PROJECT_SQL}
+       ORDER BY pr.latest_activity_date DESC LIMIT 10`,
       [nb.id],
     ),
     safeAll(
@@ -7428,7 +7459,7 @@ async function renderOrgContractorPage(slug, env, request) {
       env,
       `SELECT DISTINCT pr.slug, pr.name, pr.latest_activity_date, pr.total_estimated_value
        FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
-       JOIN projects pr ON pr.id = p.project_id
+       JOIN projects pr ON pr.id = p.project_id AND ${MULTI_PERMIT_PROJECT_SQL}
        WHERE pp.people_org_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 12`,
       [org.id],
     ),
@@ -9150,11 +9181,18 @@ const SITEMAP_SECTIONS = {
     urlPrefix: "/project/",
     statsSql: `/* sitemap:stats:projects */
       SELECT
-        COUNT(DISTINCT pr.id) AS total,
-        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, pr.updated_at)), 1, 10) AS lastmod
-      FROM projects pr
-      JOIN project_permits pp ON pp.project_id = pr.id
-      JOIN permits p ON p.id = pp.permit_id`,
+        COUNT(*) AS total,
+        substr(MAX(lastmod), 1, 10) AS lastmod
+      FROM (
+        SELECT
+          pr.id,
+          MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, pr.updated_at)) AS lastmod
+        FROM projects pr
+        JOIN project_permits pp ON pp.project_id = pr.id
+        JOIN permits p ON p.id = pp.permit_id
+        GROUP BY pr.id
+        HAVING COUNT(DISTINCT pp.permit_id) > 1
+      )`,
     rowsSql: `/* sitemap:rows:projects */
       SELECT
         pr.slug,
@@ -9163,6 +9201,7 @@ const SITEMAP_SECTIONS = {
       JOIN project_permits pp ON pp.project_id = pr.id
       JOIN permits p ON p.id = pp.permit_id
       GROUP BY pr.id, pr.slug
+      HAVING COUNT(DISTINCT pp.permit_id) > 1
       ORDER BY pr.slug
       LIMIT ? OFFSET ?`,
   },
@@ -10370,6 +10409,8 @@ function render404(options) {
   const message =
     options?.message ||
     "The page you are looking for does not exist or has been moved. Try browsing live permits or return to the homepage.";
+  const status = Number(options?.status) || 404;
+  const code = String(options?.code || status);
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -10405,7 +10446,7 @@ function render404(options) {
     <main id="main-content">
       <section class="error-section">
           <div class="container">
-              <h1>404</h1>
+              <h1>${escapeHtml(code)}</h1>
               <h2>${escapeHtml(heading)}</h2>
               <p>${escapeHtml(message)}</p>
               <div>
@@ -10420,7 +10461,14 @@ function render404(options) {
 </html>`;
 
   return new Response(html, {
-    status: 404,
+    status,
     headers: { "Content-Type": "text/html" },
   });
+}
+
+// 410 for records we deliberately no longer publish. Same template as 404 so
+// error handling stays in one place; the status is what tells a crawler the
+// difference between "never existed" and "removed".
+function renderGone(options) {
+  return render404({ ...options, status: 410, code: "410" });
 }
