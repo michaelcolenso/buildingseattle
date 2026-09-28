@@ -174,6 +174,12 @@ Compare the next complete 28-day window against these, per the PR's contract.
 - **16 months of Performance** data for the site-audit P0 on search-performance
   evidence.
 
+Partial follow-up: the indexed, "Crawled — currently not indexed", "Excluded by
+`noindex` tag", and "Discovered — currently not indexed" drill-downs pulled
+2026-09-27 are analysed in `docs/search-drilldown-2026-09-27.md`. The 404,
+redirect, and robots.txt drill-downs and the Sitemaps report are still
+outstanding.
+
 ## Reproduction
 
 Both exports are read directly from their CSVs; no transform is stored. Notes
