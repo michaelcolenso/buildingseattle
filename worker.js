@@ -6994,41 +6994,36 @@ async function renderAddressPage(slug, env, request) {
   const featured = featuredAddressPermit(permits);
   const featuredPermit = featured?.permit || permits[0] || null;
   const featuredDescriptor = featured?.descriptor || "";
-  const permitTypeLabelForAddress = permitTypeLabel(featuredPermit?.type);
   const valueStr = totalValue ? `$${parseInt(totalValue).toLocaleString()}` : "";
   const latestContractor = permits[0]?.contractor_name || "";
 
-  // Keep the whole title inside typical SERP truncation (~60 chars). The
-  // address and brand suffix always ship; the source-backed work descriptor
-  // only ships when it fits, and otherwise degrades to a short static phrase
-  // (or is dropped) instead of pushing the brand suffix out of the title.
-  const ADDRESS_TITLE_MAX = 62;
-  const addressBrandSuffix = " | Building Seattle";
-  const addressTitlePrefix = `${display} — `;
-  const descriptorBudget = ADDRESS_TITLE_MAX - addressTitlePrefix.length - addressBrandSuffix.length;
-  const descriptorCandidates = featuredDescriptor
-    ? [featuredDescriptor]
-    : activePermits.length > 0
-      ? [`Active ${permitTypeLabelForAddress}`, "Active Permits"]
-      : ["Construction Activity", "Permit History"];
-  let titleDescriptor = descriptorCandidates.find((value) => value.length <= descriptorBudget) || "";
-  if (!titleDescriptor && featuredDescriptor && descriptorBudget >= 24) {
-    titleDescriptor = truncateMetaDescription(featuredDescriptor, descriptorBudget);
-  }
-  const title = titleDescriptor
-    ? `${addressTitlePrefix}${titleDescriptor}${addressBrandSuffix}`
-    : `${display}${addressBrandSuffix}`;
+  // Long addresses can consume an entire title when a brand suffix is always
+  // reserved. Prefer compact, source-backed permit facts so every indexed
+  // address title tells searchers why the record is useful.
+  const titlePermitFact = activePermits.length > 0
+    ? `${activePermits.length} Active Permit${activePermits.length !== 1 ? "s" : ""}`
+    : `${permitCount} Permit${permitCount !== 1 ? "s" : ""}`;
+  const title = `${display} — ${titlePermitFact}${totalValue ? ` · ${compactMetricMoney(totalValue)}` : ""}`;
 
-  const displayMentionsSeattle = /\bseattle\b/i.test(display);
-  let description = featuredDescriptor
-    ? `${featuredDescriptor} at ${display}. `
-    : `${display}${displayMentionsSeattle ? "" : " in Seattle"}. `;
-  description += `${permitCount} construction permit${permitCount !== 1 ? "s" : ""} on record`;
-  if (activePermits.length > 0) description += `, ${activePermits.length} active`;
-  if (valueStr) description += `, ${valueStr} combined declared value`;
+  // Put complete decision-making facts before the optional work descriptor.
+  // Contractors are included whole or not at all; only the final descriptor
+  // may be shortened to fit the search-description budget.
+  const META_MAX = 165;
+  const permitFact = permitCount === 1 && activePermits.length === 1
+    ? "1 active construction permit"
+    : `${permitCount} construction permit${permitCount !== 1 ? "s" : ""}`;
+  let description = `${permitFact} at ${display}`;
+  if (activePermits.length > 0 && !(permitCount === 1 && activePermits.length === 1)) {
+    description += `; ${activePermits.length} active`;
+  }
+  if (valueStr) description += `; ${valueStr} declared value`;
   description += ".";
-  if (latestContractor) description += ` Latest contractor: ${latestContractor}.`;
-  description += " Review individual permits, project history, and related construction activity.";
+  const contractorSentence = latestContractor ? ` Contractor: ${smartTitleCase(latestContractor)}.` : "";
+  if (description.length + contractorSentence.length <= META_MAX) description += contractorSentence;
+  const descriptorBudget = META_MAX - description.length - 1;
+  if (featuredDescriptor && descriptorBudget >= 20) {
+    description += ` ${truncateMetaDescription(featuredDescriptor, descriptorBudget)}`;
+  }
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
