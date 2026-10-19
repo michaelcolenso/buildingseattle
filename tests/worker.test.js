@@ -2752,15 +2752,70 @@ test("permit and address pages promote source-backed project descriptors and ent
   const addressResponse = await worker.fetch(new Request("http://example.com/address/760-aloha-st"), env, createCtx());
   const addressHtml = await addressResponse.text();
   assert.equal(addressResponse.status, 200);
-  // Address titles must stay inside SERP truncation: address + brand suffix
-  // always ship, and the work descriptor only ships when it fits the budget.
+  // Address titles keep the full address and add compact, source-backed facts.
   const addressTitle = addressHtml.match(/<title>([^<]+)<\/title>/)?.[1] || "";
-  assert.equal(addressTitle, "760 Aloha St, Seattle, WA | Building Seattle");
+  assert.equal(addressTitle, "760 Aloha St, Seattle, WA — 1 Active Permit · $760K");
   assert.ok(addressTitle.length <= 62, `address title is ${addressTitle.length} characters`);
   assert.match(addressHtml, /<meta name="description" content="[^>]*MangoApps/);
   assert.match(addressHtml, /<h1>760 Aloha St, Seattle, WA<\/h1>[\s\S]*MangoApps/);
   assert.match(addressHtml, /href="\/permits\/7120268-CN"/);
   assert.doesNotMatch(addressHtml, /undefined|null|NaN/);
+});
+
+test("GET /address/:slug leads long-address snippets with complete permit facts", async () => {
+  const marketPermit = {
+    id: 2316,
+    permit_number: "6929817-CN",
+    address: "2316 NW MARKET ST, SEATTLE, WA",
+    address_id: 2316,
+    type: "commercial",
+    value: 650000,
+    status: "active",
+    detailed_description: "Exit 5 Korean BBQ Change of use from general retail sales and services to restaurant and construct tenant improvements, per plan.",
+    applied_date: "2022-08-01",
+    contractor_name: "K S CONSTRUCTION INC",
+    contractor_slug: "k-s-construction-inc",
+  };
+  const env = {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async all() {
+            if (sql.includes("FROM permits p LEFT JOIN contractors")) return { results: [marketPermit] };
+            return { results: [] };
+          },
+          async first() {
+            if (sql.includes("FROM addresses WHERE slug")) {
+              return {
+                id: 2316,
+                slug: "2316-nw-market-st-seattle-wa",
+                display_address: "2316 NW Market St, Seattle, WA",
+                city: "Seattle",
+                state: "WA",
+              };
+            }
+            return null;
+          },
+        };
+      },
+    },
+  };
+
+  const response = await worker.fetch(
+    new Request("http://example.com/address/2316-nw-market-st-seattle-wa"),
+    env,
+    createCtx(),
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<title>2316 NW Market St, Seattle, WA — 1 Active Permit · \$650K<\/title>/);
+  const description = html.match(/<meta name="description" content="([^"]*)">/)?.[1] || "";
+  assert.match(description, /^1 active construction permit at 2316 NW Market St, Seattle, WA; \$650,000 declared value\./);
+  assert.match(description, /Contractor: K S Construction INC\./);
+  assert.ok(description.length >= 155 && description.length <= 165, `meta description is ${description.length} characters`);
+  assert.doesNotMatch(description, /services to… at 2316/);
 });
 
 test("permit and address pages use safe, useful fallbacks for sparse records", async () => {
