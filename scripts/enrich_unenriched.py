@@ -153,6 +153,7 @@ async def main():
     total_posted = 0
     total_licenses = 0
     total_errors = 0
+    post_failures = 0
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         for i in range(0, total, args.chunk_size):
@@ -177,6 +178,7 @@ async def main():
                     flush=True,
                 )
                 total_errors += len(chunk)
+                post_failures += 1
                 continue
 
             total_posted += posted
@@ -196,6 +198,15 @@ async def main():
         f"DONE: posted {total_posted}/{total}, licenses {total_licenses}, errors {total_errors}",
         flush=True,
     )
+
+    # A failed ingest POST means enrichment results were not persisted. Do not
+    # let GitHub Actions report a green run in that state: callers and monitors
+    # must be able to trust the workflow conclusion.
+    if post_failures:
+        raise RuntimeError(
+            f"enrichment ingest failed for {post_failures} chunk(s); "
+            f"posted {total_posted}/{total} records"
+        )
 
 
 if __name__ == "__main__":
