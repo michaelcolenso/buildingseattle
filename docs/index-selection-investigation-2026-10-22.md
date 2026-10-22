@@ -1,8 +1,9 @@
-# Index-selection investigation — findings and pre-implementation plan (2026-10-22, rev 2)
+# Index-selection investigation — findings and pre-implementation plan (2026-10-22, rev 3)
 
 **Status: investigation complete to the limit of reachable inputs. No application code changed, nothing
-deployed.** Rev 2 replaces rev 1 after Cloudflare D1, Workers Logs and zone analytics became reachable and
-disproved two of rev 1's claims (section 0).
+deployed.** Rev 2 used Cloudflare D1, Workers Logs and zone analytics and disproved two of rev 1's claims (section 0).
+Rev 3 adds the Search Console Coverage and Performance exports of 2026-10-21 (section 3b), which supply the
+first measured index-state trend.
 
 Labels: **[M]** measured · **[I]** inference · **[H]** untested hypothesis · **[X]** falsified · **[B]** blocked ·
 **[P]** proposed, not implemented. Nothing below is labelled implemented, passed-in-CI, deployed, or
@@ -20,6 +21,8 @@ externally verified, because none of it is.
    normal day. Only 9 address URLs and 28 project URLs are genuinely gone.
 4. **"No rebuild errors in 7 days" was a sampling artifact.** Wide-window Workers Logs queries are sampled
    (`abr_level: 10`); a narrow window around the cron finds the error.
+5. **Ingest run duration is not a failure signal** (I briefly suspected the 184 s run on 09-21). Durations range
+   33-711 s all summer and the healed 10-15 run took 133 s.
 
 ## 1. Verdict
 
@@ -32,17 +35,25 @@ externally verified, because none of it is.
      text not retained); the error was caught, logged, and the run was recorded `success`. 6,731 permits
      stayed unlinked, 4,976 of 12,026 address pages stayed 410 and dropped out of the sitemap (12,026 -> 7,050)
      until the next run. Googlebot-UA requests got 410 on 22 occasions during that period.
-2. **This does not explain the decline in URLs with impressions. [M]** That decline (-44%, 4-wk average) is
+2. **Indexed pages are declining, modestly, and the growing sink is Google's selection, not our status codes. [M]**
+   Coverage export (chart 07-23..10-11, reasons as of 10-21): Indexed 28,201 -> 25,757 (-8.7%), Not indexed
+   10,014 -> 13,194 (+32%). 62% of the loss is one step (-1,514 on 09-21) that no deployment (none between
+   09-05 and 09-25) explains. Since 09-27: Indexed -1,899; *Crawled - currently not indexed* +1,649;
+   *Discovered* -2,045; *Not found* +201; *Alternate canonical* +56. The bucket that grew is crawled-not-indexed,
+   not 404/410, so the nightly 410 window and the 10-21 failure cannot account for it (and the chart ends
+   10-11, before 10-21).
+3. **The defect does not explain the decline in URLs with impressions. [M]** That decline (-44%, 4-wk average) is
    common-mode: sibling properties in the same Cloud project fell 62-87% over the same weeks. Googlebot's
    own crawl log shows why a decay is expected: 35,554 requests in the two weeks of Jun 8 and Jun 15 (an
    initial sweep of the newly published entity pages), 667 the week after, low thousands since.
-3. **"Survivors rank unusually well" is query mix. [M]+[I]** 87% of impressions and 334/338 clicks are on
+4. **"Survivors rank unusually well" is query mix. [M]+[I]** 87% of impressions and 334/338 clicks are on
    anonymized (rare) queries at position 7.75; named queries rank 44-64. Retracted from rev 0: "average
    position improved" came from the site table's `sum_top_position`, a different metric.
-4. **No indexability score should be built. [X]** Best permit-level feature AUC 0.576.
-5. **Still unanswerable [B]:** why Google selects some entities and rejects others (cohorts B and C). The
-   Page Indexing per-URL lists and URL Inspection API are not reachable.
-6. **Defensible change:** make the rebuild non-destructive and incremental, and stop reporting a failed
+5. **No indexability score should be built. [X]** Best permit-level feature AUC 0.576.
+6. **Still unanswerable at URL level [B]:** which entities Google rejects and why. The Coverage export is
+   summary-only; the per-URL lists (Indexed, Crawled-not-indexed, Excluded-by-noindex) and the URL Inspection
+   API are not available. One concrete lead needs the noindex list (section 3b).
+7. **Defensible change:** make the rebuild non-destructive and incremental, and stop reporting a failed
    rebuild as success. That is justified by measured correctness defects. **It is not claimed to reverse
    the indexed-URL decline**, and no experiment I can design would detect an effect of that size (section 6).
 
@@ -57,6 +68,7 @@ externally verified, because none of it is.
 | First-party request log (`page_views`, D1, since 2026-04-20) | **Reached.** Route pattern + UA + timestamp; no status code, no verified-bot flag. |
 | GSC bulk export (BigQuery `overlorded.searchconsole_*`) | Reached. 140/140 days. |
 | Sitemaps, live probes, full permit set via public API | Reached (1,976 URLs probed). |
+| GSC Coverage + Performance UI exports (2026-10-21, uploaded) | **Reached.** Coverage: daily Indexed/Not-indexed chart 07-23..10-11 and reasons table; summary only, no URL lists. Performance: 91-day chart, Pages (1,000 rows), Queries (named only). |
 | Page Indexing per-URL lists; URL Inspection API | **[B]** |
 | Inbound-link counts, crawl depth, content fingerprints | Not collected. |
 
@@ -100,6 +112,14 @@ externally verified, because none of it is.
 - **E12 [M]** Googlebot-UA 404s in the retained week are almost entirely scanner paths (`/.env`,
   `/.aws/config`, `/wp-json/`); about 10 are entity pages. The UA-based "Googlebot 404 rate" is not URL churn.
 
+- **E14 [M]** `ingest_logs` has no scheduled-run row on 2026-09-22 and 2026-09-29 (cron skipped or invocation
+  died before logging; graph state those days unknown) and none for 2026-06-18..07-08. Run duration is not a
+  failure proxy (E-correction 5).
+- **E15 [M]** UI Performance export (07-20..10-19: 194 clicks, 5,581 impressions) matches the BigQuery **site**
+  table (194, 5,583). The BigQuery **url** table sums to 7,500 impressions / 203 clicks because it counts per URL;
+  use the site table for site totals. UI weekly clicks are flat (~15/week, range 6-21) while impressions fell
+  523 -> 327/week.
+
 ### Googlebot crawl allocation baseline (E13, `page_views`, UA contains "Googlebot", unverified)
 
 | Week starting | address | project | permits | contractor | total |
@@ -121,6 +141,56 @@ project 0.33 (12,550 URLs, only 1,562 sitemapped), permits 0.13 (15,232), contra
 **37% of Googlebot's recent requests go to a template where 88% of URLs are canonical duplicates** — an
 observed crawl-allocation fact, consistent with the inventory-overload hypothesis but not proof of harm.
 
+## 3b. Index-state evidence from the uploaded Coverage and Performance exports
+
+**Daily series (Coverage chart, summary-level):**
+
+| Date | Indexed | Not indexed | Known (sum) | Note |
+|---|---:|---:|---:|---|
+| 07-23 | 28,201 | 10,014 | 38,215 | start of series |
+| 09-18 | 27,656 | 13,277 | 40,933 | gradual: Indexed -602, Not indexed +2,813 in 8 weeks |
+| 09-21 | 26,142 | 12,533 | 38,675 | **step: Indexed -1,514, Not indexed -744, known -2,258** |
+| 10-09 | 25,757 | 13,194 | 38,951 | Indexed -347, Not indexed +494 on 10-09; flat to 10-11 |
+
+Total change 07-23 -> 10-09: Indexed -2,444 (-8.7%), Not indexed +3,180 (+32%). Excluding the 09-21 step the
+Indexed decline is -930 (-3.3%). The step is not explained by any deployment (Worker deployments: 09-05, then
+09-25) or by a logged event; it looks like a Google-side re-evaluation and removal from the known set [I].
+
+**Reasons, 09-27 (earlier report) vs 10-21 (this export):**
+
+| Reason | 09-27 | 10-21 | Change |
+|---|---:|---:|---:|
+| Crawled - currently not indexed | 4,832 | 6,481 | +1,649 (+34%) |
+| Discovered - currently not indexed | 6,652 | 4,607 | -2,045 (-31%) |
+| Not found (404) | 590 | 791 | +201 |
+| Excluded by 'noindex' | 1,196 | 1,252 | +56 |
+| Alternate page with proper canonical | 0 | 56 | +56 |
+| Redirect / robots | 6 / 0 | 6 / 1 | 0 / +1 |
+| **Not indexed total** | 13,277 | 13,194 | -83 |
+| **Indexed** | 27,656 | 25,757 | -1,899 (-6.9%) |
+
+Shares of known URLs (38,951) on 10-11: indexed 66.1%, crawled-not-indexed 16.6%, discovered-not-indexed 11.8%,
+noindex 3.2%, 404 2.0%. The reasons sum to exactly the chart's last Not-indexed value (13,194).
+
+**Reading:** the Indexed losses went mainly into *Crawled - currently not indexed* (+1,649) rather than
+404/410 (+201), i.e. Google fetched pages and declined to keep them. The discovered bucket shrank by 2,045,
+consistent with commit #77 (09-29) removing ~9,800 never-crawled single-permit project URLs from the sitemap
+[I]; only 56 have reached "Alternate canonical" so far. The three largest index-loss weeks (wk of 08-03,
+-307; 09-21, -1,514; 10-05, -347) fall at or just after the three biggest recent Googlebot crawl weeks (07-20:
+5,675; 09-21: 2,969; 10-05: 3,288). With n=3 that is an observation, not evidence; the weekly correlation
+over 10 weeks is weak and driven by the 09-21 step.
+
+**One concrete lead - the noindex bucket [H].** 1,252 URLs (about 99% addresses by the earlier report) are
+"Excluded by noindex". Until commit #77, `renderAddressPage` returned **200 with `noindex`** whenever an address had
+no linked permits, which is exactly what a valid address looks like during the nightly rebuild window or a failed
+run. Googlebot swept addresses on 2026-06-12 (8,111 address requests, 7,828 of them 13:00-17:00 UTC, 374 inside
+the first 12 minutes of the 13:00 hour) and again on 06-19/20 (442 + 709 requests, about the size of the
+1,196-URL bucket). If the graph was incomplete when those pages were fetched, valid addresses were recorded as
+noindex and, per the earlier report, not recrawled since. I cannot see the graph state in June, so this is
+unproven. It is cheap to test: export the "Excluded by 'noindex' tag" URL list and check how many are valid,
+indexable addresses today. If most are, up to 1,252 addresses are recoverable by recrawl (fresh sitemap
+`lastmod`, "Validate fix"), independent of any code change.
+
 ## 4. Hypothesis scorecard
 
 | Hypothesis | Result |
@@ -131,7 +201,7 @@ observed crawl-allocation fact, consistent with the inventory-overload hypothesi
 | **Internal authority** | **Untested directly [H].** Link status shows no meaningful permit-level effect (E10). |
 | **Inventory overload** | **Consistent, not proven [I].** E13: 37% of crawl on a template of mostly canonical duplicates; Googlebot crawl collapsed after the June sweep. Needs index-state labels to test. |
 | **Sitemap selection** | **Brittle [M].** Address sitemap membership equals "has a linked permit", so it changes with the rebuild's success: 12,026 on a normal day, 7,050 after 10-21. Permit sitemap includes all 15,232 regardless of features. |
-| Premise: indexed population declining | **Not shown [M].** Proxy (URLs with impressions) -44%, less than all three siblings; Coverage trend after 09-27 unavailable [B]. |
+| Premise: indexed population declining | **Confirmed, modest [M].** Indexed -8.7%, Not indexed +32% (07-23 -> 10-09/11); one step explains 62%. Proxy (URLs with impressions) -44%, less than all three siblings. Sibling Coverage trends not available [B]. |
 | Premise: survivors rank unusually well | **Query mix [M]+[I].** |
 
 ## 5. Rejected alternatives
@@ -189,7 +259,8 @@ properties:
 | Googlebot-UA 410s on valid entity pages (zone analytics) | 24 in retained week | ~0 |
 | Googlebot crawl allocation by template (E13) | address 42.5% / project 37.4% / permits 17.4% / contractor 1.8% (09-21..10-18) | report only; no target without index-state labels |
 | GSC impressions and clicks on existing URLs | trailing 4 wks: address 382 impr / 9 clk, permits 365/21, project 44/2, contractor 163/6 | no relative decline vs siblings > 20% |
-| Indexing rate, crawled-/discovered-not-indexed rate, indexed sitemap ratio | **[B]** | cannot be judged until Page Indexing / URL Inspection access exists |
+| Site-level index state (Coverage, 10-11): indexed / crawled-not-indexed / discovered-not-indexed / 404 / noindex | 25,757 / 6,481 / 4,607 / 791 / 1,252 (66.1% / 16.6% / 11.8% of 38,951 known) | the reliability fix makes no indexing claim; watch 404 and noindex buckets for movement |
+| Per-URL index rate, treatment vs holdout; per-sitemap indexed ratio | **[B]** | needs URL Inspection API or the Sitemaps report |
 
 **Power:** the exposure being removed is roughly 7 minutes a day plus one failure day in seven. Googlebot
 saw 2 window hits and 22 failure-period hits. That is too small to produce a detectable change in index
@@ -217,8 +288,9 @@ deploy and rollback so cached 410s/200s do not linger.
 1. **Approve implementing section 6** (items 1-4)? I recommend yes: it removes a measured defect. The
    deploy path looks like GitHub auto-deploy from `main` (script modified 03:48 UTC, after #81 merged at
    02:34 UTC); please confirm I may push and merge via PR.
-2. **GSC API access (`webmasters.readonly`) or fresh Page Indexing per-URL exports** — the only route to
-   the actual question (why Google selects some entities).
+2. **Per-URL Page Indexing exports** (Pages -> click each reason -> Export; 1,000 rows each): **Excluded by
+   'noindex' tag** first (tests the lead in section 3b), then **Crawled - currently not indexed** and **Indexed**.
+   GSC API / URL Inspection access would replace these. The 10-21 upload was summary-only.
 3. Cloudflare is connected; nothing further needed there. A read-only verification is scheduled for
    13:15 UTC today to confirm the 13:00 run heals the orphans.
 
