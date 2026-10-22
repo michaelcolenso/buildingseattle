@@ -130,7 +130,7 @@ def capture_graph_logs(root, account, token):
         query = {"queryId": "bs-index-selection-graph-errors", "dry": True,
                  "timeframe": timeframe, "view": "events", "limit": 1000,
                  "parameters": {"datasets": [], "filters": [
-                     {"key": "$metadata.service", "operation": "eq", "type": "string", "value": "buildingseattle"}],
+                     {"key": "$workers.scriptName", "operation": "eq", "type": "string", "value": "buildingseattle"}],
                      "needle": {"value": "Entity graph", "matchCase": False}}}
         result = post("query", query).get("result", {})
         receipt["query"] = query
@@ -150,6 +150,59 @@ def capture_graph_logs(root, account, token):
         receipt["returned_count"] = len(receipt["events"])
         receipt["complete"] = receipt["provider_count"] == receipt["returned_count"]
         print(f"Graph log events returned: {receipt['returned_count']}", flush=True)
+        # Capture a bounded set of request-level fields without exporting visitor
+        # IPs, cookies, auth headers, request bodies or referrers.
+        names = post("values", {"datasets": [], "key": "$workers.scriptName", "type": "string",
+                                "timeframe": timeframe, "needle": {"value": "buildingseattle"}, "limit": 10})
+        receipt["matching_script_names"] = names.get("result")
+        request_query = {**query, "queryId": "bs-index-selection-requests",
+                         "parameters": {"datasets": [], "filters": query["parameters"]["filters"]}}
+        requests, cursors = {}, set()
+        for _ in range(20):
+            result = post("query", request_query).get("result", {})
+            batch = result.get("events", {}).get("events", [])
+            receipt["request_provider_count"] = result.get("events", {}).get("count")
+            for event in batch:
+                meta = event.get("$metadata", {})
+                source = event.get("source")
+                source = source if isinstance(source, dict) else {}
+                workers = event.get("$workers") or source.get("$workers") or {}
+                invoked = workers.get("event") or {}
+                request = invoked.get("request") or {}
+                cf = request.get("cf") or {}
+                bot = cf.get("botManagement") or {}
+                row = {"id": meta.get("id"), "timestamp": event.get("timestamp"),
+                       "url": request.get("url") or meta.get("url"),
+                       "status": (invoked.get("response") or {}).get("status") or meta.get("statusCode"),
+                       "user_agent": (request.get("headers") or {}).get("user-agent"),
+                       "verified_bot": bot.get("verifiedBot"), "verified_bot_category": cf.get("verifiedBotCategory"),
+                       "event_type": workers.get("eventType"), "outcome": workers.get("outcome"),
+                       "script_version": workers.get("scriptVersion"), "truncated": workers.get("truncated"),
+                       "message": meta.get("message"), "error": meta.get("error"),
+                       "source_keys": sorted(source)}
+                # Keep public entity/document URLs only in a shareable artifact.
+                # Operational graph errors have no request URL.
+                if row["url"]:
+                    from urllib.parse import urlsplit
+                    parsed = urlsplit(row["url"])
+                    if not parsed.path.startswith(("/address/", "/project/", "/contractor/", "/neighborhood/", "/permits/", "/sitemap", "/robots.txt")) or parsed.query:
+                        continue
+                clean = json.dumps(row).replace(token, "[redacted]").replace(account, "[account]")
+                requests[row["id"]] = json.loads(clean)
+            if len(batch) < 1000:
+                receipt["request_pagination_exhausted"] = True
+                break
+            cursor = batch[-1].get("$metadata", {}).get("id")
+            if not cursor or cursor in cursors:
+                receipt["request_pagination_exhausted"] = False
+                break
+            cursors.add(cursor)
+            request_query["offset"] = cursor
+            request_query["offsetDirection"] = "next"
+        receipt["request_rows_after_public_path_projection"] = len(requests)
+        receipt["request_projection"] = "Selected fields, public entity/document paths; private/query URLs omitted. Not a complete request log export."
+        (root / "request_observations.json").write_text(json.dumps(list(requests.values()), indent=2) + "\n")
+        print(f"Public-path request/log observations: {len(requests)}", flush=True)
     except urllib.error.HTTPError as error:
         receipt["access_error"] = f"HTTP {error.code}"
         print(f"Graph telemetry unavailable: HTTP {error.code}", flush=True)
