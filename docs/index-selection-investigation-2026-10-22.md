@@ -31,8 +31,11 @@ Nothing below is labelled passed-in-CI, deployed, or externally verified, becaus
    permits, 0 with `address_id IS NULL` (was 6,731), 0 addresses without permits (was 4,976), 12,055 addresses,
    12,582 projects; latest `ingest_logs` row id 1213 `success` at 13:06:23. Workers Logs for 12:58-13:25 UTC has
    `Scheduled ingest complete: 42 added, 4958 updated, 0 alerts sent` and no `Entity graph rebuild` error event.
-   The 410-by-minute check is **[B]** (GraphQL rate limit). This fits the verdict below: the defect is intermittent
-   (one failed run in the 7 observable days) while the destructive window recurs every night.
+   Zone analytics, all 410s by minute (not path-filtered, all clients): 16 between 12:51 and 12:58 (the unhealed
+   10-21 state), 31 between 13:00 and 13:05 (the rebuild window, peaking at 11 in 13:03), none from 13:06 to 14:00.
+   The run ended 13:06:23. So the window was observed again and 410s stopped when the run finished. This fits the
+   verdict below: the defect is intermittent (one failed run in the 7 observable days) while the destructive window
+   recurs every night.
 
 ## 1. Verdict
 
