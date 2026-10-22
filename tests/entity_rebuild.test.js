@@ -453,3 +453,32 @@ test("an emptied address is 410 after a clean rebuild but 503 once the latest re
   db.exec("DELETE FROM ingest_logs WHERE status = 'error'");
   assert.equal(await get(), 404, "the stale address is gone after the next rebuild");
 });
+
+test("a failure while replacing join rows never leaves a permit in both its old and new project", async () => {
+  const db = openDatabase();
+  const ids = seedPermits(db);
+  await rebuild(createEnv(db));
+  const membership = (permitId) => rows(db, "SELECT project_id FROM project_permits WHERE permit_id = ?", permitId);
+  const before = membership(ids.a2);
+  assert.equal(before.length, 1);
+
+  // a2's address is corrected, so it moves to another address and project
+  db.prepare("UPDATE permits SET address = ? WHERE id = ?").run("200 OAK AVE, SEATTLE, WA", ids.a2);
+  const failing = createEnv(db, {
+    beforeStatement(sql) {
+      if (/^\s*DELETE FROM project_permits/i.test(sql)) throw new Error("D1_ERROR: simulated failure replacing project_permits");
+    },
+  });
+  const failed = await rebuild(failing);
+  assert.equal(failed.status, 500);
+  for (const id of Object.values(ids)) {
+    assert.ok(membership(id).length <= 1, `permit ${id} is listed under more than one project`);
+  }
+  assert.deepEqual(membership(ids.a2), before, "the failed replacement rolled back as a unit");
+
+  const healed = await rebuild(createEnv(db));
+  assert.equal(healed.body.ok, true);
+  assert.equal(membership(ids.a2).length, 1);
+  assert.notDeepEqual(membership(ids.a2), before, "the next run completes the move");
+  assertFullyLinked(db);
+});

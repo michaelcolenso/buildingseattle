@@ -3947,6 +3947,21 @@ async function runEntityBatch(env, statements) {
   }
 }
 
+// Like runEntityBatch, but each group of statements is kept whole inside one
+// batch (transaction). A group larger than the chunk size runs alone.
+async function runEntityGroups(env, groups) {
+  const CHUNK = 50;
+  let batch = [];
+  for (const group of groups) {
+    if (batch.length && batch.length + group.length > CHUNK) {
+      await env.DB.batch(batch);
+      batch = [];
+    }
+    batch.push(...group);
+  }
+  if (batch.length) await env.DB.batch(batch);
+}
+
 // Reads a whole table and, unlike safeAll, lets any D1 error propagate. The
 // rebuild must never mistake a failed read for an empty table.
 async function entityRows(env, sql) {
@@ -4008,7 +4023,7 @@ async function syncEntityRows(env, { table, keyColumn, insertColumns, updateColu
 
 // Same idea for the join tables: add the pairs that are missing, remove the
 // pairs that are no longer in the graph.
-async function syncJoinRows(env, { table, columns, desired, existingRows }) {
+async function syncJoinRows(env, { table, columns, ownerColumn, desired, existingRows }) {
   const keyOf = (row) => columns.map((column) => row[column]).join("|");
   const wanted = new Map();
   for (const row of desired) {
@@ -4019,14 +4034,20 @@ async function syncJoinRows(env, { table, columns, desired, existingRows }) {
   const deleteSql = `DELETE FROM ${table} WHERE ${columns.map((column) => `${column} = ?`).join(" AND ")}`;
   const missing = [...wanted].filter(([key]) => !have.has(key)).map(([, row]) => row);
   const stale = existingRows.filter((row) => !wanted.has(keyOf(row)));
-  await runEntityBatch(
-    env,
-    missing.map((row) => env.DB.prepare(insertSql).bind(...columns.map((column) => row[column]))),
-  );
-  await runEntityBatch(
-    env,
-    stale.map((row) => env.DB.prepare(deleteSql).bind(...columns.map((column) => row[column]))),
-  );
+
+  // A membership change is an insert of the new pair plus a delete of the old
+  // one. Both go in the same D1 batch (one transaction) so a failure leaves each
+  // owner (permit, project or address) with either its old rows or its new
+  // rows, never both.
+  const groups = new Map();
+  const add = (row, statement) => {
+    const owner = row[ownerColumn];
+    if (!groups.has(owner)) groups.set(owner, []);
+    groups.get(owner).push(statement);
+  };
+  for (const row of missing) add(row, env.DB.prepare(insertSql).bind(...columns.map((column) => row[column])));
+  for (const row of stale) add(row, env.DB.prepare(deleteSql).bind(...columns.map((column) => row[column])));
+  await runEntityGroups(env, [...groups.values()]);
   return { added: missing.length, removed: stale.length };
 }
 
@@ -4160,6 +4181,7 @@ async function rebuildEntityGraph(env) {
   const joins = {
     project_permits: await syncJoinRows(env, {
       table: "project_permits",
+      ownerColumn: "permit_id",
       columns: ["project_id", "permit_id"],
       desired: graph.projects.flatMap((p) =>
         p.permitIds.map((permitId) => ({ project_id: projIdByTmp.get(p.tmpId), permit_id: permitId })),
@@ -4168,6 +4190,7 @@ async function rebuildEntityGraph(env) {
     }),
     permit_participants: await syncJoinRows(env, {
       table: "permit_participants",
+      ownerColumn: "permit_id",
       columns: ["permit_id", "people_org_id", "role"],
       desired: graph.permitParticipants.map((pp) => ({
         permit_id: pp.permit_id,
@@ -4178,6 +4201,7 @@ async function rebuildEntityGraph(env) {
     }),
     project_participants: await syncJoinRows(env, {
       table: "project_participants",
+      ownerColumn: "project_id",
       columns: ["project_id", "people_org_id", "role"],
       desired: graph.projectParticipants.map((pp) => ({
         project_id: projIdByTmp.get(pp.projectTmpId),
@@ -4188,6 +4212,7 @@ async function rebuildEntityGraph(env) {
     }),
     address_neighborhoods: await syncJoinRows(env, {
       table: "address_neighborhoods",
+      ownerColumn: "address_id",
       columns: ["address_id", "neighborhood_id"],
       desired: graph.addressNeighborhoods.map((an) => ({
         address_id: addrIdByTmp.get(an.addressTmpId),
