@@ -224,8 +224,11 @@ def access_token(client_path, token_path):
             saved.update(access_token=fresh["access_token"], expires_at=time.time() + int(fresh.get("expires_in", 3600)))
             _write_token(token_path, saved)
             return saved["access_token"]
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (400, 401):
+                raise  # Google-side hiccup: do not throw away a working login
             print("Saved login no longer works; signing in again.", file=sys.stderr)
+            saved = {}  # the revoked refresh token must not be carried into the new login
     fresh = interactive_login(client_id, client_secret)
     saved = {
         "access_token": fresh["access_token"],
@@ -233,6 +236,11 @@ def access_token(client_path, token_path):
         "expires_at": time.time() + int(fresh.get("expires_in", 3600)),
     }
     _write_token(token_path, saved)
+    if not saved["refresh_token"]:
+        # Google documents that installed apps always get one, so this is unexpected; the run
+        # still works, but a browser sign-in will be needed again once this token expires.
+        print("Warning: Google returned no refresh token; you will be asked to sign in again in about an hour.",
+              file=sys.stderr)
     return saved["access_token"]
 
 

@@ -263,3 +263,87 @@ def test_isolated_403_does_not_stop_the_run(tmp_path, stub_env):
     _, stopped = ui.run("sc-domain:x.test", ["https://x.test/a", "https://x.test/b"], out, lambda: "tok", limit=10, pause=0)
     assert stopped == ""
     assert stub.calls == ["https://x.test/a", "https://x.test/b"]
+
+
+# --------------------------------------------------------------------------
+# token handling (Google endpoints replaced by fakes)
+# --------------------------------------------------------------------------
+
+import time as _time
+import urllib.error as _urlerr
+
+
+def _client_file(tmp_path):
+    f = tmp_path / "client_secret.json"
+    f.write_text(json.dumps({"installed": {"client_id": "cid", "client_secret": "sec"}}))
+    return f
+
+
+def _saved(tmp_path, **kw):
+    f = tmp_path / "tok.json"
+    f.write_text(json.dumps(kw))
+    return f
+
+
+def test_valid_cached_token_makes_no_calls(tmp_path, monkeypatch):
+    tok = _saved(tmp_path, access_token="a", refresh_token="r", expires_at=_time.time() + 3000)
+    monkeypatch.setattr(ui, "_post_form", lambda *a, **k: pytest.fail("no network expected"))
+    monkeypatch.setattr(ui, "interactive_login", lambda *a, **k: pytest.fail("no login expected"))
+    assert ui.access_token(_client_file(tmp_path), tok) == "a"
+
+
+def test_expired_token_is_refreshed_silently_and_keeps_refresh_token(tmp_path, monkeypatch):
+    tok = _saved(tmp_path, access_token="old", refresh_token="r", expires_at=0)
+    seen = {}
+
+    def fake_post(url, data):
+        seen.update(data)
+        return {"access_token": "new", "expires_in": 3600}
+
+    monkeypatch.setattr(ui, "_post_form", fake_post)
+    monkeypatch.setattr(ui, "interactive_login", lambda *a, **k: pytest.fail("no login expected"))
+    assert ui.access_token(_client_file(tmp_path), tok) == "new"
+    assert seen["grant_type"] == "refresh_token" and seen["client_secret"] == "sec"
+    assert json.loads(tok.read_text())["refresh_token"] == "r"
+
+
+def test_revoked_refresh_token_triggers_login_and_is_not_reused(tmp_path, monkeypatch, capsys):
+    tok = _saved(tmp_path, access_token="old", refresh_token="dead", expires_at=0)
+
+    def fake_post(url, data):
+        raise _urlerr.HTTPError(url, 400, "invalid_grant", {}, None)
+
+    monkeypatch.setattr(ui, "_post_form", fake_post)
+    monkeypatch.setattr(ui, "interactive_login", lambda *a, **k: {"access_token": "fresh", "expires_in": 3600})
+    assert ui.access_token(_client_file(tmp_path), tok) == "fresh"
+    assert json.loads(tok.read_text()).get("refresh_token") is None
+    assert "signing in again" in capsys.readouterr().err
+
+
+def test_google_5xx_on_refresh_is_raised_not_turned_into_a_login(tmp_path, monkeypatch):
+    tok = _saved(tmp_path, access_token="old", refresh_token="r", expires_at=0)
+
+    def fake_post(url, data):
+        raise _urlerr.HTTPError(url, 503, "unavailable", {}, None)
+
+    monkeypatch.setattr(ui, "_post_form", fake_post)
+    monkeypatch.setattr(ui, "interactive_login", lambda *a, **k: pytest.fail("no login expected"))
+    with pytest.raises(_urlerr.HTTPError):
+        ui.access_token(_client_file(tmp_path), tok)
+
+
+def test_login_without_refresh_token_warns(tmp_path, monkeypatch, capsys):
+    tok = tmp_path / "tok.json"
+    monkeypatch.setattr(ui, "interactive_login", lambda *a, **k: {"access_token": "fresh", "expires_in": 3600})
+    assert ui.access_token(_client_file(tmp_path), tok) == "fresh"
+    assert "no refresh token" in capsys.readouterr().err
+
+
+def test_login_with_refresh_token_stores_it_quietly(tmp_path, monkeypatch, capsys):
+    tok = tmp_path / "tok.json"
+    monkeypatch.setattr(
+        ui, "interactive_login", lambda *a, **k: {"access_token": "fresh", "refresh_token": "r2", "expires_in": 3600}
+    )
+    ui.access_token(_client_file(tmp_path), tok)
+    assert json.loads(tok.read_text())["refresh_token"] == "r2"
+    assert capsys.readouterr().err == ""
