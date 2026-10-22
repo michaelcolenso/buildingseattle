@@ -475,6 +475,13 @@ test("a failure while replacing join rows never leaves a permit in both its old 
     assert.ok(membership(id).length <= 1, `permit ${id} is listed under more than one project`);
   }
   assert.deepEqual(membership(ids.a2), before, "the failed replacement rolled back as a unit");
+  // permits.project_id and project_permits are two views of the same fact: they never disagree
+  assert.equal(
+    q(db, `SELECT COUNT(*) AS n FROM permits p JOIN project_permits pp ON pp.permit_id = p.id
+           WHERE pp.project_id IS NOT p.project_id`).n,
+    0,
+    "a permit's project link and its join row commit together",
+  );
 
   const healed = await rebuild(createEnv(db));
   assert.equal(healed.body.ok, true);

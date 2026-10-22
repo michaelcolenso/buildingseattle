@@ -4023,7 +4023,7 @@ async function syncEntityRows(env, { table, keyColumn, insertColumns, updateColu
 
 // Same idea for the join tables: add the pairs that are missing, remove the
 // pairs that are no longer in the graph.
-async function syncJoinRows(env, { table, columns, ownerColumn, desired, existingRows }) {
+function planJoinRows(env, { table, columns, ownerColumn, desired, existingRows }) {
   const keyOf = (row) => columns.map((column) => row[column]).join("|");
   const wanted = new Map();
   for (const row of desired) {
@@ -4047,8 +4047,13 @@ async function syncJoinRows(env, { table, columns, ownerColumn, desired, existin
   };
   for (const row of missing) add(row, env.DB.prepare(insertSql).bind(...columns.map((column) => row[column])));
   for (const row of stale) add(row, env.DB.prepare(deleteSql).bind(...columns.map((column) => row[column])));
-  await runEntityGroups(env, [...groups.values()]);
-  return { added: missing.length, removed: stale.length };
+  return { groups, added: missing.length, removed: stale.length };
+}
+
+async function syncJoinRows(env, spec) {
+  const plan = planJoinRows(env, spec);
+  await runEntityGroups(env, [...plan.groups.values()]);
+  return { added: plan.added, removed: plan.removed };
 }
 
 // Reconciles the derived entity graph with the permits table. Idempotent and
@@ -4169,6 +4174,19 @@ async function rebuildEntityGraph(env) {
     }
   }
 
+  // project_permits mirrors permits.project_id, so a permit's join-row change is
+  // committed in the same batch as its relink (below); only the rest is synced
+  // in step 3.
+  const projectPermitsPlan = planJoinRows(env, {
+    table: "project_permits",
+    ownerColumn: "permit_id",
+    columns: ["project_id", "permit_id"],
+    desired: graph.projects.flatMap((p) =>
+      p.permitIds.map((permitId) => ({ project_id: projIdByTmp.get(p.tmpId), permit_id: permitId })),
+    ),
+    existingRows: projectPermitRows,
+  });
+
   // 2. link permits back to their address + project, only where the stored
   // link differs. A permit moves straight from its old entity to its new one;
   // it is never parked on NULL in between. Statements are grouped per project so
@@ -4193,25 +4211,20 @@ async function rebuildEntityGraph(env) {
     if (projectId != null) expectedProjectLinked += 1;
     if (!sameStored(permit.address_id, addressId) || !sameStored(permit.project_id, projectId)) {
       relinkedPermitIds.push(permit.id);
-      addToGroup(
-        projectId != null ? `project:${projectId}` : `permit:${permit.id}`,
-        P(`UPDATE permits SET address_id = ?, project_id = ? WHERE id = ?`).bind(addressId, projectId, permit.id),
-      );
+      const groupKey = projectId != null ? `project:${projectId}` : `permit:${permit.id}`;
+      addToGroup(groupKey, P(`UPDATE permits SET address_id = ?, project_id = ? WHERE id = ?`).bind(addressId, projectId, permit.id));
+      for (const statement of projectPermitsPlan.groups.get(permit.id) || []) addToGroup(groupKey, statement);
+      projectPermitsPlan.groups.delete(permit.id);
     }
   }
   await runEntityGroups(env, [...linkGroups.values()]);
 
   // 3. join tables
   const joins = {
-    project_permits: await syncJoinRows(env, {
-      table: "project_permits",
-      ownerColumn: "permit_id",
-      columns: ["project_id", "permit_id"],
-      desired: graph.projects.flatMap((p) =>
-        p.permitIds.map((permitId) => ({ project_id: projIdByTmp.get(p.tmpId), permit_id: permitId })),
-      ),
-      existingRows: projectPermitRows,
-    }),
+    project_permits: await (async () => {
+      await runEntityGroups(env, [...projectPermitsPlan.groups.values()]);
+      return { added: projectPermitsPlan.added, removed: projectPermitsPlan.removed };
+    })(),
     permit_participants: await syncJoinRows(env, {
       table: "permit_participants",
       ownerColumn: "permit_id",

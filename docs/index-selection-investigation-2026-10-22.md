@@ -385,7 +385,8 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
    a row before its replacement exists. Surviving rows keep their ids. It refuses to run (throws) if the permits read
    is empty while entities exist. A membership change (insert the new join row, delete the old one) is committed in
    one D1 batch per owning permit/project/address, so a failure leaves each owner with its old rows or its new rows,
-   never both. An existing project that changes address moves in the same batch as the relinks of its permits, so a
+   never both; a permit's `project_permits` change is committed in the same batch as its relink, since
+   `permits.project_id` and `project_permits` are two views of one fact. An existing project that changes address moves in the same batch as the relinks of its permits, so a
    failure cannot leave a project at one address and its permits at another. Relinks are still applied in
    50-statement batches (see the residual-risk note below).
 2. **Project slugs [C].** `buildEntityGraph` takes `projectSlugByPermit` + `reservedProjectSlugs`: a project inherits
