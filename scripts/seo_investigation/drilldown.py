@@ -3,18 +3,24 @@ Inputs in SEO_DATA (default .seo_data):
   dd/<any>/{Metadata.csv,Table.csv,Chart.csv}   one directory per extracted drilldown zip
   permits_all.json   (pull_permits.py)   graph_expected.json (graph_dump.mjs)   gsc_url.csv (gsc_queries.sql)
   sm_tagged.csv      (recon.py; only for neighborhood slugs)
+Needs: pip install -r requirements.txt (pandas, numpy; not part of the product's uv environment).
 Run: python3 -I drilldown.py
+
+Caveat: cohort A below is "URL has >=1 impression in the 140-day export", a PROXY for indexed. It is contaminated by
+currently-crawled-not-indexed URLs that fall outside the 1,000-row export cap; the script prints an estimate of that
+fraction and the implied upper bound on the true AUC (report section 3c, "Proxy caveat").
 """
 import glob, json, os, re
 import numpy as np, pandas as pd
 
 S = os.environ.get("SEO_DATA", ".seo_data")
-B = {}
+B, TOT = {}, {}
 for d in sorted(glob.glob(f"{S}/dd/*/")):
     issue = open(f"{d}/Metadata.csv").read().split("Issue,")[-1].strip()
     key = {"Excluded by ‘noindex’ tag": "noindex", "Crawled - currently not indexed": "cni", "Not found (404)": "nf404",
            "Discovered - currently not indexed": "discovered", "Alternate page with proper canonical tag": "altcanon"}.get(issue)
     if key and key not in B:
+        TOT[key] = int(pd.read_csv(f"{d}/Chart.csv").iloc[-1, 1])
         t = pd.read_csv(f"{d}/Table.csv")
         t["p"] = t.URL.str.replace(r"^https?://[^/]+", "", regex=True)
         t["tpl"] = t.p.str.extract(r"^/([^/?#]*)")[0].fillna("(home)")
@@ -61,6 +67,14 @@ g = pd.read_csv(f"{S}/gsc_url.csv"); A = set(g.p[g.p.str.startswith("/permits/")
 Bs = set(B["cni"][B["cni"].tpl == "permits"].p); Cs = set(B["discovered"][B["discovered"].tpl == "permits"].p)
 d = permits.copy()
 d["coh"] = np.where(d.path.isin(Bs) & ~d.path.isin(A), "B_cni", np.where(d.path.isin(Cs), "C_disc", np.where(d.path.isin(A) & ~d.path.isin(Bs), "A_impr", "")))
+_listed = len(Bs); _ov = len(A & Bs); _rate = _ov / _listed
+_unl = max(TOT["cni"] * (_listed / len(B["cni"])) - _listed, 0)
+c_est = (_ov + _rate * _unl) / len(A)
+print(f"\n== proxy contamination: {_ov}/{_listed} listed CNI permits have impressions ({_rate:.1%}); unlisted CNI permits ~{_unl:.0f}; "
+      f"estimated share of A that is currently CNI c={c_est:.2f} (assumes the capped list is representative)")
+for obs in (0.60, 0.65):
+    print(f"   observed AUC {obs:.2f} -> true AUC {(obs - 0.5 * c_est) / (1 - c_est):.3f} at c={c_est:.2f}; "
+          f"{(obs - 0.15) / 0.7:.3f} at c=0.30")
 print("\n== permit cohorts (A&B overlap, previously indexed then CNI:", len(A & Bs), "):", d.coh[d.coh != ""].value_counts().to_dict())
 d = d[d.coh != ""].copy()
 d["pnum"] = d.permit_number.str.extract(r"^(\d+)")[0].astype(float)

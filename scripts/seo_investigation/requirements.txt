@@ -1,0 +1,4 @@
+# Investigation scripts only; the product's Python dependencies stay in pyproject.toml.
+# Versions are the ones the analysis was run with.
+pandas==3.0.5
+numpy==2.5.3

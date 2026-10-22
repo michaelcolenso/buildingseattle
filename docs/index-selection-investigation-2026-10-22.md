@@ -43,7 +43,7 @@ externally verified, because none of it is.
    *Discovered* -2,045; *Not found* +201; *Alternate canonical* +56. The bucket that grew is crawled-not-indexed,
    not 404/410, so the nightly 410 window and the 10-21 failure cannot account for it (and the chart ends
    10-11, before 10-21).
-3. **About 1,900 URLs are excluded although the pages are valid today, and the timing implicates our own
+3. **At least 1,658 listed URLs are excluded although the pages are valid today, and the timing implicates our own
    transient states. [M] for the facts, [I] for causation.** From the per-URL drilldowns (listed URLs, section 3c):
    - *Excluded by noindex* (1,252; 1,000 listed): 994 of the 1,000 are valid pages now, and for **all 980 valid
      addresses the permits were already in the database before Google's last crawl** (721 crawled 06-19/20).
@@ -53,13 +53,16 @@ externally verified, because none of it is.
      database rows existed* (rows created 05-14 07:32) and never retried; 156 addresses crawled in Sep-Oct with
      permits present; 25 neighborhoods crawled in June (re-created nightly); 8 projects. Only 127 are gone,
      mostly regenerated project slugs.
-   - Together about 1,900 URLs (7% of the 25,757 indexed count) are recoverable in principle by fixing the cause
-     and then prompting a recrawl. Per-URL causation is inferred from timing, not proven.
+   - Together **1,658 listed URLs (994 noindex + 664 not found; 6.4% of the 25,757 indexed count) are measured
+     candidates** for recovery by fixing the cause
+     and then prompting a recrawl. If the 252 noindex URLs hidden by the export cap resemble the listed ones the
+     total would be about 1,900 (7.4%); that is an extrapolation, since Google's capped list is not known to be a
+     random sample. Per-URL causation is inferred from timing, not proven.
 4. **The rest of the not-indexed set is Google's selection and crawl backlog, not defects. [M]/[I]**
    *Crawled - not indexed* (6,481): 93% permit pages, 96% last crawled in July (959 of 1,000; median 07-06) and not
-   revisited in 3.5 months. Against indexed permits, **once matched on permit-number decile no content feature
-   separates them (all AUC <= 0.60)**; the raw gap is permit age (AUC 0.71) because the July sweep reached older
-   permits. 46 of 929 listed CNI permits (5%) earned impressions earlier, so they were indexed and then dropped.
+   revisited in 3.5 months. Against permits that have impressions (a proxy for indexed - see the caveat in 3c), **once matched on
+   permit-number decile no content feature separates them (AUC <= 0.60; <= about 0.62 after allowing for proxy
+   contamination)**; the raw gap is permit age (AUC 0.71) because the July sweep reached older permits. 46 of 929 listed CNI permits (5%) earned impressions earlier, so they were indexed and then dropped.
    *Discovered* (4,607): never crawled; the newest permits (36% enriched vs 99.8%), addresses and projects - a
    backlog of new URLs, not a quality verdict. The 09-21 step is Google processing a batch of 2,273 never-crawled
    URLs at once (section 3c).
@@ -78,7 +81,7 @@ externally verified, because none of it is.
 9. **Defensible change:** make the rebuild non-destructive and incremental, and stop reporting a failed
    rebuild as success. That is justified by measured correctness defects, and it is now tied to a concrete
    recoverable cohort (item 3). **It is not claimed to reverse the overall indexed-URL decline** (item 4); the
-   recovery is bounded by about 1,900 URLs (section 6, 'Recovery sequence').
+   recovery is bounded by 1,658 measured URLs (about 1,900 if extrapolated; section 6, 'Recovery sequence').
 
 ## 2. Inputs
 
@@ -258,7 +261,16 @@ crawled-not-indexed, 881 after removing 46 that also have impressions; C = liste
 | A vs B: contractor present / enriched | 0.446 / 0.499 | 0.470 / 0.500 |
 | A vs C: detailed description / enriched / contractor | 0.826 / 0.818 / 0.699 | 0.782 / 0.770 / 0.663 |
 
-A and B are not separable on content once age is matched. C differs from A on enrichment (36% vs 99.8% enriched,
+**Proxy caveat.** A is "has at least one impression in 140 days", not "currently indexed". The CNI list is capped at
+1,000 of 6,481, so impression-bearing URLs among the other ~5,100 CNI permits are still counted in A. Estimate: 46 of
+929 listed CNI permits (5.0%) have impressions; if the unlisted ones match, about 298 of A's ~1,650 permits (18%)
+are themselves currently CNI. That is an assumption, since the capped list is not known to be representative.
+Contamination pulls the observed AUC toward 0.5, but it is bounded: with a fraction c of A that looks like B,
+true AUC = (observed - 0.5c) / (1 - c). For observed 0.60 that is 0.62 at c = 0.18 and 0.64 at c = 0.30. So the
+matched comparison rules out a strong content separation (above about 0.65) but cannot prove there is none, and
+a clean indexed-versus-rejected comparison still needs the Indexed export or URL Inspection labels.
+
+A and B are not separable on content (beyond that bound) once age is matched. C differs from A on enrichment (36% vs 99.8% enriched,
 median detailed description empty) because C is the newest permits (permit numbers 7.15M median vs 7.09M),
 fetched into the sitemap before the daily enrichment run. C is a discovery lag, not a quality signal.
 
@@ -318,7 +330,7 @@ slug/clustering logic, `MULTI_PERMIT_PROJECT_SQL`, sitemap generators, canonical
 preserved; the only status changes are valid addresses that today flap to 410 returning 200 continuously.
 Nothing redirects, so there is no redirect table to migrate.
 
-**Recovery sequence for the ~1,900 valid-but-excluded URLs [P].** Ordering matters: prompting a recrawl before the
+**Recovery sequence for the 1,658 valid-but-excluded listed URLs [P].** Ordering matters: prompting a recrawl before the
 rebuild is fixed would let the next nightly window re-poison the same pages.
 1. Deploy section 6 items 1-4.
 2. Require 7 consecutive healthy nights: zero 410/404 on valid `/address/*` and `/neighborhood/*` in the 13:00
@@ -350,7 +362,7 @@ properties:
 | Googlebot crawl allocation by template (E13) | address 42.5% / project 37.4% / permits 17.4% / contractor 1.8% (09-21..10-18) | report only; no target without index-state labels |
 | GSC impressions and clicks on existing URLs | trailing 4 wks: address 382 impr / 9 clk, permits 365/21, project 44/2, contractor 163/6 | no relative decline vs siblings > 20% |
 | Site-level index state (Coverage, 10-11): indexed / crawled-not-indexed / discovered-not-indexed / 404 / noindex | 25,757 / 6,481 / 4,607 / 791 / 1,252 (66.1% / 16.6% / 11.8% of 38,951 known) | the reliability fix makes no indexing claim; watch 404 and noindex buckets for movement |
-| Valid-but-excluded URLs listed in noindex + 404 buckets (section 3c) | 994 noindex + 664 not-found = 1,658 listed (about 1,900 including unlisted noindex) | falling; judged by the nudge-vs-natural recrawl test in section 6 |
+| Valid-but-excluded URLs listed in noindex + 404 buckets (section 3c) | 994 noindex + 664 not-found = 1,658 listed (about 1,900 if the 252 unlisted noindex URLs resemble the listed ones: extrapolation) | falling; judged by the nudge-vs-natural recrawl test in section 6 |
 | Per-URL index rate; per-sitemap indexed ratio | **[B]** | needs URL Inspection API or the Sitemaps report |
 
 **Power:** the exposure being removed is roughly 7 minutes a day plus one failure day in seven. Googlebot
