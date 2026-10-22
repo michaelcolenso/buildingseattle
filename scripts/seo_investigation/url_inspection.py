@@ -307,7 +307,7 @@ def inspect_one(token, site, url, retries=3):
 
 def run(site, urls, out_path, token_fn, limit, pause):
     done = answered_urls(out_path)
-    todo = [u for u in urls if u not in done][:limit]
+    todo = [u for u in urls if u not in done][:max(0, limit)]  # a negative slice would drop from the end
     print(f"{len(urls)} urls, {len(done)} already answered, inspecting {len(todo)} (limit {limit})", file=sys.stderr)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     new_file = not Path(out_path).exists() or Path(out_path).stat().st_size == 0
@@ -356,8 +356,10 @@ def main(argv=None):
     ap.add_argument("--auth-only", action="store_true", help="sign in, store the token, and exit")
     args = ap.parse_args(argv)
 
-    if args.limit > 2000:
-        raise SystemExit("--limit above the 2,000/day per-site quota would only produce errors")
+    if not 1 <= args.limit <= 2000:
+        raise SystemExit("--limit must be between 1 and 2000 (the per-site daily quota)")
+    if args.pause < 0:
+        raise SystemExit("--pause cannot be negative")
     token_fn = lambda force=False: access_token(args.client, args.token, force)  # re-checked per call: tokens last ~1 hour
     token_fn()
     if args.auth_only:

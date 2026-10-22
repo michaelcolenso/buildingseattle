@@ -382,3 +382,16 @@ def test_run_writes_the_header_into_an_empty_preexisting_output_file(tmp_path, s
     ui.run("sc-domain:x.test", ["https://x.test/a"], out, lambda force=False: "tok", limit=5, pause=0)
     assert [r["url"] for r in _rows(out)] == ["https://x.test/a"]
     assert ui.answered_urls(out) == {"https://x.test/a"}
+
+
+@pytest.mark.parametrize("flags", [["--limit", "-1"], ["--limit", "0"], ["--limit", "2001"], ["--pause", "-0.5"]])
+def test_main_rejects_out_of_range_limits_before_any_sign_in(flags, monkeypatch):
+    monkeypatch.setattr(ui, "access_token", lambda *a, **k: pytest.fail("must not sign in"))
+    with pytest.raises(SystemExit):
+        ui.main(["--site", "sc-domain:x.test", "--urls", "unused.txt", *flags])
+
+
+def test_run_with_a_negative_limit_inspects_nothing(tmp_path, stub_env):
+    stub = stub_env({"https://x.test/a": [_ok("Submitted and indexed")], "https://x.test/b": [_ok("Submitted and indexed")]})
+    ui.run("sc-domain:x.test", ["https://x.test/a", "https://x.test/b"], tmp_path / "o.csv", lambda force=False: "tok", limit=-1, pause=0)
+    assert stub.calls == []
