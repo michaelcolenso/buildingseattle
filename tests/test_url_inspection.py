@@ -395,3 +395,27 @@ def test_run_with_a_negative_limit_inspects_nothing(tmp_path, stub_env):
     stub = stub_env({"https://x.test/a": [_ok("Submitted and indexed")], "https://x.test/b": [_ok("Submitted and indexed")]})
     ui.run("sc-domain:x.test", ["https://x.test/a", "https://x.test/b"], tmp_path / "o.csv", lambda force=False: "tok", limit=-1, pause=0)
     assert stub.calls == []
+
+
+def test_input_problems_fail_before_any_sign_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(ui, "access_token", lambda *a, **k: pytest.fail("must not sign in"))
+    base = ["--site", "sc-domain:x.test"]
+    empty = tmp_path / "empty.txt"
+    empty.write_text("\n")
+    paths = tmp_path / "paths.txt"
+    paths.write_text("/address/a\n")
+    for argv in (
+        base,                                                  # no --urls
+        base + ["--urls", str(tmp_path / "missing.txt")],      # unreadable file
+        base + ["--urls", str(empty)],                         # no URLs in it
+        base + ["--urls", str(paths)],                         # paths without --base
+    ):
+        with pytest.raises(SystemExit):
+            ui.main(argv)
+
+
+def test_auth_only_does_not_need_urls(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(ui, "access_token", lambda *a, **k: called.append(1) or "tok")
+    assert ui.main(["--site", "sc-domain:x.test", "--auth-only"]) == 0
+    assert called == [1]

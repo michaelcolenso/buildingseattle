@@ -360,14 +360,23 @@ def main(argv=None):
         raise SystemExit("--limit must be between 1 and 2000 (the per-site daily quota)")
     if args.pause < 0:
         raise SystemExit("--pause cannot be negative")
+    # Local input problems fail here, before any sign-in can open a browser or store a token.
+    urls = None
+    if not args.auth_only:
+        if not args.urls:
+            raise SystemExit("--urls is required unless --auth-only")
+        try:
+            urls = read_urls(args.urls, args.base)
+        except OSError as exc:
+            raise SystemExit(f"cannot read --urls file: {exc}")
+        if not urls:
+            raise SystemExit(f"{args.urls}: no URLs found")
     token_fn = lambda force=False: access_token(args.client, args.token, force)  # re-checked per call: tokens last ~1 hour
     token_fn()
     if args.auth_only:
         print("Signed in; token stored.", file=sys.stderr)
         return 0
-    if not args.urls:
-        raise SystemExit("--urls is required unless --auth-only")
-    counts, stopped = run(args.site, read_urls(args.urls, args.base), args.out, token_fn, args.limit, args.pause)
+    counts, stopped = run(args.site, urls, args.out, token_fn, args.limit, args.pause)
     print("\nBy coverageState / error:", file=sys.stderr)
     for key, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         print(f"  {n:5d}  {key}", file=sys.stderr)
