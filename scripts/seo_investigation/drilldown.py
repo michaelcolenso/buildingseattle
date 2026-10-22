@@ -71,9 +71,10 @@ d = permits.copy()
 d["coh"] = np.where(d.path.isin(Bs) & ~d.path.isin(A), "B_cni", np.where(d.path.isin(Cs), "C_disc", np.where(d.path.isin(A) & ~d.path.isin(Bs), "A_impr", "")))
 _listed = len(Bs); _ov = len(A & Bs); _rate = _ov / _listed
 _unl = max(TOT["cni"] * (_listed / len(B["cni"])) - _listed, 0)
-c_est = (_ov + _rate * _unl) / len(A)
+_n_A = int((d.coh == "A_impr").sum())  # the cohort whose AUC is corrected: known overlaps are already excluded from it
+c_est = (_rate * _unl) / _n_A  # projected unlisted overlaps only
 print(f"\n== proxy contamination: {_ov}/{_listed} listed CNI permits have impressions ({_rate:.1%}); unlisted CNI permits ~{_unl:.0f}; "
-      f"estimated share of A that is currently CNI c={c_est:.2f} (assumes the capped list is representative)")
+      f"projected unlisted overlaps ~{_rate * _unl:.0f} of the {_n_A}-permit A cohort -> c={c_est:.2f} (assumes the capped list is representative)")
 for obs in (0.60, 0.65):  # sensitivity scenarios, not bounds
     print(f"   observed AUC {obs:.2f} -> true AUC " + ", ".join(f"{(obs - 0.5 * c) / (1 - c):.3f} at c={c:.2f}" for c in (c_est, 0.30, 0.50)))
 print("\n== permit cohorts (A&B overlap, previously indexed then CNI:", len(A & Bs), "):", d.coh[d.coh != ""].value_counts().to_dict())

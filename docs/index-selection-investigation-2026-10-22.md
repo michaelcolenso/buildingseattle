@@ -66,7 +66,7 @@ externally verified, because none of it is.
    that unexamined rows can hide defects: those looked fine in aggregate until the URLs were checked.)
    *Crawled - not indexed (1,000 listed):* 93% permit pages, 96% last crawled in July (959; median 07-06) and not
    revisited in 3.5 months. Against permits that have impressions (a proxy for indexed - see the caveat in 3c),
-   once matched on permit-number decile no content feature separates them (observed AUC <= 0.60; about 0.62 if 18% of the proxy group is itself CNI, an estimate that assumes the
+   once matched on permit-number decile no content feature separates them (observed AUC <= 0.60; about 0.62 if 16% of the proxy group is itself CNI, an estimate that assumes the
    capped list is representative - see the sensitivity in 3c); the raw gap is permit age (AUC 0.71) because the July sweep reached older
    permits. 46 of 929 listed CNI permits (5%) earned impressions earlier, so they were indexed and then dropped.
    *Discovered (1,000 listed):* never crawled; permits, addresses and projects, the permits being the newest
@@ -273,11 +273,11 @@ crawled-not-indexed, 881 after removing 46 that also have impressions; C = liste
 
 **Proxy caveat.** A is "has at least one impression in 140 days", not "currently indexed". The CNI list is capped at
 1,000 of 6,481, so impression-bearing URLs among the other ~5,100 CNI permits are still counted in A. Estimate: 46 of
-929 listed CNI permits (5.0%) have impressions; if the unlisted ones match, about 298 of A's ~1,650 permits (18%)
-are themselves currently CNI. That is an assumption, since the capped list is not known to be representative.
+929 listed CNI permits (5.0%) have impressions; if the unlisted ones match, about 252 of the 1,604 permits in cohort A (16%), after the 46 known overlaps are
+excluded, would themselves be currently CNI. That is an assumption, since the capped list is not known to be representative.
 Contamination pulls the observed AUC toward 0.5. With a fraction c of A that looks like B,
 true AUC = (observed - 0.5c) / (1 - c). **This is a sensitivity analysis, not a bound**, because c is unknown and
-nothing here limits it: for an observed 0.60 the true value is 0.62 at c = 0.18 (the estimate above), 0.64 at
+nothing here limits it: for an observed 0.60 the true value is 0.62 at c = 0.16 (the estimate above), 0.64 at
 c = 0.30 and 0.70 at c = 0.50. So the matched comparison cannot rule out a content separation; it shows only that
 none is visible in this proxy at the estimated contamination. A clean indexed-versus-rejected comparison needs the
 Indexed export or URL Inspection labels.
