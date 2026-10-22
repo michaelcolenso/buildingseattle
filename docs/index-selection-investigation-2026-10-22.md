@@ -43,17 +43,18 @@ externally verified, because none of it is.
    *Discovered* -2,045; *Not found* +201; *Alternate canonical* +56. The bucket that grew is crawled-not-indexed,
    not 404/410, so the nightly 410 window and the 10-21 failure cannot account for it (and the chart ends
    10-11, before 10-21).
-3. **At least 1,658 listed URLs are excluded although the pages are valid today, and the timing implicates our own
+3. **At least 1,644 listed URLs are excluded although the pages are valid today, and the timing implicates our own
    transient states. [M] for the facts, [I] for causation.** From the per-URL drilldowns (listed URLs, section 3c):
-   - *Excluded by noindex* (1,252; 1,000 listed): 994 of the 1,000 are valid pages now, and for **all 980 valid
-     addresses the permits were already in the database before Google's last crawl** (721 crawled 06-19/20).
+   - *Excluded by noindex* (1,252; 1,000 listed): 994 of the 1,000 are valid pages now (987 once the 7 single-permit
+     project URLs, which are canonicalized duplicates and correctly not indexed, are set aside), and for **all 980
+     valid addresses the permits were already in the database before Google's last crawl** (721 crawled 06-19/20).
      Before #77 an address with no linked permits was served as 200 + `noindex`, which is what the nightly
      rebuild window or an incomplete graph produces.
    - *Not found (404)* (791 listed): **664 (84%) exist today** - 475 permit pages crawled 05-12/13 *before their
      database rows existed* (rows created 05-14 07:32) and never retried; 156 addresses crawled in Sep-Oct with
-     permits present; 25 neighborhoods crawled in June (re-created nightly); 8 projects. Only 127 are gone,
+     permits present; 25 neighborhoods crawled in June (re-created nightly); 8 projects (7 of them single-permit duplicates). Only 127 are gone,
      mostly regenerated project slugs.
-   - Together **1,658 listed URLs (994 noindex + 664 not found; 6.4% of the 25,757 indexed count) are measured
+   - Together **1,644 listed URLs (987 noindex + 657 not found; 6.4% of the 25,757 indexed count) are measured
      candidates** for recovery by fixing the cause
      and then prompting a recrawl. If the 252 noindex URLs hidden by the export cap resemble the listed ones the
      total would be about 1,900 (7.4%); that is an extrapolation, since Google's capped list is not known to be a
@@ -87,7 +88,7 @@ externally verified, because none of it is.
 9. **Defensible change:** make the rebuild non-destructive and incremental, and stop reporting a failed
    rebuild as success. That is justified by measured correctness defects, and it is now tied to a concrete
    recoverable cohort (item 3). **It is not claimed to reverse the overall indexed-URL decline** (item 4); the
-   recovery is bounded by 1,658 measured URLs (about 1,900 if extrapolated; section 6, 'Recovery sequence').
+   recovery is bounded by 1,644 measured URLs (about 1,900 if extrapolated; section 6, 'Recovery sequence').
 
 ## 2. Inputs
 
@@ -336,15 +337,16 @@ slug/clustering logic, `MULTI_PERMIT_PROJECT_SQL`, sitemap generators, canonical
 preserved; the only status changes are valid addresses that today flap to 410 returning 200 continuously.
 Nothing redirects, so there is no redirect table to migrate.
 
-**Recovery sequence for the 1,658 valid-but-excluded listed URLs [P].** Ordering matters: prompting a recrawl before the
+**Recovery sequence for the 1,644 valid-but-excluded listed URLs [P].** Ordering matters: prompting a recrawl before the
 rebuild is fixed would let the next nightly window re-poison the same pages.
 1. Deploy section 6 items 1-4.
 2. Require 7 consecutive healthy nights: zero 410/404 on valid `/address/*` and `/neighborhood/*` in the 13:00
    window (zone analytics) and `unlinked = 0` after every run.
-3. Then split the recoverable cohort (valid today and listed in the noindex or 404 bucket: **1,658 URLs**,
+3. Then split the recoverable cohort (valid today, listed in the noindex or 404 bucket, and sitemappable - single-permit projects are canonicalized
+   duplicates and excluded (14 URLs): **1,644 URLs**,
    `drilldown.py`, recipe `sha256("bs-recrawl-2026-10|" + path)` alternating within bucket x template) into
-   **831 nudge / 827 natural**. Balance: noindex address 490/490, 404 address 78/78, 404 permits 238/237,
-   404 neighborhood 13/12, plus 3 small strata; last-crawl months match. Nudge = raise `<lastmod>` for those URLs in
+   **824 nudge / 820 natural**. Balance (nudge/natural): noindex address 490/490, 404 address 78/78, 404 permits
+   238/237, 404 neighborhood 13/12, noindex neighborhood 4/3, 404 project 1/0; last-crawl months match. Nudge = raise `<lastmod>` for those URLs in
    the sitemap (the only per-URL lever; do not use bucket-level "Validate fix" for either arm). Natural = leave alone.
 4. Judge at day 28: primary = share of each arm whose URL Inspection verdict is Indexed **[B: needs the API]**;
    fallback = exit from the bucket in a fresh export, valid only while the bucket lists under 1,000 rows (noindex does
@@ -368,7 +370,7 @@ properties:
 | Googlebot crawl allocation by template (E13) | address 42.5% / project 37.4% / permits 17.4% / contractor 1.8% (09-21..10-18) | report only; no target without index-state labels |
 | GSC impressions and clicks on existing URLs | trailing 4 wks: address 382 impr / 9 clk, permits 365/21, project 44/2, contractor 163/6 | no relative decline vs siblings > 20% |
 | Site-level index state (Coverage, 10-11): indexed / crawled-not-indexed / discovered-not-indexed / 404 / noindex | 25,757 / 6,481 / 4,607 / 791 / 1,252 (66.1% / 16.6% / 11.8% of 38,951 known) | the reliability fix makes no indexing claim; watch 404 and noindex buckets for movement |
-| Valid-but-excluded URLs listed in noindex + 404 buckets (section 3c) | 994 noindex + 664 not-found = 1,658 listed (about 1,900 if the 252 unlisted noindex URLs resemble the listed ones: extrapolation) | falling; judged by the nudge-vs-natural recrawl test in section 6 |
+| Valid-but-excluded URLs listed in noindex + 404 buckets (section 3c) | 987 noindex + 657 not-found = 1,644 listed (about 1,900 if the 252 unlisted noindex URLs resemble the listed ones: extrapolation) | falling; judged by the nudge-vs-natural recrawl test in section 6 |
 | Per-URL index rate; per-sitemap indexed ratio | **[B]** | needs URL Inspection API or the Sitemaps report |
 
 **Power:** the exposure being removed is roughly 7 minutes a day plus one failure day in seven. Googlebot
@@ -400,7 +402,7 @@ deploy and rollback so cached 410s/200s do not linger.
    vs indexed per child sitemap), and ideally URL Inspection API access, which would make the day-28 test in
    section 6 reliable. The drilldowns already received are in section 3c.
 3. **Approve the recovery test** in section 6 (after the fix has 7 healthy nights)? It means editing sitemap
-   `lastmod` for half of 1,658 URLs only.
+   `lastmod` for half of 1,644 URLs only.
 4. Cloudflare is connected; nothing further needed there. A read-only verification is scheduled for
    13:15 UTC today to confirm the 13:00 run heals the orphans.
 

@@ -34,6 +34,8 @@ e = pd.DataFrame(json.load(open(f"{S}/graph_expected.json"))).merge(permits[["id
 addr = e.groupby("addr_slug").agg(n=("id", "size"), first_permit=("cr", "min")).reset_index()
 addr["p"] = "/address/" + addr.addr_slug
 A_OK, P_OK = set(addr.p), set("/project/" + e.proj_slug.dropna())
+_pm = e.dropna(subset=["proj_slug"]).groupby("proj_slug").size()
+MULTI = set("/project/" + _pm[_pm > 1].index)  # only multi-permit projects are self-canonical and sitemapped (#77)
 PERM_OK = set(permits.path)
 sm = pd.read_csv(f"{S}/sm_tagged.csv")
 NB_OK = set(sm[sm.tpl == "neighborhood"].p)
@@ -93,20 +95,26 @@ d["stratum"] = pd.qcut(d.pnum.rank(method="first"), 10, labels=False)
 for c1, c0 in [("A_impr", "B_cni"), ("A_impr", "C_disc"), ("B_cni", "C_disc")]:
     s = d[d.coh.isin([c1, c0])]
     raw = {f: round(auc(s.coh == c1, s[f].astype(float)), 3) for f in feat}
-    num = {f: 0.0 for f in feat}; den = 0.0
-    for _, st in s.groupby("stratum"):
-        n1, n0 = (st.coh == c1).sum(), (st.coh == c0).sum()
-        if n1 >= 15 and n0 >= 15:
-            den += n1 * n0
-            for f in feat: num[f] += n1 * n0 * (auc(st.coh == c1, st[f].astype(float)) if not np.isnan(auc(st.coh == c1, st[f].astype(float))) else 0.5)
-    print(f"\n{c1} vs {c0}\n  raw AUC:    {raw}\n  matched AUC (permit-number deciles, strata with >=15 in both): " + (str({f: round(v / den, 3) for f, v in num.items()}) if den else "n/a"))
+    matched = {}
+    for f in feat:
+        num = den = 0.0
+        for _, st in s.groupby("stratum"):
+            x, y = st[f].astype(float), st.coh == c1
+            m = x.notna(); n1, n0 = int((y & m).sum()), int((~y & m).sum())
+            if n1 >= 15 and n0 >= 15:  # per-feature non-null counts, so missing values do not inflate a stratum's weight
+                num += n1 * n0 * auc(y[m], x[m]); den += n1 * n0
+        matched[f] = round(num / den, 3) if den else float("nan")
+    print(f"\n{c1} vs {c0}\n  raw AUC:    {raw}\n  matched AUC (permit-number deciles; per feature, strata with >=15 non-null in both classes): {matched}")
 print("\nmedians:", d.groupby("coh")[["pnum", "logval", "desc_len", "ddesc_len"]].median().round(1).to_dict("index"))
 print("share enriched / has_contractor / status_active:", d.groupby("coh")[["enriched", "has_contractor", "status_active"]].mean().round(3).to_dict("index"))
 
 # ---- recoverable cohort: URLs that are valid today but sit in the noindex or 404 bucket (listed URLs only)
 import hashlib
 rec = pd.concat([B["noindex"].assign(bucket="noindex"), B["nf404"].assign(bucket="nf404")])
-rec = rec[rec.valid.fillna(False)].reset_index(drop=True)
+_valid = rec[rec.valid.fillna(False)]
+_canon = _valid.p.str.startswith("/project/") & ~_valid.p.isin(MULTI)
+print(f"\n== valid-today but excluded from the recovery cohort because single-permit projects are canonicalized and not sitemapped: {int(_canon.sum())} (of {int(_valid.p.str.startswith('/project/').sum())} valid project rows)")
+rec = _valid[~_canon].reset_index(drop=True)
 rec["h"] = rec.p.map(lambda s: int(hashlib.sha256(("bs-recrawl-2026-10|" + s).encode()).hexdigest(), 16))
 rec["stratum"] = rec.bucket + "|" + rec.tpl
 rec = rec.sort_values(["stratum", "h"]); rec["rank"] = rec.groupby("stratum").cumcount()
