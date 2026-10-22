@@ -385,7 +385,9 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
    a row before its replacement exists. Surviving rows keep their ids. It refuses to run (throws) if the permits read
    is empty while entities exist. A membership change (insert the new join row, delete the old one) is committed in
    one D1 batch per owning permit/project/address, so a failure leaves each owner with its old rows or its new rows,
-   never both; relinks are still applied in 50-statement batches (see the residual-risk note below).
+   never both. An existing project that changes address moves in the same batch as the relinks of its permits, so a
+   failure cannot leave a project at one address and its permits at another. Relinks are still applied in
+   50-statement batches (see the residual-risk note below).
 2. **Project slugs [C].** `buildEntityGraph` takes `projectSlugByPermit` + `reservedProjectSlugs`: a project inherits
    the stored slug of the project that held most of its permits (largest overlap first, each slug claimed once);
    the rest mint as before and cannot collide with a stored slug. Falls back to `project_permits` for permits whose
@@ -420,7 +422,7 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
   `entity_report.mjs` instead.
 - **`HTML_CACHE_VERSION` not bumped.** No 200-page template changed, and error responses are never cached.
 
-**What the tests show (local, `npm test`: 173 pass, 0 fail) [C]**
+**What the tests show (local, `npm test`: 174 pass, 0 fail) [C]**
 - `tests/entity_rebuild.test.js` runs the real rebuild on SQLite with the production schema: first run links 100%;
   a second run issues zero writes and keeps every id and slug; after every committed batch no permit that was linked
   before is unlinked or dangling; a D1 error injected at the first relink leaves every prior link and address id/slug

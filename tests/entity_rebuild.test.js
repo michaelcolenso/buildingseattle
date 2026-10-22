@@ -482,3 +482,33 @@ test("a failure while replacing join rows never leaves a permit in both its old 
   assert.notDeepEqual(membership(ids.a2), before, "the next run completes the move");
   assertFullyLinked(db);
 });
+
+test("a failure while relinking never leaves a project at a different address than its permits", async () => {
+  const db = openDatabase();
+  const ids = seedPermits(db);
+  await rebuild(createEnv(db));
+  const mismatched = () =>
+    q(db, `SELECT COUNT(*) AS n FROM permits pm JOIN projects pr ON pr.id = pm.project_id
+           WHERE pm.address_id IS NOT pr.address_id`).n;
+  assert.equal(mismatched(), 0);
+  const projectId = q(db, "SELECT project_id FROM permits WHERE id = ?", ids.a1).project_id;
+  const addressBefore = q(db, "SELECT address_id FROM projects WHERE id = ?", projectId).address_id;
+
+  // both permits of one project are re-addressed: the project keeps its slug and moves
+  db.prepare("UPDATE permits SET address = ? WHERE id IN (?, ?)").run("700 WALNUT ST, SEATTLE, WA", ids.a1, ids.a2);
+  const failing = createEnv(db, {
+    beforeStatement(sql) {
+      if (/^\s*UPDATE permits SET address_id/i.test(sql)) throw new Error("D1_ERROR: simulated failure relinking permits");
+    },
+  });
+  const failed = await rebuild(failing);
+  assert.equal(failed.status, 500);
+  assert.equal(mismatched(), 0, "project and permits still agree after the failed run");
+  assert.equal(q(db, "SELECT address_id FROM projects WHERE id = ?", projectId).address_id, addressBefore);
+
+  const healed = await rebuild(createEnv(db));
+  assert.equal(healed.body.ok, true);
+  assert.equal(mismatched(), 0);
+  assert.notEqual(q(db, "SELECT address_id FROM projects WHERE id = ?", projectId).address_id, addressBefore, "the move completes");
+  assert.equal(q(db, "SELECT project_id FROM permits WHERE id = ?", ids.a1).project_id, projectId, "same project row");
+});

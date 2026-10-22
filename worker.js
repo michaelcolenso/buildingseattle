@@ -4149,19 +4149,39 @@ async function rebuildEntityGraph(env) {
       "slug", "address_id", "name", "description_summary", "confidence_score",
       "first_seen_date", "latest_activity_date", "total_estimated_value",
     ],
+    // address_id is deliberately not updated here: an existing project moves to its
+    // new address together with its permits' relinks (step 2), so a failure
+    // part-way cannot leave the project at one address and its permits at another.
     updateColumns: [
-      "address_id", "name", "description_summary", "confidence_score",
+      "name", "description_summary", "confidence_score",
       "first_seen_date", "latest_activity_date", "total_estimated_value",
     ],
     desired: graph.projects.map((p) => ({ ...p, address_id: addrIdByTmp.get(p.addressTmpId) ?? null })),
     existingRows: projRows,
   });
   const projIdByTmp = new Map(graph.projects.map((p) => [p.tmpId, projects.idByKey.get(p.slug)]));
+  const storedProjectAddress = new Map(projRows.map((row) => [row.slug, row.address_id]));
+  const projectAddressMoves = new Map(); // project id -> new address id
+  for (const p of graph.projects) {
+    const addressId = addrIdByTmp.get(p.addressTmpId) ?? null;
+    if (storedProjectAddress.has(p.slug) && !sameStored(storedProjectAddress.get(p.slug), addressId)) {
+      projectAddressMoves.set(projects.idByKey.get(p.slug), addressId);
+    }
+  }
 
   // 2. link permits back to their address + project, only where the stored
   // link differs. A permit moves straight from its old entity to its new one;
-  // it is never parked on NULL in between.
-  const linkUpdates = [];
+  // it is never parked on NULL in between. Statements are grouped per project so
+  // a project that changes address commits with the relinks of its permits.
+  const relinkedPermitIds = [];
+  const linkGroups = new Map();
+  const addToGroup = (key, statement) => {
+    if (!linkGroups.has(key)) linkGroups.set(key, []);
+    linkGroups.get(key).push(statement);
+  };
+  for (const [projectId, addressId] of projectAddressMoves) {
+    addToGroup(`project:${projectId}`, P(`UPDATE projects SET address_id = ? WHERE id = ?`).bind(addressId, projectId));
+  }
   let expectedLinked = 0;
   let expectedProjectLinked = 0;
   for (const permit of permits) {
@@ -4172,10 +4192,14 @@ async function rebuildEntityGraph(env) {
     if (addressId != null) expectedLinked += 1;
     if (projectId != null) expectedProjectLinked += 1;
     if (!sameStored(permit.address_id, addressId) || !sameStored(permit.project_id, projectId)) {
-      linkUpdates.push(P(`UPDATE permits SET address_id = ?, project_id = ? WHERE id = ?`).bind(addressId, projectId, permit.id));
+      relinkedPermitIds.push(permit.id);
+      addToGroup(
+        projectId != null ? `project:${projectId}` : `permit:${permit.id}`,
+        P(`UPDATE permits SET address_id = ?, project_id = ? WHERE id = ?`).bind(addressId, projectId, permit.id),
+      );
     }
   }
-  await runEntityBatch(env, linkUpdates);
+  await runEntityGroups(env, [...linkGroups.values()]);
 
   // 3. join tables
   const joins = {
@@ -4281,7 +4305,7 @@ async function rebuildEntityGraph(env) {
       people_orgs: { added: orgs.added, updated: orgs.updated, removed: orgs.staleIds.length },
       projects: { added: projects.added, updated: projects.updated, removed: projects.staleIds.length },
       neighborhoods: { added: neighborhoods.added, updated: neighborhoods.updated, removed: neighborhoods.staleIds.length },
-      permits_relinked: linkUpdates.length,
+      permits_relinked: relinkedPermitIds.length,
       join_rows: joins,
     },
     duration_ms: Date.now() - startedAt,
