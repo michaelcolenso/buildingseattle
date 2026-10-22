@@ -12,6 +12,7 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+import re
 
 TABLES = {
     "permits": "*",
@@ -104,6 +105,55 @@ def main():
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if before != after:
         raise RuntimeError("Entity populations changed during capture")
+    capture_graph_logs(root, account, token)
+
+
+def capture_graph_logs(root, account, token):
+    """Try the same credential for graph errors; record scope denial explicitly."""
+    base = f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/"
+    end = int(datetime.now(timezone.utc).timestamp() * 1000)
+    timeframe = {"from": end - 7 * 86400000, "to": end}
+    receipt = {"observed_at": now(), "timeframe": timeframe, "scope": "graph error events only"}
+
+    def post(endpoint, payload):
+        req = urllib.request.Request(base + endpoint, data=json.dumps(payload).encode(), headers={
+            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=60) as response:
+            return json.load(response)
+
+    try:
+        keys = post("keys", {**timeframe, "limit": 1000, "datasets": []})
+        receipt["available_keys"] = keys.get("result")
+        # The official SDK documents $metadata.service and needle. Discovery
+        # above is retained so field availability can be verified independently.
+        query = {"queryId": "bs-index-selection-graph-errors", "dry": True,
+                 "timeframe": timeframe, "view": "events", "limit": 1000,
+                 "parameters": {"datasets": [], "filters": [
+                     {"key": "$metadata.service", "operation": "eq", "type": "string", "value": "buildingseattle"}],
+                     "needle": {"value": "Entity graph", "matchCase": False}}}
+        result = post("query", query).get("result", {})
+        receipt["query"] = query
+        events = result.get("events", {})
+        receipt["provider_count"] = events.get("count")
+        receipt["events"] = []
+        for event in events.get("events", []):
+            meta = event.get("$metadata", {})
+            workers = event.get("$workers", {})
+            row = {"timestamp": event.get("timestamp"),
+                   "metadata": {k: meta[k] for k in ("id", "service", "origin", "message", "error", "level", "requestId") if k in meta},
+                   "workers": {k: workers[k] for k in ("eventType", "outcome", "scriptVersion", "truncated") if k in workers}}
+            # Keep error evidence, excluding all request headers and bodies.
+            text = json.dumps(row).replace(token, "[redacted]").replace(account, "[account]")
+            text = re.sub(r"(?i)bearer\s+[a-z0-9._-]+", "Bearer [redacted]", text)
+            receipt["events"].append(json.loads(text))
+        receipt["returned_count"] = len(receipt["events"])
+        receipt["complete"] = receipt["provider_count"] == receipt["returned_count"]
+        print(f"Graph log events returned: {receipt['returned_count']}", flush=True)
+    except urllib.error.HTTPError as error:
+        receipt["access_error"] = f"HTTP {error.code}"
+        print(f"Graph telemetry unavailable: HTTP {error.code}", flush=True)
+    (root / "graph_telemetry.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
 if __name__ == "__main__":
