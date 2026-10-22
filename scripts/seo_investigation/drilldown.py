@@ -8,7 +8,7 @@ Run: python3 -I drilldown.py
 
 Caveat: cohort A below is "URL has >=1 impression in the 140-day export", a PROXY for indexed. It is contaminated by
 currently-crawled-not-indexed URLs that fall outside the 1,000-row export cap; the script prints an estimate of that
-fraction and the implied upper bound on the true AUC (report section 3c, "Proxy caveat").
+fraction and a sensitivity of the true AUC to it (not a bound: contamination is unknown; report section 3c, "Proxy caveat").
 """
 import glob, json, os, re
 import numpy as np, pandas as pd
@@ -74,9 +74,8 @@ _unl = max(TOT["cni"] * (_listed / len(B["cni"])) - _listed, 0)
 c_est = (_ov + _rate * _unl) / len(A)
 print(f"\n== proxy contamination: {_ov}/{_listed} listed CNI permits have impressions ({_rate:.1%}); unlisted CNI permits ~{_unl:.0f}; "
       f"estimated share of A that is currently CNI c={c_est:.2f} (assumes the capped list is representative)")
-for obs in (0.60, 0.65):
-    print(f"   observed AUC {obs:.2f} -> true AUC {(obs - 0.5 * c_est) / (1 - c_est):.3f} at c={c_est:.2f}; "
-          f"{(obs - 0.15) / 0.7:.3f} at c=0.30")
+for obs in (0.60, 0.65):  # sensitivity scenarios, not bounds
+    print(f"   observed AUC {obs:.2f} -> true AUC " + ", ".join(f"{(obs - 0.5 * c) / (1 - c):.3f} at c={c:.2f}" for c in (c_est, 0.30, 0.50)))
 print("\n== permit cohorts (A&B overlap, previously indexed then CNI:", len(A & Bs), "):", d.coh[d.coh != ""].value_counts().to_dict())
 d = d[d.coh != ""].copy()
 d["pnum"] = d.permit_number.str.extract(r"^(\d+)")[0].astype(float)

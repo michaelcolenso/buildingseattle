@@ -66,8 +66,8 @@ externally verified, because none of it is.
    that unexamined rows can hide defects: those looked fine in aggregate until the URLs were checked.)
    *Crawled - not indexed (1,000 listed):* 93% permit pages, 96% last crawled in July (959; median 07-06) and not
    revisited in 3.5 months. Against permits that have impressions (a proxy for indexed - see the caveat in 3c),
-   once matched on permit-number decile no content feature separates them (AUC <= 0.60; <= about 0.62 after
-   allowing for proxy contamination); the raw gap is permit age (AUC 0.71) because the July sweep reached older
+   once matched on permit-number decile no content feature separates them (observed AUC <= 0.60; about 0.62 if 18% of the proxy group is itself CNI, an estimate that assumes the
+   capped list is representative - see the sensitivity in 3c); the raw gap is permit age (AUC 0.71) because the July sweep reached older
    permits. 46 of 929 listed CNI permits (5%) earned impressions earlier, so they were indexed and then dropped.
    *Discovered (1,000 listed):* never crawled; permits, addresses and projects, the permits being the newest
    (36% enriched vs 99.8%) - consistent with a backlog of new URLs, not a quality verdict.
@@ -272,12 +272,14 @@ crawled-not-indexed, 881 after removing 46 that also have impressions; C = liste
 1,000 of 6,481, so impression-bearing URLs among the other ~5,100 CNI permits are still counted in A. Estimate: 46 of
 929 listed CNI permits (5.0%) have impressions; if the unlisted ones match, about 298 of A's ~1,650 permits (18%)
 are themselves currently CNI. That is an assumption, since the capped list is not known to be representative.
-Contamination pulls the observed AUC toward 0.5, but it is bounded: with a fraction c of A that looks like B,
-true AUC = (observed - 0.5c) / (1 - c). For observed 0.60 that is 0.62 at c = 0.18 and 0.64 at c = 0.30. So the
-matched comparison rules out a strong content separation (above about 0.65) but cannot prove there is none, and
-a clean indexed-versus-rejected comparison still needs the Indexed export or URL Inspection labels.
+Contamination pulls the observed AUC toward 0.5. With a fraction c of A that looks like B,
+true AUC = (observed - 0.5c) / (1 - c). **This is a sensitivity analysis, not a bound**, because c is unknown and
+nothing here limits it: for an observed 0.60 the true value is 0.62 at c = 0.18 (the estimate above), 0.64 at
+c = 0.30 and 0.70 at c = 0.50. So the matched comparison cannot rule out a content separation; it shows only that
+none is visible in this proxy at the estimated contamination. A clean indexed-versus-rejected comparison needs the
+Indexed export or URL Inspection labels.
 
-A and B are not separable on content (beyond that bound) once age is matched. C differs from A on enrichment (36% vs 99.8% enriched,
+In the proxy comparison A and B show no content separation beyond a matched AUC of 0.60 once age is matched. C differs from A on enrichment (36% vs 99.8% enriched,
 median detailed description empty) because C is the newest permits (permit numbers 7.15M median vs 7.09M),
 fetched into the sitemap before the daily enrichment run. Within the listed rows C looks like a discovery lag, not a quality signal.
 
