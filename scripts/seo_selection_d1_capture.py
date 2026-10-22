@@ -70,9 +70,9 @@ def main():
         return result["result"][0]["results"]
 
     def stats():
-        return query(" UNION ALL ".join(
-            f"SELECT '{table}' AS table_name, COUNT(*) AS n FROM {table}"
-            for table in TABLES))
+        # D1's compound-SELECT limit is lower than desktop SQLite's.
+        return [query(f"SELECT '{table}' AS table_name, COUNT(*) AS n FROM {table}")[0]
+                for table in TABLES]
 
     started = now()
     schema = query("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (" + ",".join("?" for _ in TABLES) + ")", list(TABLES))
