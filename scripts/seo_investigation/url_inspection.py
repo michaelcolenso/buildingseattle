@@ -209,11 +209,13 @@ def interactive_login(client_id, client_secret):
     return _post_form(TOKEN_URL, data)
 
 
-def access_token(client_path, token_path):
-    """A valid access token, refreshing or running the browser login as needed."""
+def access_token(client_path, token_path, force=False):
+    """A valid access token, refreshing or running the browser login as needed.
+
+    force=True ignores the cached access token (Google can invalidate one before its expiry)."""
     client_id, client_secret = load_client(client_path)
     saved = json.loads(Path(token_path).read_text()) if Path(token_path).exists() else {}
-    if saved.get("access_token") and saved.get("expires_at", 0) > time.time() + 60:
+    if not force and saved.get("access_token") and saved.get("expires_at", 0) > time.time() + 60:
         return saved["access_token"]
     if saved.get("refresh_token"):
         data = {"grant_type": "refresh_token", "refresh_token": saved["refresh_token"], "client_id": client_id}
@@ -308,7 +310,7 @@ def run(site, urls, out_path, token_fn, limit, pause):
     todo = [u for u in urls if u not in done][:limit]
     print(f"{len(urls)} urls, {len(done)} already answered, inspecting {len(todo)} (limit {limit})", file=sys.stderr)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    new_file = not Path(out_path).exists()
+    new_file = not Path(out_path).exists() or Path(out_path).stat().st_size == 0
     counts, stopped, auth_failures = {}, "", 0
     with open(out_path, "a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=FIELDS)
@@ -317,6 +319,10 @@ def run(site, urls, out_path, token_fn, limit, pause):
         for i, url in enumerate(todo, 1):
             try:
                 status, body, error = inspect_one(token_fn(), site, url)
+                if status == 401:
+                    # the cached access token may have been invalidated before its recorded
+                    # expiry: refresh it once and retry this URL before counting a failure
+                    status, body, error = inspect_one(token_fn(force=True), site, url)
             except QuotaStop as exc:
                 stopped = str(exc)
                 break
@@ -352,7 +358,7 @@ def main(argv=None):
 
     if args.limit > 2000:
         raise SystemExit("--limit above the 2,000/day per-site quota would only produce errors")
-    token_fn = lambda: access_token(args.client, args.token)  # re-checked per call: tokens last ~1 hour
+    token_fn = lambda force=False: access_token(args.client, args.token, force)  # re-checked per call: tokens last ~1 hour
     token_fn()
     if args.auth_only:
         print("Signed in; token stored.", file=sys.stderr)

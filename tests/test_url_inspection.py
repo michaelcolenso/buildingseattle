@@ -75,12 +75,13 @@ class _Stub:
     def __init__(self, script):
         self.script = script  # inspectionUrl -> list of (status, body) consumed in order
         self.calls = []
+        self.auth = []
         stub = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                assert self.headers["Authorization"] == "Bearer tok"
+                stub.auth.append(self.headers["Authorization"])
                 assert payload["siteUrl"] == "sc-domain:x.test"
                 url = payload["inspectionUrl"]
                 stub.calls.append(url)
@@ -347,3 +348,37 @@ def test_login_with_refresh_token_stores_it_quietly(tmp_path, monkeypatch, capsy
     ui.access_token(_client_file(tmp_path), tok)
     assert json.loads(tok.read_text())["refresh_token"] == "r2"
     assert capsys.readouterr().err == ""
+
+
+def test_401_refreshes_the_cached_token_once_and_retries_the_url(tmp_path, stub_env):
+    unauthorized = (401, {"error": {"code": 401, "message": "Invalid Credentials", "errors": [{"reason": "authError"}]}})
+    stub = stub_env({"https://x.test/a": [unauthorized, _ok("Submitted and indexed")]})
+    forced = []
+
+    def token_fn(force=False):
+        forced.append(force)
+        return "fresh" if force else "stale"
+
+    out = tmp_path / "o.csv"
+    _, stopped = ui.run("sc-domain:x.test", ["https://x.test/a"], out, token_fn, limit=5, pause=0)
+    assert stopped == ""
+    assert stub.auth == ["Bearer stale", "Bearer fresh"]
+    assert forced == [False, True]
+    assert _rows(out)[0]["coverageState"] == "Submitted and indexed"
+
+
+def test_access_token_force_ignores_a_still_valid_cached_token(tmp_path, monkeypatch):
+    tok = _saved(tmp_path, access_token="cached", refresh_token="r", expires_at=_time.time() + 3000)
+    monkeypatch.setattr(ui, "_post_form", lambda url, data: {"access_token": "renewed", "expires_in": 3600})
+    monkeypatch.setattr(ui, "interactive_login", lambda *a, **k: pytest.fail("no login expected"))
+    assert ui.access_token(_client_file(tmp_path), tok) == "cached"
+    assert ui.access_token(_client_file(tmp_path), tok, force=True) == "renewed"
+
+
+def test_run_writes_the_header_into_an_empty_preexisting_output_file(tmp_path, stub_env):
+    stub_env({"https://x.test/a": [_ok("Submitted and indexed")]})
+    out = tmp_path / "o.csv"
+    out.write_text("")
+    ui.run("sc-domain:x.test", ["https://x.test/a"], out, lambda force=False: "tok", limit=5, pause=0)
+    assert [r["url"] for r in _rows(out)] == ["https://x.test/a"]
+    assert ui.answered_urls(out) == {"https://x.test/a"}
