@@ -1,0 +1,32 @@
+name: Index Selection Read-only Capture
+
+# One-off investigation branch only. No scheduled run or production mutation.
+on:
+  push:
+    branches: [investigate/index-selection-2026-10-22]
+    paths:
+      - .github/workflows/index-selection-capture.yml
+      - scripts/seo_selection_d1_capture.py
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Capture public entity data with fixed SELECT queries
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python scripts/seo_selection_d1_capture.py artifacts/seo-selection/d1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: index-selection-d1-${{ github.run_id }}
+          path: artifacts/seo-selection/d1/
+          retention-days: 7
