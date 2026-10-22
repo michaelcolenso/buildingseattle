@@ -54,3 +54,7 @@ gumroad/releases/
 # SEO investigation working data
 scripts/seo_investigation/.seo_data/
 .seo_data/
+
+# Google OAuth client secrets / tokens (never commit)
+client_secret*.json
+gsc_token.json

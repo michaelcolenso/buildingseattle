@@ -16,3 +16,8 @@ Workers Logs events with needle `Entity graph rebuild failed` in a narrow window
 sampled and miss it); zone GraphQL `httpRequestsAdaptiveGroups` with `edgeResponseStatus: 410` by minute.
 
 Drilldown analysis (needs the Search Console per-URL drilldown zips extracted to `.seo_data/dd/<name>/`): `drilldown.py`.
+
+URL Inspection (Google's own per-URL index verdict; needs a Desktop OAuth client, see the script docstring): `url_inspection.py`
+runs on your machine (stdlib only), signs in once in a browser with the read-only Search Console scope, and writes
+`.seo_data/url_inspection.csv`. It is resumable and paced under the documented per-site quota (2,000/day, 600/min). Tests: `tests/test_url_inspection.py`
+(local stub server; the Google sign-in itself is not covered by tests).
