@@ -391,7 +391,10 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
 3. **Failure visible [C].** The result now carries `ok`, `expected_linked`, `linked`, `unlinked`, `project_unlinked`
    and per-table `changes`, measured from the database after the run. Cron and `POST /admin/build-graph` write an
    `ingest_logs` row with `run_type = 'entity_graph'` and status `success` / `partial` / `error`; the admin route
-   answers 500 unless `ok`. `/admin/entity-report` gains an `integrity` block (null, not 0, when a check query fails)
+   answers 500 unless `ok`. `ok` means every permit in the snapshot read at the start is linked; the result also
+   carries `snapshot_stale` (permit count moved during the run, e.g. an ingest route inserted a permit), and
+   such permits wait for the next run, as every permit written by `/ingest/*` already did (those routes never
+   link). Edits to an existing permit's address during a run are not detected. `/admin/entity-report` gains an `integrity` block (null, not 0, when a check query fails)
    and `scripts/entity_report.mjs` prints `permits without address link`.
 4. **No 410 on an uncertain graph [C].** `/address/:slug` answers 503 + `Retry-After: 3600` + `Cache-Control: no-store`
    when the address lookup or permit read throws, or when an address has no permits while any permit is still
@@ -410,7 +413,7 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
   `entity_report.mjs` instead.
 - **`HTML_CACHE_VERSION` not bumped.** No 200-page template changed, and error responses are never cached.
 
-**What the tests show (local, `npm test`: 167 pass, 0 fail) [C]**
+**What the tests show (local, `npm test`: 168 pass, 0 fail) [C]**
 - `tests/entity_rebuild.test.js` runs the real rebuild on SQLite with the production schema: first run links 100%;
   a second run issues zero writes and keeps every id and slug; after every committed batch no permit that was linked
   before is unlinked or dangling; a D1 error injected at the first relink leaves every prior link and address id/slug

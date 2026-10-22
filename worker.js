@@ -4215,10 +4215,16 @@ async function rebuildEntityGraph(env) {
   await runEntityBatch(env, orgs.staleIds.map((id) => P(`DELETE FROM people_orgs WHERE id = ?`).bind(id)));
   await runEntityBatch(env, neighborhoods.staleIds.map((id) => P(`DELETE FROM neighborhoods WHERE id = ?`).bind(id)));
 
-  // 5. verify against the database itself, not against what we meant to write
+  // 5. verify against the database itself, not against what we meant to write.
+  // `ok` means every permit in the snapshot read at the start is linked. D1 has
+  // no snapshot across batches, so a permit written by an ingest route while
+  // this run is in flight is outside that contract: it is picked up by the next
+  // run, and `snapshot_stale` says the permit count moved so the result is not
+  // mistaken for a statement about those rows.
   const stored = await P(
     `SELECT (SELECT COUNT(*) FROM permits p JOIN addresses a ON a.id = p.address_id) AS linked,
-            (SELECT COUNT(*) FROM permits p JOIN projects pr ON pr.id = p.project_id) AS project_linked`,
+            (SELECT COUNT(*) FROM permits p JOIN projects pr ON pr.id = p.project_id) AS project_linked,
+            (SELECT COUNT(*) FROM permits) AS permits_now`,
   ).first();
   const linked = Number(stored?.linked) || 0;
   const projectLinked = Number(stored?.project_linked) || 0;
@@ -4227,6 +4233,7 @@ async function rebuildEntityGraph(env) {
 
   return {
     ok: unlinked === 0 && projectUnlinked === 0,
+    snapshot_stale: Number(stored?.permits_now) !== permits.length,
     permits: permits.length,
     addresses: graph.addresses.length,
     people_orgs: graph.peopleOrgs.length,

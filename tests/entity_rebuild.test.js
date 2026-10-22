@@ -297,6 +297,31 @@ test("a rebuild that cannot link every permit reports partial, not success", asy
   assert.match(log.error_message, /5 of 5 permits unlinked/);
 });
 
+test("a permit ingested mid-rebuild is flagged as outside the snapshot and linked by the next run", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  let ingested = false;
+  const env = createEnv(db, {
+    afterBatch(database) {
+      if (ingested) return;
+      ingested = true;
+      // what /ingest/permit does: insert a permit and leave it unlinked
+      addPermit(database, { address: "600 SPRUCE DR, SEATTLE, WA", description: "New permit mid-run" });
+    },
+  });
+  const { body } = await rebuild(env);
+
+  assert.equal(body.permits, 5, "the snapshot was read before the ingest");
+  assert.equal(body.ok, true, "every snapshot permit is linked");
+  assert.equal(body.snapshot_stale, true, "the permit count moved during the run");
+  assert.equal(q(db, "SELECT COUNT(*) AS n FROM permits WHERE address_id IS NULL").n, 1);
+
+  const next = await rebuild(createEnv(db));
+  assert.equal(next.body.permits, 6);
+  assert.equal(next.body.snapshot_stale, false);
+  assertFullyLinked(db);
+});
+
 test("an empty permits read does not delete the graph", async () => {
   const db = openDatabase();
   seedPermits(db);
