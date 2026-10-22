@@ -398,7 +398,8 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
    and `scripts/entity_report.mjs` prints `permits without address link`.
 4. **No 410 on an uncertain graph [C].** `/address/:slug` answers 503 + `Retry-After: 3600` + `Cache-Control: no-store`
    when the address lookup or permit read throws, or when an address has no permits while any permit is still
-   unlinked. 410 remains for a verified-empty address; 404 remains for an unknown slug. 503s are not edge-cached
+   unlinked or the latest `entity_graph` rebuild ended `error`/`partial` (it may have stopped part-way through
+   relinking; no rebuild row yet counts as clean). 410 remains for a verified-empty address; 404 remains for an unknown slug. 503s are not edge-cached
    (only 200s are).
 
 **Deviations from the section 6 proposal, and why**
@@ -417,7 +418,7 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
   `entity_report.mjs` instead.
 - **`HTML_CACHE_VERSION` not bumped.** No 200-page template changed, and error responses are never cached.
 
-**What the tests show (local, `npm test`: 169 pass, 0 fail) [C]**
+**What the tests show (local, `npm test`: 172 pass, 0 fail) [C]**
 - `tests/entity_rebuild.test.js` runs the real rebuild on SQLite with the production schema: first run links 100%;
   a second run issues zero writes and keeps every id and slug; after every committed batch no permit that was linked
   before is unlinked or dangling; a D1 error injected at the first relink leaves every prior link and address id/slug

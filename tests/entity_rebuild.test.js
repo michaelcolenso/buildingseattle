@@ -433,3 +433,23 @@ test("rebuild log rows do not change permit-ingest freshness, growth, last run o
   assert.equal(stats.growth_24h, 40, "addresses added by a rebuild are not permit growth");
   assert.equal(stats.performance.success_rate, 100, "a failed rebuild does not lower the ingest success rate");
 });
+
+test("an emptied address is 410 after a clean rebuild but 503 once the latest rebuild failed", async () => {
+  const db = openDatabase();
+  const ids = seedPermits(db);
+  const env = createEnv(db);
+  await rebuild(env);
+  const slug = q(db, "SELECT a.slug FROM permits p JOIN addresses a ON a.id = p.address_id WHERE p.id = ?", ids.c1).slug;
+  // the address row outlives its only permit until the next rebuild deletes it
+  db.prepare("DELETE FROM permits WHERE id = ?").run(ids.c1);
+  const get = async () =>
+    (await worker.fetch(new Request(`https://buildingseattle.com/address/${slug}`), env, { waitUntil() {} })).status;
+
+  assert.equal(await get(), 410, "verified empty after a clean rebuild");
+  db.exec(`INSERT INTO ingest_logs (run_type, source, status, start_time, end_time)
+           VALUES ('entity_graph', 'scheduled', 'error', datetime('now'), datetime('now'))`);
+  assert.equal(await get(), 503, "a failed rebuild makes 'no permits' untrustworthy");
+  await rebuild(env); // a clean run both removes the stale address and restores trust
+  db.exec("DELETE FROM ingest_logs WHERE status = 'error'");
+  assert.equal(await get(), 404, "the stale address is gone after the next rebuild");
+});

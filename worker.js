@@ -7264,19 +7264,23 @@ async function renderAddressPage(slug, env, request) {
   // makes Google drop the URL instead of spending crawl budget on a 200 that
   // only says `noindex`. These URLs are neither sitemapped nor linked
   // internally. That is only true while the permit -> address links are
-  // intact: if any permit is still waiting to be linked (an entity-graph
-  // rebuild is pending or failed), "no permits here" cannot be trusted, so
-  // answer 503 and let the crawler come back instead.
+  // intact: if any permit is still waiting to be linked, or the latest
+  // entity-graph rebuild did not finish cleanly (it may have stopped part-way
+  // through relinking), "no permits here" cannot be trusted, so answer 503 and
+  // let the crawler come back instead. No rebuild row yet counts as clean.
   if (permitCount === 0) {
-    let pending = null;
+    let check = null;
     try {
-      pending = await env.DB.prepare(
-        "SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL) AS pending",
+      check = await env.DB.prepare(
+        `SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL) AS pending,
+                (SELECT status FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1) AS last_rebuild`,
       ).first();
     } catch (error) {
       console.error("Address integrity check failed:", error);
     }
-    if (!pending || Number(pending.pending) !== 0) return renderTemporarilyUnavailable();
+    if (!check || Number(check.pending) !== 0 || ["error", "partial"].includes(check.last_rebuild)) {
+      return renderTemporarilyUnavailable();
+    }
     return renderGone({
       heading: "This address has no permits on record",
       message:

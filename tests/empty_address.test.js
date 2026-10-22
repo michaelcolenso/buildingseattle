@@ -18,7 +18,7 @@ const addressRow = {
 
 // `faults` makes a named read throw like a D1 error; `pending` is the answer to
 // "is any permit still waiting to be linked to an address?".
-function createAddressEnv(permits, { pending = 0, faults = [] } = {}) {
+function createAddressEnv(permits, { pending = 0, lastRebuild = null, faults = [] } = {}) {
   const queries = [];
   const fault = (sql) => {
     for (const marker of faults) if (sql.includes(marker)) throw new Error(`D1_ERROR: ${marker}`);
@@ -36,7 +36,7 @@ function createAddressEnv(permits, { pending = 0, faults = [] } = {}) {
           async first() {
             fault(sql);
             if (sql.includes("FROM addresses WHERE slug")) return addressRow;
-            if (sql.includes("EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL)")) return { pending };
+            if (sql.includes("EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL)")) return { pending, last_rebuild: lastRebuild };
             if (sql.includes("FROM neighborhoods n JOIN address_neighborhoods an")) return null;
             return null;
           },
@@ -91,6 +91,19 @@ test("an address with no permits answers 503, not 410, while permits are waiting
   assertTemporarilyUnavailable(response);
   assert.match(html, /<meta name="robots" content="noindex">/);
   assert.doesNotMatch(html, /no permits on record/);
+});
+
+test("an address with no permits answers 503, not 410, after a rebuild that did not finish cleanly", async () => {
+  for (const lastRebuild of ["error", "partial"]) {
+    assertTemporarilyUnavailable(await fetchAddress(createAddressEnv([], { lastRebuild })));
+  }
+});
+
+test("an address with no permits is 410 when the latest rebuild succeeded or none is logged", async () => {
+  for (const lastRebuild of ["success", null]) {
+    const response = await fetchAddress(createAddressEnv([], { lastRebuild }));
+    assert.equal(response.status, 410);
+  }
 });
 
 test("an address whose permit read fails answers 503, not 410", async () => {
