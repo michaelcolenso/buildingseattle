@@ -124,8 +124,9 @@ tables are linked from `permits` via `permits.address_id` / `permits.project_id`
 - Apply the schema once: `npx wrangler d1 execute buildingseattle --file migration_entity_graph.sql`
 - The rebuild is incremental and non-destructive: it diffs the desired graph against stored rows, relinks only
   changed permits, and deletes entities last, so a failure never unlinks live pages. Outcomes are logged in
-  `ingest_logs` as `run_type = 'entity_graph'` (`success` / `partial` / `error`); `/address/:slug` answers 503
-  (not 410) for an address with no permits while any permit is unlinked.
+  `ingest_logs` as `run_type = 'entity_graph'` (`running` while it works, then `success` / `partial` / `error`);
+  `/address/:slug` answers 503 (not 410) for an address with no permits while any permit is unlinked or the
+  latest rebuild is not `success`.
 - After a bulk import, rebuild: `curl -X POST -H "X-Admin-Token: $ADMIN_API_TOKEN" https://buildingseattle.com/admin/build-graph`
 - Validation report: `node scripts/entity_report.mjs` (or `GET /admin/entity-report`).
 

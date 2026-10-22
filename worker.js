@@ -4327,9 +4327,30 @@ async function rebuildEntityGraph(env) {
 
 // Runs the rebuild and records the outcome in ingest_logs as its own row, so a
 // partial or failed rebuild is visible without marking the (successful) permit
-// ingest itself as failed. Status: success | partial (links missing) | error.
+// ingest itself as failed. Status: running | success | partial (links missing) | error.
+//
+// The row is written as `running` BEFORE anything is mutated and updated at the
+// end. /address/:slug refuses to answer 410 while the latest row is anything but
+// `success`, so a run that dies, or whose final log write fails, still leaves the
+// signal behind (a row stuck at `running` keeps empty addresses on 503 until the
+// next run finishes). If the start marker cannot be written the run does not start.
 async function runLoggedEntityGraphRebuild(env, source) {
   const startTime = new Date();
+  const stamp = (date) => date.toISOString().replace("T", " ").split(".")[0];
+  let logId = null;
+  try {
+    const started = await env.DB.prepare(
+      `INSERT INTO ingest_logs (run_type, source, status, records_added, records_updated, start_time, end_time)
+       VALUES ('entity_graph', ?, 'running', 0, 0, ?, ?)`,
+    )
+      .bind(source, stamp(startTime), stamp(startTime))
+      .run();
+    logId = started?.meta?.last_row_id ?? null;
+  } catch (startError) {
+    console.error("Could not record entity graph rebuild start; not running it:", startError);
+    throw new Error(`entity graph rebuild not started: ${String(startError?.message || startError)}`);
+  }
+
   let result = null;
   let failure = null;
   try {
@@ -4345,19 +4366,30 @@ async function runLoggedEntityGraphRebuild(env, source) {
       ? null
       : `${result.unlinked} of ${result.expected_linked} permits unlinked from addresses; ${result.project_unlinked} unlinked from projects`;
   if (status !== "success") console.error(`Entity graph rebuild ${status}: ${errorMessage}`);
+  const added = result ? result.changes.addresses.added : 0;
+  const updated = result ? result.changes.permits_relinked : 0;
   try {
-    await logIngest(env, {
-      run_type: "entity_graph",
-      source,
-      status,
-      records_added: result ? result.changes.addresses.added : 0,
-      records_updated: result ? result.changes.permits_relinked : 0,
-      error_message: errorMessage,
-      start_time: startTime,
-      end_time: new Date(),
-    });
+    if (logId != null) {
+      await env.DB.prepare(
+        `UPDATE ingest_logs SET status = ?, records_added = ?, records_updated = ?, error_message = ?, end_time = ? WHERE id = ?`,
+      )
+        .bind(status, added, updated, errorMessage, stamp(new Date()), logId)
+        .run();
+    } else {
+      await logIngest(env, {
+        run_type: "entity_graph",
+        source,
+        status,
+        records_added: added,
+        records_updated: updated,
+        error_message: errorMessage,
+        start_time: startTime,
+        end_time: new Date(),
+      });
+    }
   } catch (logError) {
-    console.error("Could not record entity graph rebuild in ingest_logs:", logError);
+    // the row stays `running`, which the empty-address guard treats as untrusted
+    console.error("Could not record entity graph rebuild outcome in ingest_logs:", logError);
   }
   if (failure) throw failure;
   return result;
@@ -7327,9 +7359,9 @@ async function renderAddressPage(slug, env, request) {
   // only says `noindex`. These URLs are neither sitemapped nor linked
   // internally. That is only true while the permit -> address links are
   // intact: if any permit is still waiting to be linked, or the latest
-  // entity-graph rebuild did not finish cleanly (it may have stopped part-way
-  // through relinking), "no permits here" cannot be trusted, so answer 503 and
-  // let the crawler come back instead. No rebuild row yet counts as clean.
+  // entity-graph rebuild is running or did not finish cleanly (it may have stopped
+  // part-way through relinking), "no permits here" cannot be trusted, so answer
+  // 503 and let the crawler come back instead. No rebuild row yet counts as clean.
   if (permitCount === 0) {
     let check = null;
     try {
@@ -7340,7 +7372,7 @@ async function renderAddressPage(slug, env, request) {
     } catch (error) {
       console.error("Address integrity check failed:", error);
     }
-    if (!check || Number(check.pending) !== 0 || ["error", "partial"].includes(check.last_rebuild)) {
+    if (!check || Number(check.pending) !== 0 || ["running", "error", "partial"].includes(check.last_rebuild)) {
       return renderTemporarilyUnavailable();
     }
     return renderGone({

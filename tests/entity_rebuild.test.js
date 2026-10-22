@@ -45,7 +45,7 @@ function createEnv(db, hooks = {}) {
       statements.push(sql);
       hooks.beforeStatement?.(sql);
       const result = db.prepare(sql).run(...binds);
-      return { meta: { changes: Number(result.changes) } };
+      return { meta: { changes: Number(result.changes), last_row_id: Number(result.lastInsertRowid) } };
     },
   });
   return {
@@ -518,4 +518,59 @@ test("a failure while relinking never leaves a project at a different address th
   assert.equal(mismatched(), 0);
   assert.notEqual(q(db, "SELECT address_id FROM projects WHERE id = ?", projectId).address_id, addressBefore, "the move completes");
   assert.equal(q(db, "SELECT project_id FROM permits WHERE id = ?", ids.a1).project_id, projectId, "same project row");
+});
+
+const lastRebuildStatus = (db) =>
+  q(db, "SELECT status FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1")?.status;
+
+test("the rebuild is marked running before it mutates anything and finalized at the end", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  const seen = new Set();
+  const env = createEnv(db, { afterBatch: (database) => seen.add(lastRebuildStatus(database)) });
+  await rebuild(env);
+  assert.deepEqual([...seen], ["running"], "every committed graph batch happened while the marker said running");
+  assert.equal(lastRebuildStatus(db), "success");
+  assert.equal(q(db, "SELECT COUNT(*) AS n FROM ingest_logs WHERE run_type = 'entity_graph'").n, 1, "one row, updated in place");
+});
+
+test("if the start marker cannot be written the rebuild does not start", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  await rebuild(createEnv(db));
+  const before = snapshot(db);
+  addPermit(db, { address: "900 ASH PL, SEATTLE, WA", description: "New permit" });
+  const env = createEnv(db, {
+    beforeStatement(sql) {
+      if (/^\s*INSERT INTO ingest_logs/i.test(sql)) throw new Error("D1_ERROR: log table unavailable");
+    },
+  });
+  const { status, body } = await rebuild(env);
+  assert.equal(status, 500);
+  assert.match(body.error, /not started/);
+  assert.deepEqual(snapshot(db).addresses, before.addresses, "nothing was mutated");
+});
+
+test("a failed run whose final log write also fails still keeps empty addresses on 503", async () => {
+  const db = openDatabase();
+  const ids = seedPermits(db);
+  await rebuild(createEnv(db));
+  const slug = q(db, "SELECT a.slug FROM permits p JOIN addresses a ON a.id = p.address_id WHERE p.id = ?", ids.c1).slug;
+  db.prepare("DELETE FROM permits WHERE id = ?").run(ids.c1); // address row outlives its only permit
+
+  const env = createEnv(db, {
+    beforeStatement(sql) {
+      if (/^\s*DELETE FROM addresses/i.test(sql)) throw new Error("D1_ERROR: simulated failure deleting addresses");
+      if (/^\s*UPDATE ingest_logs/i.test(sql)) throw new Error("D1_ERROR: log write failed too");
+    },
+  });
+  const failed = await rebuild(env);
+  assert.equal(failed.status, 500);
+  assert.equal(lastRebuildStatus(db), "running", "the outcome could not be recorded; the marker stays");
+
+  const page = await worker.fetch(new Request(`https://buildingseattle.com/address/${slug}`), env, { waitUntil() {} });
+  assert.equal(page.status, 503, "empty address is not declared gone while the latest rebuild is unfinished");
+
+  await rebuild(createEnv(db)); // the next clean run restores trust (and removes the stale address)
+  assert.equal(lastRebuildStatus(db), "success");
 });
