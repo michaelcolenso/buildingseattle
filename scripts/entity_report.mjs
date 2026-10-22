@@ -48,6 +48,9 @@ function main() {
     permits: scalar("SELECT COUNT(*) AS n FROM permits"),
     permits_assigned_to_projects: scalar("SELECT COUNT(*) AS n FROM permits WHERE project_id IS NOT NULL"),
     orphan_permits: scalar("SELECT COUNT(*) AS n FROM permits WHERE project_id IS NULL"),
+    // Should be 0 after a healthy rebuild; anything else means /address/:slug
+    // answers 503 instead of 410 for empty addresses until the next rebuild.
+    permits_without_address: scalar("SELECT COUNT(*) AS n FROM permits WHERE address_id IS NULL"),
   };
 
   const topAddresses = query(
@@ -92,6 +95,7 @@ function main() {
   line("permits total", counts.permits);
   line("permits assigned to projects", counts.permits_assigned_to_projects);
   line("orphan permits (no project)", counts.orphan_permits);
+  line("permits without address link", counts.permits_without_address);
 
   console.log("\nPages by type");
   for (const [type, n] of Object.entries(pagesByType)) line(type, n);

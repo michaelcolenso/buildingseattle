@@ -136,3 +136,62 @@ test("buildEntityGraph produces a connected graph from permit rows", () => {
   assert.equal(westlakeProject.total_estimated_value, 6200000);
   assert.match(westlakeProject.name, /Westlake Ave/);
 });
+
+// ---------------------------------------------------------------------------
+// slug preservation across rebuilds
+// ---------------------------------------------------------------------------
+
+const tenantPermits = (extra = []) => [
+  { id: 1, address: "10 Pike St, Seattle, WA", type: "commercial", description: "Tenant improvement suite 100", issued_date: "2026-01-01", contractor_name: "Acme" },
+  { id: 2, address: "10 Pike St, Seattle, WA", type: "commercial", description: "Tenant improvement suite 200", issued_date: "2026-02-01", contractor_name: "Acme" },
+  ...extra,
+];
+
+test("buildEntityGraph is unchanged without preservation options", () => {
+  const g = buildEntityGraph(tenantPermits());
+  assert.equal(g.projects.length, 1);
+  assert.equal(g.projects[0].slug, "tenant-improvement-at-10-pike-st");
+});
+
+test("a project inherits the stored slug of the project that held its permits", () => {
+  const g = buildEntityGraph(
+    // wording no longer says "tenant improvement", so the generated name changes
+    tenantPermits().map((p) => ({ ...p, description: "Interior work" })),
+    { projectSlugByPermit: new Map([[1, "tenant-improvement-at-10-pike-st"], [2, "tenant-improvement-at-10-pike-st"]]) },
+  );
+  assert.match(g.projects[0].name, /^Construction activity at/);
+  assert.equal(g.projects[0].slug, "tenant-improvement-at-10-pike-st");
+});
+
+test("when a stored project splits, the larger half keeps the slug and the rest mint new ones", () => {
+  const permits = [
+    { id: 1, address: "10 Pike St, Seattle, WA", type: "commercial", description: "Tenant improvement", issued_date: "2026-01-01", contractor_name: "Acme" },
+    { id: 2, address: "10 Pike St, Seattle, WA", type: "commercial", description: "Tenant improvement", issued_date: "2026-01-20", contractor_name: "Acme" },
+    { id: 3, address: "10 Pike St, Seattle, WA", type: "demolition", description: "Demolish annex", issued_date: "2010-01-01" },
+  ];
+  const stored = new Map([[1, "old-project"], [2, "old-project"], [3, "old-project"]]);
+  const g = buildEntityGraph(permits, { projectSlugByPermit: stored, reservedProjectSlugs: ["old-project"] });
+
+  assert.equal(g.projects.length, 2);
+  const big = g.projects.find((p) => p.permitIds.length === 2);
+  const small = g.projects.find((p) => p.permitIds.length === 1);
+  assert.equal(big.slug, "old-project");
+  assert.notEqual(small.slug, "old-project", "a stored slug is claimed by at most one project");
+  assert.notEqual(small.slug, "");
+});
+
+test("a minted project slug never collides with a stored slug it did not claim", () => {
+  const g = buildEntityGraph(tenantPermits(), { reservedProjectSlugs: ["tenant-improvement-at-10-pike-st"] });
+  assert.equal(g.projects[0].slug, "tenant-improvement-at-10-pike-st-2");
+});
+
+test("neighborhood slugs are preserved by name and new ones avoid stored slugs", () => {
+  const permits = [
+    { id: 1, address: "1 A St, Seattle, WA", neighborhood: "Mt. Baker", type: "residential", description: "x", issued_date: "2026-01-01" },
+    { id: 2, address: "2 B St, Seattle, WA", neighborhood: "Mt Baker", type: "residential", description: "x", issued_date: "2026-01-01" },
+  ];
+  const g = buildEntityGraph(permits, { neighborhoodSlugByName: new Map([["Mt Baker", "mt-baker"]]) });
+  assert.equal(g.neighborhoods.find((n) => n.name === "Mt Baker").slug, "mt-baker");
+  // "Mt. Baker" also slugifies to mt-baker, which is taken, so it gets a suffix.
+  assert.equal(g.neighborhoods.find((n) => n.name === "Mt. Baker").slug, "mt-baker-2");
+});
