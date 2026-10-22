@@ -25,6 +25,12 @@ TABLES = {
     "address_neighborhoods": "*",
     "contractors": "id, name, slug, specialty, description, license_number, created_at, updated_at",
 }
+ORDER_KEYS = {
+    "project_permits": "project_id, permit_id",
+    "permit_participants": "permit_id, people_org_id, role",
+    "project_participants": "project_id, people_org_id, role",
+    "address_neighborhoods": "address_id, neighborhood_id",
+}
 DB_ID = "e065e988-045f-42b5-b47a-4027c2e5c417"
 
 
@@ -50,8 +56,13 @@ def main():
             with urllib.request.urlopen(req, timeout=90) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as error:
-            # Do not print request headers, remote response body, or credentials.
-            raise RuntimeError(f"D1 read failed: HTTP {error.code}") from None
+            # Only sanitized provider error fields, never request headers.
+            try:
+                errors = json.load(error).get("errors", [])
+                detail = json.dumps(errors)[:1500].replace(token, "[redacted]").replace(account, "[account]")
+            except (ValueError, AttributeError):
+                detail = "No structured error"
+            raise RuntimeError(f"D1 read failed: HTTP {error.code}; {detail}") from None
         if not result.get("success") or not result.get("result") or not result["result"][0].get("success", True):
             raise RuntimeError("D1 reported an unsuccessful read")
         queries.append({"sql": sql, "params": params or [], "observed_at": now(),
@@ -60,19 +71,20 @@ def main():
 
     def stats():
         return query(" UNION ALL ".join(
-            f"SELECT '{table}' AS table_name, COUNT(*) AS n, MAX(rowid) AS max_rowid FROM {table}"
+            f"SELECT '{table}' AS table_name, COUNT(*) AS n FROM {table}"
             for table in TABLES))
 
     started = now()
+    schema = query("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (" + ",".join("?" for _ in TABLES) + ")", list(TABLES))
+    (root / "schema.json").write_text(json.dumps(schema, indent=2) + "\n")
     before = stats()
     hashes = {}
     for table, columns in TABLES.items():
-        rows, cursor = [], 0
+        rows = []
         while True:
-            batch = query(f"SELECT rowid AS capture_rowid, {columns} FROM {table} WHERE rowid > ? ORDER BY rowid LIMIT 1000", [cursor])
+            batch = query(f"SELECT {columns} FROM {table} ORDER BY {ORDER_KEYS.get(table, 'id')} LIMIT 1000 OFFSET ?", [len(rows)])
             if not batch:
                 break
-            cursor = batch[-1]["capture_rowid"]
             rows.extend(batch)
         body = (json.dumps(rows, ensure_ascii=False) + "\n").encode()
         (root / f"{table}.json").write_bytes(body)
@@ -87,7 +99,7 @@ def main():
                 "source_commit": os.environ.get("GITHUB_SHA"), "before": before, "after": after,
                 "population_stable": before == after, "tables": hashes, "queries": queries,
                 "transactional_snapshot": False,
-                "limitations": ["Counts/max rowid stability does not exclude in-place updates",
+                "limitations": ["Count stability does not exclude in-place updates or offset drift",
                                 "No credentials or private subscriber/request records exported"]}
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if before != after:
