@@ -44,6 +44,9 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     account = os.environ["CLOUDFLARE_ACCOUNT_ID"]
     token = os.environ["CLOUDFLARE_API_TOKEN"]
+    if "--telemetry-only" in sys.argv[2:]:
+        capture_graph_logs(root, account, token)
+        return
     endpoint = f"https://api.cloudflare.com/client/v4/accounts/{account}/d1/database/{DB_ID}/query"
     queries = []
 
@@ -155,10 +158,13 @@ def capture_graph_logs(root, account, token):
         names = post("values", {"datasets": [], "key": "$workers.scriptName", "type": "string",
                                 "timeframe": timeframe, "needle": {"value": "buildingseattle"}, "limit": 10})
         receipt["matching_script_names"] = names.get("result")
-        request_query = {**query, "queryId": "bs-index-selection-requests",
+        request_query = {**query, "queryId": "bs-index-selection-requests", "limit": 500,
                          "parameters": {"datasets": [], "filters": query["parameters"]["filters"]}}
         requests, cursors = {}, set()
-        for _ in range(20):
+        receipt["request_pagination_exhausted"] = False
+        # A bounded first page is enough to assess log field availability. A
+        # prior cursor request was denied (403); do not retry that operation.
+        for _ in range(1):
             result = post("query", request_query).get("result", {})
             batch = result.get("events", {}).get("events", [])
             receipt["request_provider_count"] = result.get("events", {}).get("count")
@@ -189,7 +195,8 @@ def capture_graph_logs(root, account, token):
                         continue
                 clean = json.dumps(row).replace(token, "[redacted]").replace(account, "[account]")
                 requests[row["id"]] = json.loads(clean)
-            if len(batch) < 1000:
+            (root / "request_observations.json").write_text(json.dumps(list(requests.values()), indent=2) + "\n")
+            if len(batch) < 500:
                 receipt["request_pagination_exhausted"] = True
                 break
             cursor = batch[-1].get("$metadata", {}).get("id")

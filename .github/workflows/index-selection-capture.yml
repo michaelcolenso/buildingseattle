@@ -24,7 +24,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: python scripts/seo_selection_d1_capture.py artifacts/seo-selection/d1
+        run: python scripts/seo_selection_d1_capture.py artifacts/seo-selection/d1 --telemetry-only
       - uses: actions/upload-artifact@v4
         with:
           name: index-selection-d1-${{ github.run_id }}
