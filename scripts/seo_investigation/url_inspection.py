@@ -25,7 +25,9 @@ Usage
 
 Limits (Google): 2,000 inspections per site per day, 600 per minute. The default
 --limit of 1900 and 0.25 s pacing stay under both. The script stops, and keeps what
-it has, on a quota response (HTTP 429, or 403 with a quota reason).
+it has, on a quota response (HTTP 402/429, or 403 with a documented quota or rate-limit
+reason) and after 5 consecutive 401/403 responses (setup problem: API not enabled, or
+the account lacks access to --site).
 
 The first run opens a browser for consent (read-only scope) and stores a refresh token
 in .seo_data/gsc_token.json (mode 600). Nothing is sent anywhere except Google.
@@ -54,6 +56,7 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 INSPECT_URL = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+MAX_AUTH_FAILURES = 5
 
 DATA_DIR = Path(".seo_data")
 DEFAULT_CLIENT = DATA_DIR / "client_secret.json"
@@ -76,8 +79,12 @@ def read_urls(path, base=None):
     text = Path(path).read_text(encoding="utf-8-sig")
     lines = [ln for ln in text.splitlines() if ln.strip()]
     values = []
-    if lines and "," in lines[0] and {"url", "p"} & {c.strip() for c in lines[0].split(",")}:
+    # A CSV is recognised by its header naming a `url` or `p` column, which also
+    # covers a one-column file; a bare URL or path is never called "url" or "p".
+    header = next(csv.reader(lines[:1]), []) if lines else []
+    if {c.strip().lower() for c in header} & {"url", "p"}:
         for row in csv.DictReader(lines):
+            row = {(k or "").strip().lower(): v for k, v in row.items()}
             values.append((row.get("url") or row.get("p") or "").strip())
     else:
         values = [ln.strip() for ln in lines]
@@ -237,6 +244,24 @@ class QuotaStop(Exception):
     pass
 
 
+# Reason strings Google documents for quota / rate-limit responses
+# (https://developers.google.com/webmaster-tools/v1/errors), lower-cased.
+QUOTA_REASONS = {
+    "dailylimitexceeded", "dailylimitexceeded402", "dailylimitexceededunreg", "quotaexceeded",
+    "quotaexceeded402", "ratelimitexceeded", "ratelimitexceededunreg", "userratelimitexceeded",
+    "userratelimitexceededunreg", "limitexceeded", "servinglimitexceeded", "concurrentlimitexceeded",
+    "variabletermlimitexceeded", "variabletermexpireddailyexceeded",
+}
+
+
+def is_quota_response(code, reasons, message):
+    """True when the API is refusing for quota/rate reasons, so continuing only wastes calls."""
+    if code in (402, 429):
+        return True
+    named = {str(r).lower() for r in reasons}
+    return code == 403 and (bool(named & QUOTA_REASONS) or "rate limit" in message.lower() or "quota" in message.lower())
+
+
 def inspect_one(token, site, url, retries=3):
     """(http_status, body, error). Raises QuotaStop on a quota response."""
     payload = json.dumps({"inspectionUrl": url, "siteUrl": site, "languageCode": "en-US"}).encode()
@@ -255,8 +280,8 @@ def inspect_one(token, site, url, retries=3):
             except ValueError:
                 err = {}
             message = err.get("message") or raw[:200]
-            reasons = " ".join(str(e.get("reason", "")) for e in err.get("errors", []) if isinstance(e, dict))
-            if exc.code == 429 or (exc.code == 403 and "uota" in (reasons + message)):
+            reasons = [e.get("reason", "") for e in err.get("errors", []) if isinstance(e, dict)]
+            if is_quota_response(exc.code, reasons, message):
                 raise QuotaStop(f"HTTP {exc.code}: {message}")
             if exc.code >= 500 and attempt < retries:
                 time.sleep(2 ** (attempt + 1))
@@ -276,7 +301,7 @@ def run(site, urls, out_path, token_fn, limit, pause):
     print(f"{len(urls)} urls, {len(done)} already answered, inspecting {len(todo)} (limit {limit})", file=sys.stderr)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     new_file = not Path(out_path).exists()
-    counts, stopped = {}, ""
+    counts, stopped, auth_failures = {}, "", 0
     with open(out_path, "a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=FIELDS)
         if new_file:
@@ -290,6 +315,12 @@ def run(site, urls, out_path, token_fn, limit, pause):
             row = flatten(url, status, body, error)
             writer.writerow(row)
             fh.flush()
+            # 401/403 on every URL means setup (API not enabled, account lacks access to
+            # --site), not a per-URL problem: stop instead of writing hundreds of error rows.
+            auth_failures = auth_failures + 1 if status in (401, 403) else 0
+            if auth_failures >= MAX_AUTH_FAILURES:
+                stopped = f"{auth_failures} consecutive HTTP {status} responses ({error}); check API enablement and property access"
+                break
             key = row["coverageState"] or row["error"][:60] or f"HTTP {status}"
             counts[key] = counts.get(key, 0) + 1
             if i % 50 == 0:
@@ -325,7 +356,7 @@ def main(argv=None):
     for key, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         print(f"  {n:5d}  {key}", file=sys.stderr)
     if stopped:
-        print(f"\nStopped on quota ({stopped}). Re-run tomorrow; answered URLs are skipped.", file=sys.stderr)
+        print(f"\nStopped: {stopped}. Answered URLs are skipped on the next run.", file=sys.stderr)
     print(f"Results: {args.out}", file=sys.stderr)
     return 0
 

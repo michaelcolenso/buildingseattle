@@ -187,3 +187,79 @@ def test_limit_caps_inspections_per_run(tmp_path, stub_env):
     out = tmp_path / "o.csv"
     ui.run("sc-domain:x.test", [f"https://x.test/{i}" for i in range(5)], out, lambda: "tok", limit=2, pause=0)
     assert len(stub.calls) == 2
+
+
+def test_read_urls_single_column_csv_header_is_not_a_url(tmp_path):
+    for header in ("url", "p"):
+        f = tmp_path / f"{header}.csv"
+        f.write_text(f"{header}\n/address/a\nhttps://x.test/b\n")
+        assert ui.read_urls(f, base="https://x.test") == ["https://x.test/address/a", "https://x.test/b"]
+
+
+def test_read_urls_quoted_header_and_case(tmp_path):
+    f = tmp_path / "u.csv"
+    f.write_text('"URL",note\nhttps://x.test/a,"a, b"\n')
+    assert ui.read_urls(f) == ["https://x.test/a"]
+
+
+def test_read_urls_plain_list_starting_with_a_url_is_text(tmp_path):
+    f = tmp_path / "u.txt"
+    f.write_text("https://x.test/a,b\nhttps://x.test/c\n")
+    assert ui.read_urls(f) == ["https://x.test/a,b", "https://x.test/c"]
+
+
+@pytest.mark.parametrize(
+    "code,reasons,message,expected",
+    [
+        (429, ["rateLimitExceeded"], "Too many requests", True),
+        (402, ["dailyLimitExceeded402"], "budget", True),
+        (403, ["dailyLimitExceeded"], "Daily Limit Exceeded", True),
+        (403, ["rateLimitExceeded"], "Rate Limit Exceeded", True),
+        (403, ["userRateLimitExceeded"], "User Rate Limit Exceeded", True),
+        (403, ["quotaExceeded"], "Quota exceeded", True),
+        (403, [], "Quota exceeded for quota metric", True),
+        (403, ["forbidden"], "The caller does not have permission", False),
+        (403, ["accessNotConfigured"], "API has not been used in project", False),
+        (400, ["invalidParameter"], "not under property", False),
+        (404, ["notFound"], "gone", False),
+    ],
+)
+def test_is_quota_response(code, reasons, message, expected):
+    assert ui.is_quota_response(code, reasons, message) is expected
+
+
+def test_run_stops_on_documented_403_quota_reason(tmp_path, stub_env):
+    stub = stub_env({
+        "https://x.test/a": [_ok("Submitted and indexed")],
+        "https://x.test/b": [(403, {"error": {"code": 403, "message": "Rate Limit Exceeded",
+                                              "errors": [{"reason": "rateLimitExceeded"}]}})],
+        "https://x.test/c": [],
+    })
+    out = tmp_path / "o.csv"
+    _, stopped = ui.run("sc-domain:x.test", ["https://x.test/a", "https://x.test/b", "https://x.test/c"],
+                        out, lambda: "tok", limit=10, pause=0)
+    assert "403" in stopped
+    assert "https://x.test/c" not in stub.calls
+
+
+def test_run_stops_after_repeated_auth_failures(tmp_path, stub_env):
+    forbidden = (403, {"error": {"code": 403, "message": "User does not have sufficient permission",
+                                 "errors": [{"reason": "forbidden"}]}})
+    urls = [f"https://x.test/{i}" for i in range(10)]
+    stub = stub_env({u: [forbidden] for u in urls})
+    out = tmp_path / "o.csv"
+    _, stopped = ui.run("sc-domain:x.test", urls, out, lambda: "tok", limit=10, pause=0)
+    assert "consecutive HTTP 403" in stopped
+    assert len(stub.calls) == ui.MAX_AUTH_FAILURES
+
+
+def test_isolated_403_does_not_stop_the_run(tmp_path, stub_env):
+    forbidden = (403, {"error": {"code": 403, "message": "no", "errors": [{"reason": "forbidden"}]}})
+    stub = stub_env({
+        "https://x.test/a": [forbidden],
+        "https://x.test/b": [_ok("Submitted and indexed")],
+    })
+    out = tmp_path / "o.csv"
+    _, stopped = ui.run("sc-domain:x.test", ["https://x.test/a", "https://x.test/b"], out, lambda: "tok", limit=10, pause=0)
+    assert stopped == ""
+    assert stub.calls == ["https://x.test/a", "https://x.test/b"]
