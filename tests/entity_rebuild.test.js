@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import worker from "../worker.js";
+import worker, { getCanonicalStats } from "../worker.js";
 
 // The nightly entity-graph rebuild must never open a window in which a valid
 // address/project page has no permits behind it (that window answered 410 for
@@ -405,4 +405,31 @@ test("/admin/entity-report exposes integrity counters and the last rebuild statu
   assert.equal(report.integrity.permits_with_dangling_address, 0);
   assert.equal(report.integrity.ok, false);
   assert.equal(report.integrity.last_rebuild.status, "success");
+});
+
+test("rebuild log rows do not change permit-ingest freshness, growth, last run or success rate", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  db.exec(`INSERT INTO ingest_logs (run_type, source, status, records_added, start_time, end_time)
+           VALUES ('scheduled', 'seattle_open_data', 'success', 40, datetime('now','-3 hours','-1 minute'), datetime('now','-3 hours'))`);
+  const scheduledEnd = q(db, "SELECT end_time FROM ingest_logs").end_time;
+
+  const env = createEnv(db);
+  const { body } = await rebuild(env); // writes a newer entity_graph/success row adding 3 addresses
+  assert.equal(body.changes.addresses.added, 3);
+  assert.equal(q(db, "SELECT COUNT(*) AS n FROM ingest_logs WHERE run_type = 'entity_graph'").n, 1);
+  db.exec(`INSERT INTO ingest_logs (run_type, source, status, records_added, start_time, end_time)
+           VALUES ('entity_graph', 'scheduled', 'error', 0, datetime('now'), datetime('now'))`);
+
+  assert.equal((await getCanonicalStats(env)).last_ingest_at, scheduledEnd, "homepage freshness ignores rebuild rows");
+
+  const response = await worker.fetch(
+    new Request("https://buildingseattle.com/api/admin/stats", { headers: { "X-Admin-Token": ADMIN_TOKEN } }),
+    env,
+    { waitUntil() {} },
+  );
+  const stats = await response.json();
+  assert.equal(stats.last_run.run_type, "scheduled");
+  assert.equal(stats.growth_24h, 40, "addresses added by a rebuild are not permit growth");
+  assert.equal(stats.performance.success_rate, 100, "a failed rebuild does not lower the ingest success rate");
 });

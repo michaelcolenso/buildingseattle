@@ -407,13 +407,17 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
   are not prevented by a constraint; the existing `slug UNIQUE` makes the loser fail loudly rather than corrupt.
 - **Separate log row, not `partial` on the ingest row.** The homepage "last updated" and the ingest success rate
   read `status = 'success'`; marking the ingest `partial` because the graph failed would make fresh permit data
-  look stale. The graph outcome is its own row instead.
+  look stale. The graph outcome is its own row instead. Because every reader of `ingest_logs` would otherwise
+  count those rows, the homepage and permits-page freshness queries and the admin stats (last run, 24h growth,
+  success rate) now exclude `run_type = 'entity_graph'`; the admin log list still shows them. Found while
+  auditing the change (a manual `/admin/build-graph` would have refreshed "last updated", and a first rebuild
+  would have added its 12k new addresses to "24h growth"); covered by a test.
 - **`scripts/check_seo_health.mjs` unchanged.** It already requires HTTP 200 on sampled sitemap pages, which a false
   410/503 on a sampled address would fail; the unlinked count is exposed by `/admin/entity-report` and
   `entity_report.mjs` instead.
 - **`HTML_CACHE_VERSION` not bumped.** No 200-page template changed, and error responses are never cached.
 
-**What the tests show (local, `npm test`: 168 pass, 0 fail) [C]**
+**What the tests show (local, `npm test`: 169 pass, 0 fail) [C]**
 - `tests/entity_rebuild.test.js` runs the real rebuild on SQLite with the production schema: first run links 100%;
   a second run issues zero writes and keeps every id and slug; after every committed batch no permit that was linked
   before is unlinked or dangling; a D1 error injected at the first relink leaves every prior link and address id/slug

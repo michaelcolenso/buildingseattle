@@ -1188,7 +1188,7 @@ export async function getCanonicalStats(env) {
       env,
       `/* homepage:last-ingest */
        SELECT end_time FROM ingest_logs
-       WHERE status = 'success'
+       WHERE status = 'success' AND run_type != 'entity_graph'
        ORDER BY end_time DESC LIMIT 1`,
     ),
   ]);
@@ -2179,7 +2179,9 @@ async function renderPermitBrowser(request, env) {
     env.DB.prepare(
       `SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`,
     ).all(),
-    env.DB.prepare(`SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`).first(),
+    env.DB.prepare(
+      `SELECT end_time FROM ingest_logs WHERE status = 'success' AND run_type != 'entity_graph' ORDER BY end_time DESC LIMIT 1`,
+    ).first(),
     getRecentStatusChanges(env, 8),
   ]);
   const permits = permitResult?.results || [];
@@ -3397,10 +3399,12 @@ async function getStats(env) {
 }
 
 async function getAdminStats(env) {
+  // entity_graph rows (rebuild outcomes) are listed in the dashboard log but are not
+  // permit ingests: counting them would inflate growth and shift "last run".
   const [lastRun, growth24h, neighborhoods, performance, counts] = await Promise.all([
-    env.DB.prepare("SELECT * FROM ingest_logs ORDER BY start_time DESC LIMIT 1").first(),
+    env.DB.prepare("SELECT * FROM ingest_logs WHERE run_type != 'entity_graph' ORDER BY start_time DESC LIMIT 1").first(),
     env.DB.prepare(
-      "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day')",
+      "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day') AND run_type != 'entity_graph'",
     ).first(),
     env.DB.prepare(
       `
@@ -3417,6 +3421,7 @@ async function getAdminStats(env) {
         AVG(strftime('%s', end_time) - strftime('%s', start_time)) as avg_duration,
         COUNT(CASE WHEN status = 'success' THEN 1 END) * 100.0 / COUNT(*) as success_rate
       FROM ingest_logs
+      WHERE run_type != 'entity_graph'
     `,
     ).first(),
     env.DB.prepare(
