@@ -58,14 +58,20 @@ externally verified, because none of it is.
      and then prompting a recrawl. If the 252 noindex URLs hidden by the export cap resemble the listed ones the
      total would be about 1,900 (7.4%); that is an extrapolation, since Google's capped list is not known to be a
      random sample. Per-URL causation is inferred from timing, not proven.
-4. **The rest of the not-indexed set is Google's selection and crawl backlog, not defects. [M]/[I]**
-   *Crawled - not indexed* (6,481): 93% permit pages, 96% last crawled in July (959 of 1,000; median 07-06) and not
-   revisited in 3.5 months. Against permits that have impressions (a proxy for indexed - see the caveat in 3c), **once matched on
-   permit-number decile no content feature separates them (AUC <= 0.60; <= about 0.62 after allowing for proxy
-   contamination)**; the raw gap is permit age (AUC 0.71) because the July sweep reached older permits. 46 of 929 listed CNI permits (5%) earned impressions earlier, so they were indexed and then dropped.
-   *Discovered* (4,607): never crawled; the newest permits (36% enriched vs 99.8%), addresses and projects - a
-   backlog of new URLs, not a quality verdict. The 09-21 step is Google processing a batch of 2,273 never-crawled
-   URLs at once (section 3c).
+4. **In the exported samples, the crawled-not-indexed and discovered rows look like Google's selection and a
+   crawl backlog, not defects; the unexported rows are unexamined. [M] for the samples, [H] beyond them.**
+   Only 1,000 of 6,481 *Crawled - not indexed* and 1,000 of 4,607 *Discovered* URLs were exported, and Google does
+   not say how the cap picks them, so these findings describe the listed rows only. (The noindex and 404 buckets show
+   that unexamined rows can hide defects: those looked fine in aggregate until the URLs were checked.)
+   *Crawled - not indexed (1,000 listed):* 93% permit pages, 96% last crawled in July (959; median 07-06) and not
+   revisited in 3.5 months. Against permits that have impressions (a proxy for indexed - see the caveat in 3c),
+   once matched on permit-number decile no content feature separates them (AUC <= 0.60; <= about 0.62 after
+   allowing for proxy contamination); the raw gap is permit age (AUC 0.71) because the July sweep reached older
+   permits. 46 of 929 listed CNI permits (5%) earned impressions earlier, so they were indexed and then dropped.
+   *Discovered (1,000 listed):* never crawled; permits, addresses and projects, the permits being the newest
+   (36% enriched vs 99.8%) - consistent with a backlog of new URLs, not a quality verdict.
+   Not tested for the other ~5,500 CNI and ~3,600 discovered URLs: a full export or the URL Inspection API is needed.
+   The 09-21 step (all five buckets, daily charts) is a whole-bucket fact and does not depend on the samples.
 5. **The defect does not explain the decline in URLs with impressions. [M]** That decline (-44%, 4-wk average) is
    common-mode: sibling properties in the same Cloud project fell 62-87% over the same weeks. Googlebot's
    own crawl log shows why a decay is expected: 35,554 requests in the two weeks of Jun 8 and Jun 15 (an
@@ -272,7 +278,7 @@ a clean indexed-versus-rejected comparison still needs the Indexed export or URL
 
 A and B are not separable on content (beyond that bound) once age is matched. C differs from A on enrichment (36% vs 99.8% enriched,
 median detailed description empty) because C is the newest permits (permit numbers 7.15M median vs 7.09M),
-fetched into the sitemap before the daily enrichment run. C is a discovery lag, not a quality signal.
+fetched into the sitemap before the daily enrichment run. Within the listed rows C looks like a discovery lag, not a quality signal.
 
 **The 09-21 step by bucket (daily charts):** Discovered -2,273, Crawled-not-indexed +1,306, Not found +156,
 noindex +58, Alternate canonical +9, Indexed -1,514. Google processed a batch of previously uncrawled URLs and
