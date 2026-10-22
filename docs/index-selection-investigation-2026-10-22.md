@@ -6,7 +6,7 @@ Rev 3 added the Search Console Coverage and Performance exports of 2026-10-21 (s
 Rev 4 adds the per-URL drilldown exports of the same date (section 3c), which let me test the noindex lead
 and build the crawled-not-indexed and discovered-not-indexed cohorts.
 
-Labels: **[M]** measured · **[I]** inference · **[H]** untested hypothesis · **[X]** falsified · **[B]** blocked ·
+Labels: **[M]** measured · **[I]** inference · **[H]** untested hypothesis · **[X]** falsified (a mechanism contradicted by direct evidence) · **[U]** unresolved: no support in the current evidence, not ruled out · **[B]** blocked ·
 **[P]** proposed, not implemented. Nothing below is labelled implemented, passed-in-CI, deployed, or
 externally verified, because none of it is.
 
@@ -80,7 +80,10 @@ externally verified, because none of it is.
 6. **"Survivors rank unusually well" is query mix. [M]+[I]** 87% of impressions and 334/338 clicks are on
    anonymized (rare) queries at position 7.75; named queries rank 44-64. Retracted from rev 0: "average
    position improved" came from the site table's `sum_top_position`, a different metric.
-7. **No indexability score should be built. [X]** Best permit-level feature AUC 0.576.
+7. **There is no data basis to build an indexability score yet. [U]** No permit-level feature separates URLs with impressions
+   from those without (best AUC 0.576), and the indexed-vs-crawled-not-indexed comparison is limited by its impression
+   proxy (section 3c), so entity weakness is unresolved rather than ruled out. Without a signal there is nothing to
+   derive thresholds from; revisit with the Indexed list or URL Inspection labels.
 8. **Narrower, but still open [B]:** which entities Google rejects and why. The Coverage export is
    now covers noindex, crawled-not-indexed, 404 and discovered (1,000-row cap each). Still missing: the **Indexed**
    list, the remaining 252 noindex URLs, the Sitemaps report and URL Inspection API, so a true indexed-vs-rejected
@@ -292,7 +295,7 @@ at the same time removed 2,258 URLs from the known set. No deployment or logged 
 | Hypothesis | Result |
 |---|---|
 | **URL churn** (entities get new slugs; old URLs 404) | **Small [M].** 28 project slugs and 9 addresses (E11); ~10 Googlebot-relevant 404s in the last week. Larger real churn is *transient status flapping* (E3, E6), not slug change. |
-| **Entity weakness** | **Not supported for permits [X]** (E10; matched A-vs-B AUC <= 0.60, section 3c). Untestable for addresses/projects [B]. |
+| **Entity weakness** | **No support in the current evidence for permits, not ruled out [U]** (E10; matched A-vs-B AUC <= 0.60 in a contaminated proxy, section 3c). Untestable for addresses/projects [B]. |
 | **Near duplication** | **Partly structural [M].** Single-permit project = address content (handled by #77). No fingerprints collected for the rest [H]. |
 | **Internal authority** | **Untested directly [H].** Link status shows no meaningful permit-level effect (E10). |
 | **Inventory overload** | **Consistent, not proven [I].** E13: 37% of crawl on a template of mostly canonical duplicates; Googlebot crawl collapsed after the June sweep. Needs index-state labels to test. |
@@ -302,9 +305,10 @@ at the same time removed 2,258 URLs from the known set. No deployment or logged 
 
 ## 5. Rejected alternatives
 
-- **Mass `noindex`, sitemap pruning, canonical or redirect changes:** no feature separates accepted from
-  non-accepted URLs (E10), so any rule would be arbitrary.
-- **An "indexability score":** rejected for the same reason.
+- **Mass `noindex`, sitemap pruning, canonical or redirect changes:** not recommended now. The data show no feature
+  that separates accepted from non-accepted URLs (E10, 3c), so a rule would have no evidence-derived thresholds. This
+  is an absence of support, not proof that no separating feature exists; it can change with clean index labels.
+- **An "indexability score":** not built, for the same reason; the brief requires thresholds derived from observed data.
 - **"Constant cap / shrinking call-budget" explanations of the linking failure:** disproved by E2-E5
   (single failed run; no platform limit; code links 100%).
 - **Platform-limit explanation (subrequests, CPU):** disproved by E5.
