@@ -395,8 +395,20 @@ export default {
       if (path === "/admin/build-graph" && request.method === "POST") {
         const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
-        const result = await rebuildEntityGraph(env);
-        return secure(jsonResponse(result));
+        // 200 only when every permit ended up linked; a failed or partial
+        // rebuild is a 500 so a curl/CI caller cannot mistake it for success.
+        let body;
+        try {
+          body = await runLoggedEntityGraphRebuild(env, "admin");
+        } catch (error) {
+          body = { ok: false, error: String(error?.message || error) };
+        }
+        return secure(
+          new Response(JSON.stringify(body, null, 2), {
+            status: body.ok ? 200 : 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+          }),
+        );
       }
 
       if (path === "/admin/entity-report") {
@@ -1176,7 +1188,7 @@ export async function getCanonicalStats(env) {
       env,
       `/* homepage:last-ingest */
        SELECT end_time FROM ingest_logs
-       WHERE status = 'success'
+       WHERE status = 'success' AND run_type != 'entity_graph'
        ORDER BY end_time DESC LIMIT 1`,
     ),
   ]);
@@ -2167,7 +2179,9 @@ async function renderPermitBrowser(request, env) {
     env.DB.prepare(
       `SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`,
     ).all(),
-    env.DB.prepare(`SELECT end_time FROM ingest_logs WHERE status = 'success' ORDER BY end_time DESC LIMIT 1`).first(),
+    env.DB.prepare(
+      `SELECT end_time FROM ingest_logs WHERE status = 'success' AND run_type != 'entity_graph' ORDER BY end_time DESC LIMIT 1`,
+    ).first(),
     getRecentStatusChanges(env, 8),
   ]);
   const permits = permitResult?.results || [];
@@ -3385,10 +3399,12 @@ async function getStats(env) {
 }
 
 async function getAdminStats(env) {
+  // entity_graph rows (rebuild outcomes) are listed in the dashboard log but are not
+  // permit ingests: counting them would inflate growth and shift "last run".
   const [lastRun, growth24h, neighborhoods, performance, counts] = await Promise.all([
-    env.DB.prepare("SELECT * FROM ingest_logs ORDER BY start_time DESC LIMIT 1").first(),
+    env.DB.prepare("SELECT * FROM ingest_logs WHERE run_type != 'entity_graph' ORDER BY start_time DESC LIMIT 1").first(),
     env.DB.prepare(
-      "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day')",
+      "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day') AND run_type != 'entity_graph'",
     ).first(),
     env.DB.prepare(
       `
@@ -3405,6 +3421,7 @@ async function getAdminStats(env) {
         AVG(strftime('%s', end_time) - strftime('%s', start_time)) as avg_duration,
         COUNT(CASE WHEN status = 'success' THEN 1 END) * 100.0 / COUNT(*) as success_rate
       FROM ingest_logs
+      WHERE run_type != 'entity_graph'
     `,
     ).first(),
     env.DB.prepare(
@@ -3916,6 +3933,7 @@ const ENTITY_PERMIT_SELECT = `
          p.status, p.description, p.detailed_description, p.applied_date,
          p.issued_date, p.completed_date, p.owner_name, p.applicant_name,
          p.architect_name, p.lat, p.lng, p.zip,
+         p.address_id, p.project_id,
          c.name AS contractor_name
   FROM permits p
   LEFT JOIN contractors c ON p.contractor_id = c.id
@@ -3929,161 +3947,452 @@ async function runEntityBatch(env, statements) {
   }
 }
 
-// Full rebuild of the derived entity graph from the permits table. Idempotent;
-// safe to call after imports or on a schedule. Returns summary counts.
-async function rebuildEntityGraph(env) {
-  const { results: permits } = await env.DB.prepare(ENTITY_PERMIT_SELECT).all();
-  const P = (sql) => env.DB.prepare(sql);
+// Like runEntityBatch, but each group of statements is kept whole inside one
+// batch (transaction). A group larger than the chunk size runs alone.
+async function runEntityGroups(env, groups) {
+  const CHUNK = 50;
+  let batch = [];
+  for (const group of groups) {
+    if (batch.length && batch.length + group.length > CHUNK) {
+      await env.DB.batch(batch);
+      batch = [];
+    }
+    batch.push(...group);
+  }
+  if (batch.length) await env.DB.batch(batch);
+}
 
-  // Preserve already-minted address/org slugs (keyed by their stable normalized
-  // form) so existing entity URLs never change across rebuilds.
-  const prevAddrRows = await safeAll(env, "SELECT normalized_address, slug FROM addresses");
-  const prevOrgRows = await safeAll(env, "SELECT normalized_name, slug FROM people_orgs");
-  const graph = buildEntityGraph(permits || [], {
-    addressSlugByNorm: new Map(prevAddrRows.map((r) => [r.normalized_address, r.slug])),
-    orgSlugByNorm: new Map(prevOrgRows.map((r) => [r.normalized_name, r.slug])),
+// Reads a whole table and, unlike safeAll, lets any D1 error propagate. The
+// rebuild must never mistake a failed read for an empty table.
+async function entityRows(env, sql) {
+  return (await env.DB.prepare(sql).all()).results || [];
+}
+
+// Column values compare equal across SQLite type affinity (a stored 2026 vs a
+// computed "2026"), so a row is only rewritten when its content really differs.
+function sameStored(a, b) {
+  if (a == null || b == null) return a == null && b == null;
+  return String(a) === String(b);
+}
+
+// Brings one derived table in line with `desired` without deleting anything:
+// inserts rows whose natural key is new, updates rows whose content changed,
+// and reports the ids of rows that are no longer wanted so the caller can drop
+// them once nothing references them. Row ids of surviving entities never change.
+async function syncEntityRows(env, { table, keyColumn, insertColumns, updateColumns, desired, existingRows }) {
+  const existingByKey = new Map();
+  for (const row of existingRows) {
+    if (!existingByKey.has(row[keyColumn])) existingByKey.set(row[keyColumn], row);
+  }
+  const inserts = [];
+  const updates = [];
+  for (const row of desired) {
+    const existing = existingByKey.get(row[keyColumn]);
+    if (!existing) inserts.push(row);
+    else if (updateColumns.some((column) => !sameStored(existing[column], row[column]))) {
+      updates.push({ id: existing.id, row });
+    }
+  }
+
+  const insertSql = `INSERT INTO ${table} (${insertColumns.join(", ")}) VALUES (${insertColumns.map(() => "?").join(", ")})`;
+  await runEntityBatch(
+    env,
+    inserts.map((row) => env.DB.prepare(insertSql).bind(...insertColumns.map((column) => row[column] ?? null))),
+  );
+  const updateSql = `UPDATE ${table} SET ${updateColumns.map((column) => `${column} = ?`).join(", ")} WHERE id = ?`;
+  await runEntityBatch(
+    env,
+    updates.map(({ id, row }) =>
+      env.DB.prepare(updateSql).bind(...updateColumns.map((column) => row[column] ?? null), id),
+    ),
+  );
+
+  const rows = inserts.length ? await entityRows(env, `SELECT id, ${keyColumn} FROM ${table} ORDER BY id`) : existingRows;
+  const idByKey = new Map();
+  for (const row of rows) {
+    if (!idByKey.has(row[keyColumn])) idByKey.set(row[keyColumn], row.id);
+  }
+  const keepIds = new Set(desired.map((row) => idByKey.get(row[keyColumn])));
+  return {
+    idByKey,
+    added: inserts.length,
+    updated: updates.length,
+    staleIds: rows.filter((row) => !keepIds.has(row.id)).map((row) => row.id),
+  };
+}
+
+// Same idea for the join tables: add the pairs that are missing, remove the
+// pairs that are no longer in the graph.
+function planJoinRows(env, { table, columns, ownerColumn, desired, existingRows }) {
+  const keyOf = (row) => columns.map((column) => row[column]).join("|");
+  const wanted = new Map();
+  for (const row of desired) {
+    if (columns.every((column) => row[column] != null)) wanted.set(keyOf(row), row);
+  }
+  const have = new Set(existingRows.map(keyOf));
+  const insertSql = `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+  const deleteSql = `DELETE FROM ${table} WHERE ${columns.map((column) => `${column} = ?`).join(" AND ")}`;
+  const missing = [...wanted].filter(([key]) => !have.has(key)).map(([, row]) => row);
+  const stale = existingRows.filter((row) => !wanted.has(keyOf(row)));
+
+  // A membership change is an insert of the new pair plus a delete of the old
+  // one. Both go in the same D1 batch (one transaction) so a failure leaves each
+  // owner (permit, project or address) with either its old rows or its new
+  // rows, never both.
+  const groups = new Map();
+  const add = (row, statement) => {
+    const owner = row[ownerColumn];
+    if (!groups.has(owner)) groups.set(owner, []);
+    groups.get(owner).push(statement);
+  };
+  for (const row of missing) add(row, env.DB.prepare(insertSql).bind(...columns.map((column) => row[column])));
+  for (const row of stale) add(row, env.DB.prepare(deleteSql).bind(...columns.map((column) => row[column])));
+  return { groups, added: missing.length, removed: stale.length };
+}
+
+async function syncJoinRows(env, spec) {
+  const plan = planJoinRows(env, spec);
+  await runEntityGroups(env, [...plan.groups.values()]);
+  return { added: plan.added, removed: plan.removed };
+}
+
+// Reconciles the derived entity graph with the permits table. Idempotent and
+// non-destructive: nothing a public page reads is deleted or unlinked until
+// its replacement already exists, so a failure part-way leaves the previous
+// graph (plus some harmless extra rows) serving, and the next run finishes the
+// job. Safe to call after imports or on a schedule. Any D1 error throws.
+//
+// Order of operations: insert/update entities -> relink permits -> sync join
+// rows -> delete entities nothing references any more -> verify.
+async function rebuildEntityGraph(env) {
+  const startedAt = Date.now();
+  const P = (sql) => env.DB.prepare(sql);
+  const { results: permitRows } = await P(ENTITY_PERMIT_SELECT).all();
+  const permits = permitRows || [];
+  const [addrRows, orgRows, projRows, nbRows, projectPermitRows, permitParticipantRows, projectParticipantRows, addrNbRows] =
+    await Promise.all([
+      entityRows(env, "SELECT * FROM addresses ORDER BY id"),
+      entityRows(env, "SELECT * FROM people_orgs ORDER BY id"),
+      entityRows(env, "SELECT * FROM projects ORDER BY id"),
+      entityRows(env, "SELECT * FROM neighborhoods ORDER BY id"),
+      entityRows(env, "SELECT project_id, permit_id FROM project_permits"),
+      entityRows(env, "SELECT permit_id, people_org_id, role FROM permit_participants"),
+      entityRows(env, "SELECT project_id, people_org_id, role FROM project_participants"),
+      entityRows(env, "SELECT address_id, neighborhood_id FROM address_neighborhoods"),
+    ]);
+
+  // A permits read that came back empty while entities exist is a failed read,
+  // not a reason to delete the graph.
+  if (!permits.length && (addrRows.length || projRows.length)) {
+    throw new Error("Refusing to rebuild the entity graph from an empty permits table");
+  }
+
+  // Preserve already-minted slugs so existing entity URLs never change across
+  // rebuilds: addresses/orgs/neighborhoods by their stable natural key,
+  // projects by the permits they held (falling back to the join table for
+  // permits whose own link was lost to an earlier failed run).
+  const firstSlugBy = (rows, key) => {
+    const map = new Map();
+    for (const row of rows) if (!map.has(row[key])) map.set(row[key], row.slug);
+    return map;
+  };
+  const projSlugById = new Map(projRows.map((row) => [row.id, row.slug]));
+  const projectSlugByPermit = new Map();
+  for (const permit of permits) {
+    if (permit.project_id != null && projSlugById.has(permit.project_id)) {
+      projectSlugByPermit.set(permit.id, projSlugById.get(permit.project_id));
+    }
+  }
+  for (const row of projectPermitRows) {
+    if (!projectSlugByPermit.has(row.permit_id) && projSlugById.has(row.project_id)) {
+      projectSlugByPermit.set(row.permit_id, projSlugById.get(row.project_id));
+    }
+  }
+  const graph = buildEntityGraph(permits, {
+    addressSlugByNorm: firstSlugBy(addrRows, "normalized_address"),
+    orgSlugByNorm: firstSlugBy(orgRows, "normalized_name"),
+    neighborhoodSlugByName: firstSlugBy(nbRows, "name"),
+    projectSlugByPermit,
+    reservedProjectSlugs: projRows.map((row) => row.slug),
   });
 
-  // Clear derived tables and reset permit links (single transaction).
-  await env.DB.batch([
-    // Older production schemas enforce permits.address_id as a foreign key.
-    // Clear those links before deleting the referenced graph rows.
-    P("UPDATE permits SET address_id = NULL, project_id = NULL"),
-    P("DELETE FROM project_permits"),
-    P("DELETE FROM permit_participants"),
-    P("DELETE FROM project_participants"),
-    P("DELETE FROM address_neighborhoods"),
-    P("DELETE FROM projects"),
-    P("DELETE FROM neighborhoods"),
-    P("DELETE FROM addresses"),
-    P("DELETE FROM people_orgs"),
-  ]);
+  // 1. entities that other rows point at
+  const addresses = await syncEntityRows(env, {
+    table: "addresses",
+    keyColumn: "normalized_address",
+    insertColumns: ["slug", "normalized_address", "display_address", "city", "state", "zip", "lat", "lng"],
+    updateColumns: ["display_address", "city", "state", "zip", "lat", "lng"],
+    desired: graph.addresses,
+    existingRows: addrRows,
+  });
+  const addrIdByTmp = new Map(graph.addresses.map((a) => [a.tmpId, addresses.idByKey.get(a.normalized_address)]));
 
-  // addresses
-  await runEntityBatch(
-    env,
-    graph.addresses.map((a) =>
-      P(
-        `INSERT INTO addresses (slug, normalized_address, display_address, city, state, zip, lat, lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(a.slug, a.normalized_address, a.display_address, a.city, a.state, a.zip, a.lat, a.lng),
-    ),
-  );
-  const addrRows = (await P("SELECT id, normalized_address FROM addresses").all()).results;
-  const addrIdByNorm = new Map(addrRows.map((r) => [r.normalized_address, r.id]));
-  const addrIdByTmp = new Map(graph.addresses.map((a) => [a.tmpId, addrIdByNorm.get(a.normalized_address)]));
+  const orgs = await syncEntityRows(env, {
+    table: "people_orgs",
+    keyColumn: "normalized_name",
+    insertColumns: ["slug", "name", "normalized_name", "type_guess"],
+    updateColumns: ["name", "type_guess"],
+    desired: graph.peopleOrgs,
+    existingRows: orgRows,
+  });
+  const orgIdByTmp = new Map(graph.peopleOrgs.map((o) => [o.tmpId, orgs.idByKey.get(o.normalized_name)]));
 
-  // people_orgs
-  await runEntityBatch(
-    env,
-    graph.peopleOrgs.map((o) =>
-      P(`INSERT INTO people_orgs (slug, name, normalized_name, type_guess) VALUES (?, ?, ?, ?)`).bind(
-        o.slug,
-        o.name,
-        o.normalized_name,
-        o.type_guess,
-      ),
-    ),
-  );
-  const orgRows = (await P("SELECT id, normalized_name FROM people_orgs").all()).results;
-  const orgIdByNorm = new Map(orgRows.map((r) => [r.normalized_name, r.id]));
-  const orgIdByTmp = new Map(graph.peopleOrgs.map((o) => [o.tmpId, orgIdByNorm.get(o.normalized_name)]));
+  const neighborhoods = await syncEntityRows(env, {
+    table: "neighborhoods",
+    keyColumn: "name",
+    insertColumns: ["slug", "name"],
+    updateColumns: [],
+    desired: graph.neighborhoods,
+    existingRows: nbRows,
+  });
+  const nbIdByTmp = new Map(graph.neighborhoods.map((n) => [n.tmpId, neighborhoods.idByKey.get(n.name)]));
 
-  // projects
-  await runEntityBatch(
-    env,
-    graph.projects.map((p) =>
-      P(
-        `INSERT INTO projects (slug, address_id, name, description_summary, confidence_score, first_seen_date, latest_activity_date, total_estimated_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        p.slug,
-        addrIdByTmp.get(p.addressTmpId) ?? null,
-        p.name,
-        p.description_summary,
-        p.confidence_score,
-        p.first_seen_date,
-        p.latest_activity_date,
-        p.total_estimated_value,
-      ),
-    ),
-  );
-  const projRows = (await P("SELECT id, slug FROM projects").all()).results;
-  const projIdBySlug = new Map(projRows.map((r) => [r.slug, r.id]));
-  const projIdByTmp = new Map(graph.projects.map((p) => [p.tmpId, projIdBySlug.get(p.slug)]));
-
-  // neighborhoods
-  await runEntityBatch(
-    env,
-    graph.neighborhoods.map((n) => P(`INSERT INTO neighborhoods (slug, name) VALUES (?, ?)`).bind(n.slug, n.name)),
-  );
-  const nbRows = (await P("SELECT id, slug FROM neighborhoods").all()).results;
-  const nbIdBySlug = new Map(nbRows.map((r) => [r.slug, r.id]));
-  const nbIdByTmp = new Map(graph.neighborhoods.map((n) => [n.tmpId, nbIdBySlug.get(n.slug)]));
-
-  // join tables
-  await runEntityBatch(
-    env,
-    graph.projects.flatMap((p) =>
-      p.permitIds.map((pid) =>
-        P(`INSERT OR IGNORE INTO project_permits (project_id, permit_id) VALUES (?, ?)`).bind(
-          projIdBySlug.get(p.slug),
-          pid,
-        ),
-      ),
-    ),
-  );
-  await runEntityBatch(
-    env,
-    graph.permitParticipants.map((pp) =>
-      P(`INSERT OR IGNORE INTO permit_participants (permit_id, people_org_id, role) VALUES (?, ?, ?)`).bind(
-        pp.permit_id,
-        orgIdByTmp.get(pp.orgTmpId),
-        pp.role,
-      ),
-    ),
-  );
-  await runEntityBatch(
-    env,
-    graph.projectParticipants.map((pp) =>
-      P(`INSERT OR IGNORE INTO project_participants (project_id, people_org_id, role) VALUES (?, ?, ?)`).bind(
-        projIdByTmp.get(pp.projectTmpId),
-        orgIdByTmp.get(pp.orgTmpId),
-        pp.role,
-      ),
-    ),
-  );
-  await runEntityBatch(
-    env,
-    graph.addressNeighborhoods.map((an) =>
-      P(`INSERT OR IGNORE INTO address_neighborhoods (address_id, neighborhood_id) VALUES (?, ?)`).bind(
-        addrIdByTmp.get(an.addressTmpId),
-        nbIdByTmp.get(an.nbTmpId),
-      ),
-    ),
-  );
-
-  // link permits back to their address + project
-  const permitUpdates = [];
-  for (const [permitId, addrTmp] of graph.permitAddress) {
-    const projTmp = graph.permitProject.get(permitId);
-    permitUpdates.push(
-      P(`UPDATE permits SET address_id = ?, project_id = ? WHERE id = ?`).bind(
-        addrIdByTmp.get(addrTmp) ?? null,
-        projTmp != null ? projIdByTmp.get(projTmp) ?? null : null,
-        permitId,
-      ),
-    );
+  const projects = await syncEntityRows(env, {
+    table: "projects",
+    keyColumn: "slug",
+    insertColumns: [
+      "slug", "address_id", "name", "description_summary", "confidence_score",
+      "first_seen_date", "latest_activity_date", "total_estimated_value",
+    ],
+    // address_id is deliberately not updated here: an existing project moves to its
+    // new address together with its permits' relinks (step 2), so a failure
+    // part-way cannot leave the project at one address and its permits at another.
+    updateColumns: [
+      "name", "description_summary", "confidence_score",
+      "first_seen_date", "latest_activity_date", "total_estimated_value",
+    ],
+    desired: graph.projects.map((p) => ({ ...p, address_id: addrIdByTmp.get(p.addressTmpId) ?? null })),
+    existingRows: projRows,
+  });
+  const projIdByTmp = new Map(graph.projects.map((p) => [p.tmpId, projects.idByKey.get(p.slug)]));
+  const storedProjectAddress = new Map(projRows.map((row) => [row.slug, row.address_id]));
+  const projectAddressMoves = new Map(); // project id -> new address id
+  for (const p of graph.projects) {
+    const addressId = addrIdByTmp.get(p.addressTmpId) ?? null;
+    if (storedProjectAddress.has(p.slug) && !sameStored(storedProjectAddress.get(p.slug), addressId)) {
+      projectAddressMoves.set(projects.idByKey.get(p.slug), addressId);
+    }
   }
-  await runEntityBatch(env, permitUpdates);
+
+  // project_permits mirrors permits.project_id, so a permit's join-row change is
+  // committed in the same batch as its relink (below); only the rest is synced
+  // in step 3.
+  const projectPermitsPlan = planJoinRows(env, {
+    table: "project_permits",
+    ownerColumn: "permit_id",
+    columns: ["project_id", "permit_id"],
+    desired: graph.projects.flatMap((p) =>
+      p.permitIds.map((permitId) => ({ project_id: projIdByTmp.get(p.tmpId), permit_id: permitId })),
+    ),
+    existingRows: projectPermitRows,
+  });
+
+  // 2. link permits back to their address + project, only where the stored
+  // link differs. A permit moves straight from its old entity to its new one;
+  // it is never parked on NULL in between. Statements are grouped per project so
+  // a project that changes address commits with the relinks of its permits.
+  const relinkedPermitIds = [];
+  const linkGroups = new Map();
+  const addToGroup = (key, statement) => {
+    if (!linkGroups.has(key)) linkGroups.set(key, []);
+    linkGroups.get(key).push(statement);
+  };
+  for (const [projectId, addressId] of projectAddressMoves) {
+    addToGroup(`project:${projectId}`, P(`UPDATE projects SET address_id = ? WHERE id = ?`).bind(addressId, projectId));
+  }
+  let expectedLinked = 0;
+  let expectedProjectLinked = 0;
+  for (const permit of permits) {
+    const addrTmp = graph.permitAddress.get(permit.id);
+    const projTmp = graph.permitProject.get(permit.id);
+    const addressId = addrTmp != null ? addrIdByTmp.get(addrTmp) ?? null : null;
+    const projectId = projTmp != null ? projIdByTmp.get(projTmp) ?? null : null;
+    if (addressId != null) expectedLinked += 1;
+    if (projectId != null) expectedProjectLinked += 1;
+    if (!sameStored(permit.address_id, addressId) || !sameStored(permit.project_id, projectId)) {
+      relinkedPermitIds.push(permit.id);
+      const groupKey = projectId != null ? `project:${projectId}` : `permit:${permit.id}`;
+      addToGroup(groupKey, P(`UPDATE permits SET address_id = ?, project_id = ? WHERE id = ?`).bind(addressId, projectId, permit.id));
+      for (const statement of projectPermitsPlan.groups.get(permit.id) || []) addToGroup(groupKey, statement);
+      projectPermitsPlan.groups.delete(permit.id);
+    }
+  }
+  await runEntityGroups(env, [...linkGroups.values()]);
+
+  // 3. join tables
+  const joins = {
+    project_permits: await (async () => {
+      await runEntityGroups(env, [...projectPermitsPlan.groups.values()]);
+      return { added: projectPermitsPlan.added, removed: projectPermitsPlan.removed };
+    })(),
+    permit_participants: await syncJoinRows(env, {
+      table: "permit_participants",
+      ownerColumn: "permit_id",
+      columns: ["permit_id", "people_org_id", "role"],
+      desired: graph.permitParticipants.map((pp) => ({
+        permit_id: pp.permit_id,
+        people_org_id: orgIdByTmp.get(pp.orgTmpId),
+        role: pp.role,
+      })),
+      existingRows: permitParticipantRows,
+    }),
+    project_participants: await syncJoinRows(env, {
+      table: "project_participants",
+      ownerColumn: "project_id",
+      columns: ["project_id", "people_org_id", "role"],
+      desired: graph.projectParticipants.map((pp) => ({
+        project_id: projIdByTmp.get(pp.projectTmpId),
+        people_org_id: orgIdByTmp.get(pp.orgTmpId),
+        role: pp.role,
+      })),
+      existingRows: projectParticipantRows,
+    }),
+    address_neighborhoods: await syncJoinRows(env, {
+      table: "address_neighborhoods",
+      ownerColumn: "address_id",
+      columns: ["address_id", "neighborhood_id"],
+      desired: graph.addressNeighborhoods.map((an) => ({
+        address_id: addrIdByTmp.get(an.addressTmpId),
+        neighborhood_id: nbIdByTmp.get(an.nbTmpId),
+      })),
+      existingRows: addrNbRows,
+    }),
+  };
+
+  // 4. drop entities that are no longer in the graph. The NOT EXISTS guards
+  // keep a row that something still references (older production schemas
+  // enforce permits.address_id as a foreign key), so a late-arriving link can
+  // never turn into a failed delete or a dangling pointer.
+  await runEntityBatch(
+    env,
+    projects.staleIds.map((id) =>
+      P(`DELETE FROM projects WHERE id = ? AND NOT EXISTS (SELECT 1 FROM permits WHERE project_id = ?)`).bind(id, id),
+    ),
+  );
+  await runEntityBatch(
+    env,
+    addresses.staleIds.map((id) =>
+      P(
+        `DELETE FROM addresses WHERE id = ?
+           AND NOT EXISTS (SELECT 1 FROM permits WHERE address_id = ?)
+           AND NOT EXISTS (SELECT 1 FROM projects WHERE address_id = ?)`,
+      ).bind(id, id, id),
+    ),
+  );
+  await runEntityBatch(env, orgs.staleIds.map((id) => P(`DELETE FROM people_orgs WHERE id = ?`).bind(id)));
+  await runEntityBatch(env, neighborhoods.staleIds.map((id) => P(`DELETE FROM neighborhoods WHERE id = ?`).bind(id)));
+
+  // 5. verify against the database itself, not against what we meant to write.
+  // `ok` means every permit in the snapshot read at the start is linked. D1 has
+  // no snapshot across batches, so a permit written by an ingest route while
+  // this run is in flight is outside that contract: it is picked up by the next
+  // run, and `snapshot_stale` says the permit count moved so the result is not
+  // mistaken for a statement about those rows.
+  const stored = await P(
+    `SELECT (SELECT COUNT(*) FROM permits p JOIN addresses a ON a.id = p.address_id) AS linked,
+            (SELECT COUNT(*) FROM permits p JOIN projects pr ON pr.id = p.project_id) AS project_linked,
+            (SELECT COUNT(*) FROM permits) AS permits_now`,
+  ).first();
+  const linked = Number(stored?.linked) || 0;
+  const projectLinked = Number(stored?.project_linked) || 0;
+  const unlinked = Math.max(0, expectedLinked - linked);
+  const projectUnlinked = Math.max(0, expectedProjectLinked - projectLinked);
 
   return {
-    ok: true,
+    ok: unlinked === 0 && projectUnlinked === 0,
+    snapshot_stale: Number(stored?.permits_now) !== permits.length,
     permits: permits.length,
     addresses: graph.addresses.length,
     people_orgs: graph.peopleOrgs.length,
     projects: graph.projects.length,
     permit_participants: graph.permitParticipants.length,
     neighborhoods: graph.neighborhoods.length,
+    expected_linked: expectedLinked,
+    linked,
+    unlinked,
+    expected_project_linked: expectedProjectLinked,
+    project_linked: projectLinked,
+    project_unlinked: projectUnlinked,
+    changes: {
+      addresses: { added: addresses.added, updated: addresses.updated, removed: addresses.staleIds.length },
+      people_orgs: { added: orgs.added, updated: orgs.updated, removed: orgs.staleIds.length },
+      projects: { added: projects.added, updated: projects.updated, removed: projects.staleIds.length },
+      neighborhoods: { added: neighborhoods.added, updated: neighborhoods.updated, removed: neighborhoods.staleIds.length },
+      permits_relinked: relinkedPermitIds.length,
+      join_rows: joins,
+    },
+    duration_ms: Date.now() - startedAt,
   };
+}
+
+// Runs the rebuild and records the outcome in ingest_logs as its own row, so a
+// partial or failed rebuild is visible without marking the (successful) permit
+// ingest itself as failed. Status: running | success | partial (links missing) | error.
+//
+// The row is written as `running` BEFORE anything is mutated and updated at the
+// end. /address/:slug refuses to answer 410 while the latest row is anything but
+// `success`, so a run that dies, or whose final log write fails, still leaves the
+// signal behind (a row stuck at `running` keeps empty addresses on 503 until the
+// next run finishes). If the start marker cannot be written the run does not start.
+async function runLoggedEntityGraphRebuild(env, source) {
+  const startTime = new Date();
+  const stamp = (date) => date.toISOString().replace("T", " ").split(".")[0];
+  let logId = null;
+  try {
+    const started = await env.DB.prepare(
+      `INSERT INTO ingest_logs (run_type, source, status, records_added, records_updated, start_time, end_time)
+       VALUES ('entity_graph', ?, 'running', 0, 0, ?, ?)`,
+    )
+      .bind(source, stamp(startTime), stamp(startTime))
+      .run();
+    logId = started?.meta?.last_row_id ?? null;
+  } catch (startError) {
+    console.error("Could not record entity graph rebuild start; not running it:", startError);
+    throw new Error(`entity graph rebuild not started: ${String(startError?.message || startError)}`);
+  }
+
+  let result = null;
+  let failure = null;
+  try {
+    result = await rebuildEntityGraph(env);
+  } catch (error) {
+    failure = error;
+    console.error("Entity graph rebuild failed:", error);
+  }
+  const status = failure ? "error" : result.ok ? "success" : "partial";
+  const errorMessage = failure
+    ? String(failure?.message || failure).slice(0, 500)
+    : result.ok
+      ? null
+      : `${result.unlinked} of ${result.expected_linked} permits unlinked from addresses; ${result.project_unlinked} unlinked from projects`;
+  if (status !== "success") console.error(`Entity graph rebuild ${status}: ${errorMessage}`);
+  const added = result ? result.changes.addresses.added : 0;
+  const updated = result ? result.changes.permits_relinked : 0;
+  try {
+    if (logId != null) {
+      await env.DB.prepare(
+        `UPDATE ingest_logs SET status = ?, records_added = ?, records_updated = ?, error_message = ?, end_time = ? WHERE id = ?`,
+      )
+        .bind(status, added, updated, errorMessage, stamp(new Date()), logId)
+        .run();
+    } else {
+      await logIngest(env, {
+        run_type: "entity_graph",
+        source,
+        status,
+        records_added: added,
+        records_updated: updated,
+        error_message: errorMessage,
+        start_time: startTime,
+        end_time: new Date(),
+      });
+    }
+  } catch (logError) {
+    // the row stays `running`, which the empty-address guard treats as untrusted
+    console.error("Could not record entity graph rebuild outcome in ingest_logs:", logError);
+  }
+  if (failure) throw failure;
+  return result;
 }
 
 // Validation report: entity counts, orphans, and top lists. Returns plain JSON.
@@ -4103,6 +4412,17 @@ async function entityGraphReport(env) {
     }
   };
 
+  // null (not 0) when the query fails, so a broken check never reads as healthy.
+  const count = async (sql) => {
+    try {
+      const row = await env.DB.prepare(sql).first();
+      const n = Number(row?.n);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  };
+
   const [
     addresses,
     peopleOrgs,
@@ -4114,6 +4434,12 @@ async function entityGraphReport(env) {
     topAddresses,
     topContractors,
     pagesByType,
+    lastRebuild,
+    permitsWithoutAddress,
+    permitsDanglingAddress,
+    permitsDanglingProject,
+    addressesWithoutPermits,
+    projectsWithoutPermits,
   ] = await Promise.all([
     one(`SELECT COUNT(*) AS n FROM addresses`),
     one(`SELECT COUNT(*) AS n FROM people_orgs`),
@@ -4137,7 +4463,35 @@ async function entityGraphReport(env) {
                 (SELECT COUNT(*) FROM people_orgs) AS contractor_pages,
                 (SELECT COUNT(*) FROM neighborhoods) AS neighborhood_pages,
                 (SELECT COUNT(*) FROM permits) AS permit_pages`),
+    one(`SELECT status, error_message, end_time FROM ingest_logs
+         WHERE run_type = 'entity_graph' ORDER BY start_time DESC, id DESC LIMIT 1`),
+    count(`SELECT COUNT(*) AS n FROM permits WHERE address_id IS NULL`),
+    count(`SELECT COUNT(*) AS n FROM permits p LEFT JOIN addresses a ON a.id = p.address_id
+           WHERE p.address_id IS NOT NULL AND a.id IS NULL`),
+    count(`SELECT COUNT(*) AS n FROM permits p LEFT JOIN projects pr ON pr.id = p.project_id
+           WHERE p.project_id IS NOT NULL AND pr.id IS NULL`),
+    count(`SELECT COUNT(*) AS n FROM addresses a
+           WHERE NOT EXISTS (SELECT 1 FROM permits p WHERE p.address_id = a.id)`),
+    count(`SELECT COUNT(*) AS n FROM projects pr
+           WHERE NOT EXISTS (SELECT 1 FROM permits p WHERE p.project_id = pr.id)`),
   ]);
+
+  // Every figure here should be 0 after a healthy rebuild. Any permit without
+  // an address link means /address/:slug cannot be trusted to answer 410.
+  const integrityChecks = {
+    permits_without_address: permitsWithoutAddress,
+    permits_with_dangling_address: permitsDanglingAddress,
+    permits_with_dangling_project: permitsDanglingProject,
+    addresses_without_permits: addressesWithoutPermits,
+    projects_without_permits: projectsWithoutPermits,
+  };
+  const integrity = {
+    ok: Object.values(integrityChecks).every((value) => value === 0),
+    ...integrityChecks,
+    last_rebuild: lastRebuild?.status
+      ? { status: lastRebuild.status, error_message: lastRebuild.error_message || null, at: lastRebuild.end_time || null }
+      : null,
+  };
 
   const sitemapUrlCount =
     2 +
@@ -4158,6 +4512,7 @@ async function entityGraphReport(env) {
       orphan_permits: Number(orphans.n) || 0,
       neighborhoods: Number(neighborhoods.n) || 0,
     },
+    integrity,
     pages_by_type: pagesByType,
     sitemap_url_count: sitemapUrlCount,
     top_addresses_by_permit_count: topAddresses,
@@ -6914,9 +7269,30 @@ async function safeFirst(env, sql, binds = []) {
   }
 }
 
+// 503 + Retry-After + no-store: "ask again later". Used when the database
+// cannot tell us whether an entity page exists, so a crawler is never handed a
+// 404/410 (a request to drop the URL) for a page that is merely unreadable.
+function renderTemporarilyUnavailable() {
+  const response = render404({
+    status: 503,
+    code: "503",
+    heading: "Temporarily unavailable",
+    message: "This page is being refreshed. Please try again in a few minutes.",
+  });
+  response.headers.set("Retry-After", "3600");
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
 async function renderAddressPage(slug, env, request) {
   const canonical = `${BASE_URL}/address/${encodeURIComponent(slug)}`;
-  const address = await safeFirst(env, "SELECT * FROM addresses WHERE slug = ?", [slug]);
+  let address;
+  try {
+    address = (await env.DB.prepare("SELECT * FROM addresses WHERE slug = ?").bind(slug).first()) || null;
+  } catch (error) {
+    console.error("Address lookup failed:", error);
+    return renderTemporarilyUnavailable();
+  }
   if (!address) {
     return render404({
       heading: "Address not found",
@@ -6924,14 +7300,23 @@ async function renderAddressPage(slug, env, request) {
     });
   }
 
+  // The permit list decides between "render", "gone" and "try later", so a
+  // failed read must not look like an empty one.
+  let permitsFailed = false;
   const [permits, projects, participants, neighborhood, related] = await Promise.all([
-    safeAll(
-      env,
+    env.DB.prepare(
       `SELECT p.*, c.name AS contractor_name, c.slug AS contractor_slug
        FROM permits p LEFT JOIN contractors c ON c.id = p.contractor_id
        WHERE p.address_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC`,
-      [address.id],
-    ),
+    )
+      .bind(address.id)
+      .all()
+      .then((result) => result.results || [])
+      .catch((error) => {
+        console.error("Address permit lookup failed:", error);
+        permitsFailed = true;
+        return [];
+      }),
     safeAll(
       env,
       `SELECT pr.* FROM projects pr
@@ -6966,12 +7351,30 @@ async function renderAddressPage(slug, env, request) {
     ),
   ]);
 
+  if (permitsFailed) return renderTemporarilyUnavailable();
+
   const permitCount = permits.length;
-  // An address with no permits on record has nothing to publish: the records
-  // we mirrored from the SDCI feed are gone. Answering 410 makes Google drop
-  // the URL instead of spending crawl budget on a 200 that only says
-  // `noindex`. These URLs are neither sitemapped nor linked internally.
+  // An address with no permits on record has nothing to publish. Answering 410
+  // makes Google drop the URL instead of spending crawl budget on a 200 that
+  // only says `noindex`. These URLs are neither sitemapped nor linked
+  // internally. That is only true while the permit -> address links are
+  // intact: if any permit is still waiting to be linked, or the latest
+  // entity-graph rebuild is running or did not finish cleanly (it may have stopped
+  // part-way through relinking), "no permits here" cannot be trusted, so answer
+  // 503 and let the crawler come back instead. No rebuild row yet counts as clean.
   if (permitCount === 0) {
+    let check = null;
+    try {
+      check = await env.DB.prepare(
+        `SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL) AS pending,
+                (SELECT status FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1) AS last_rebuild`,
+      ).first();
+    } catch (error) {
+      console.error("Address integrity check failed:", error);
+    }
+    if (!check || Number(check.pending) !== 0 || ["running", "error", "partial"].includes(check.last_rebuild)) {
+      return renderTemporarilyUnavailable();
+    }
     return renderGone({
       heading: "This address has no permits on record",
       message:
@@ -7688,11 +8091,14 @@ async function runScheduledIngest(env) {
     await upsertScheduledContractors(env, contractors);
     const { added, updated } = await upsertScheduledPermits(env, permits);
 
-    // Keep the derived entity graph (addresses / projects / orgs) fresh.
+    // Keep the derived entity graph (addresses / projects / orgs) fresh. The
+    // outcome is recorded in its own ingest_logs row (partial / error included);
+    // a failed rebuild does not fail the permit ingest or skip the alerts.
+    let graph = null;
     try {
-      await rebuildEntityGraph(env);
-    } catch (graphError) {
-      console.error("Entity graph rebuild failed:", graphError);
+      graph = await runLoggedEntityGraphRebuild(env, "scheduled");
+    } catch {
+      // already logged by runLoggedEntityGraphRebuild
     }
     const alertDelivery = await sendPendingPermitAlerts(env);
 
@@ -7709,7 +8115,13 @@ async function runScheduledIngest(env) {
     console.log(
       `Scheduled ingest complete: ${added} added, ${updated} updated, ${alertDelivery.sent} alerts sent`,
     );
-    return { added, updated, contractors: contractors.length, alerts_sent: alertDelivery.sent };
+    return {
+      added,
+      updated,
+      contractors: contractors.length,
+      alerts_sent: alertDelivery.sent,
+      entity_graph: graph ? { ok: graph.ok, unlinked: graph.unlinked } : { ok: false, error: true },
+    };
   } catch (error) {
     console.error("Scheduled ingest failed:", error);
     await logIngest(env, {

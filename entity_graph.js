@@ -309,13 +309,26 @@ function pickDominant(values) {
 // `options.addressSlugByNorm` / `options.orgSlugByNorm` let callers preserve
 // slugs that were already minted in a previous build (keyed by the stable
 // normalized address / name) so existing URLs never change across rebuilds.
+// Projects have no stable natural key, so `options.projectSlugByPermit`
+// (permit.id -> stored project slug) lets a project inherit the slug of the
+// stored project that held most of its permits; `options.reservedProjectSlugs`
+// lists every stored slug so a newly minted one cannot collide with it.
+// `options.neighborhoodSlugByName` preserves neighborhood slugs by name.
 export function buildEntityGraph(permits, options = {}) {
   const addressSlugByNorm = options.addressSlugByNorm || new Map();
   const orgSlugByNorm = options.orgSlugByNorm || new Map();
 
+  const nbSlugByName = options.neighborhoodSlugByName || new Map();
+  // permit.id -> slug of the project that permit was stored in before this run.
+  // Lets a project keep its URL when its name or cluster membership shifts.
+  const projectSlugByPermit = options.projectSlugByPermit || new Map();
+
   const addressTaken = new Set(addressSlugByNorm.values());
   const orgTaken = new Set(orgSlugByNorm.values());
-  const projectTaken = new Set();
+  // Every slug already stored stays reserved so a newly minted slug can never
+  // collide with a row that still exists (or is about to be deleted).
+  const projectTaken = new Set(options.reservedProjectSlugs || []);
+  const nbTaken = new Set(nbSlugByName.values());
 
   // --- addresses ---
   const addressByKey = new Map(); // normalized_address -> address object
@@ -417,7 +430,7 @@ export function buildEntityGraph(permits, options = {}) {
 
       const project = {
         tmpId: projectId,
-        slug: dedupeSlug(makeSlug(name), projectTaken),
+        slug: null, // assigned below, once every cluster is known
         addressTmpId: addr.tmpId,
         name,
         description_summary: longestDesc.slice(0, 300),
@@ -443,17 +456,44 @@ export function buildEntityGraph(permits, options = {}) {
     }
   }
 
+  // --- project slugs ---
+  // A project keeps the slug of the stored project holding most of its
+  // permits; each stored slug is claimed by at most one project (largest
+  // overlap first, ties broken by cluster order). Everything left is minted
+  // from its name, exactly as before.
+  const claims = [];
+  for (const project of projects) {
+    const votes = new Map();
+    for (const id of project.permitIds) {
+      const prev = projectSlugByPermit.get(id);
+      if (prev) votes.set(prev, (votes.get(prev) || 0) + 1);
+    }
+    for (const [slug, votesForSlug] of votes) claims.push({ project, slug, votes: votesForSlug });
+  }
+  claims.sort(
+    (a, b) => b.votes - a.votes || a.project.tmpId - b.project.tmpId || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0),
+  );
+  const claimedSlugs = new Set();
+  for (const { project, slug } of claims) {
+    if (project.slug || claimedSlugs.has(slug)) continue;
+    project.slug = slug;
+    claimedSlugs.add(slug);
+    projectTaken.add(slug);
+  }
+  for (const project of projects) {
+    if (!project.slug) project.slug = dedupeSlug(makeSlug(project.name), projectTaken);
+  }
+
   // --- neighborhoods + address_neighborhoods ---
   const nbByName = new Map();
   let nbId = 0;
-  const nbTaken = new Set();
   const ensureNb = (name) => {
     const clean = collapse(name);
     if (!clean) return null;
     let nb = nbByName.get(clean);
     if (!nb) {
       nbId += 1;
-      nb = { tmpId: nbId, slug: dedupeSlug(makeSlug(clean), nbTaken), name: clean };
+      nb = { tmpId: nbId, slug: nbSlugByName.get(clean) || dedupeSlug(makeSlug(clean), nbTaken), name: clean };
       nbByName.set(clean, nb);
     }
     return nb;

@@ -299,7 +299,7 @@ function createEnv() {
               return contractors.find((contractor) => contractor.slug === params[0]) || null;
             }
 
-            if (sql.includes("SELECT * FROM ingest_logs ORDER BY start_time DESC LIMIT 1")) {
+            if (sql.includes("SELECT * FROM ingest_logs WHERE run_type != 'entity_graph' ORDER BY start_time DESC LIMIT 1")) {
               return ingestLogs[0] || null;
             }
 

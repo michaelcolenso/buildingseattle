@@ -1,14 +1,16 @@
-# Index-selection investigation — findings and pre-implementation plan (2026-10-22, rev 4)
+# Index-selection investigation — findings and fix (2026-10-22, rev 5)
 
-**Status: investigation complete to the limit of reachable inputs. No application code changed, nothing
-deployed.** Rev 2 used Cloudflare D1, Workers Logs and zone analytics and disproved two of rev 1's claims (section 0).
+**Status: investigation complete to the limit of reachable inputs. Rev 5 implements the section 6 fix in code
+(branch `claude/entity-rebuild-incremental`); it is tested locally, not merged, not deployed, not verified in
+production.** Rev 2 used Cloudflare D1, Workers Logs and zone analytics and disproved two of rev 1's claims (section 0).
 Rev 3 added the Search Console Coverage and Performance exports of 2026-10-21 (section 3b).
 Rev 4 adds the per-URL drilldown exports of the same date (section 3c), which let me test the noindex lead
 and build the crawled-not-indexed and discovered-not-indexed cohorts.
+Rev 5 records the 2026-10-22 heal check and the implementation of section 6 (section 6a).
 
 Labels: **[M]** measured · **[I]** inference · **[H]** untested hypothesis · **[X]** falsified (a mechanism contradicted by direct evidence) · **[U]** unresolved: no support in the current evidence, not ruled out · **[B]** blocked ·
-**[P]** proposed, not implemented. Nothing below is labelled implemented, passed-in-CI, deployed, or
-externally verified, because none of it is.
+**[P]** proposed, not implemented · **[C]** implemented in code and covered by tests run locally (`npm test`); not deployed.
+Nothing below is labelled passed-in-CI, deployed, or externally verified, because none of it is.
 
 ## 0. Corrections to rev 1 (read first)
 
@@ -24,6 +26,16 @@ externally verified, because none of it is.
    (`abr_level: 10`); a narrow window around the cron finds the error.
 5. **Ingest run duration is not a failure signal** (I briefly suspected the 184 s run on 09-21). Durations range
    33-711 s all summer and the healed 10-15 run took 133 s.
+
+6. **The 2026-10-22 13:00 UTC run healed the 10-21 failure on its own. [M]** After the run: D1 shows 15,273
+   permits, 0 with `address_id IS NULL` (was 6,731), 0 addresses without permits (was 4,976), 12,055 addresses,
+   12,582 projects; latest `ingest_logs` row id 1213 `success` at 13:06:23. Workers Logs for 12:58-13:25 UTC has
+   `Scheduled ingest complete: 42 added, 4958 updated, 0 alerts sent` and no `Entity graph rebuild` error event.
+   Zone analytics, all 410s by minute (not path-filtered, all clients): 16 between 12:51 and 12:58 (the unhealed
+   10-21 state), 31 between 13:00 and 13:05 (the rebuild window, peaking at 11 in 13:03), none from 13:06 to 14:00.
+   The run ended 13:06:23. So the window was observed again and 410s stopped when the run finished. This fits the
+   verdict below: the defect is intermittent (one failed run in the 7 observable days) while the destructive window
+   recurs every night.
 
 ## 1. Verdict
 
@@ -314,7 +326,7 @@ at the same time removed 2,258 URLs from the known set. No deployment or logged 
 - **Platform-limit explanation (subrequests, CPU):** disproved by E5.
 - **Redirecting 410 addresses:** they are valid pages; the right fix is to stop serving 410 for them.
 
-## 6. Proposed fix [P — not implemented]
+## 6. The fix (proposal; implementation status in 6a)
 
 **Principle: never mutate live entity state until the new state is ready; make failure visible; keep every
 URL, canonical, robots and sitemap rule unchanged.**
@@ -335,9 +347,10 @@ URL, canonical, robots and sitemap rule unchanged.**
    permits *and* an integrity check passes; on error or `unlinked > 0` it returns 503 + `Retry-After` +
    `no-store`. Fix the false 410 copy.
 
-Files: `worker.js` (`rebuildEntityGraph`, `runScheduledIngest`, `renderAddressPage`, `entityGraphReport`),
+Files (as proposed): `worker.js` (`rebuildEntityGraph`, `runScheduledIngest`, `renderAddressPage`, `entityGraphReport`),
 new `migration_entity_unique_keys.sql`, `scripts/check_seo_health.mjs`, tests. Untouched: `entity_graph.js`
 slug/clustering logic, `MULTI_PERMIT_PROJECT_SQL`, sitemap generators, canonical/robots/JSON-LD output.
+What was actually built differs in four places; see 6a.
 
 **URL compatibility / migration:** no URL changes. Existing address, org and (now) project slugs are
 preserved; the only status changes are valid addresses that today flap to 410 returning 200 continuously.
@@ -358,6 +371,80 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
    fallback = exit from the bucket in a fresh export, valid only while the bucket lists under 1,000 rows (noindex does
    not yet, 1,252), so that fallback is unreliable for noindex. At about 830 per arm and a 10% base rate the
    minimum detectable difference is about 4 points.
+
+## 6a. Implementation status (rev 5) [C]
+
+**Changed files:** `worker.js`, `entity_graph.js`, `scripts/entity_report.mjs`, `tests/entity_rebuild.test.js` (new),
+`tests/entity_graph.test.js`, `tests/empty_address.test.js`. Untouched: sitemap generators, canonical/robots/JSON-LD,
+`MULTI_PERMIT_PROJECT_SQL`, all other page templates, cron schedule, wrangler config.
+
+1. **Incremental rebuild [C].** `rebuildEntityGraph` computes the graph exactly as before, reads the stored rows
+   (errors now throw; the old `safeAll` swallowed them), and applies a diff in this order: insert/update entities ->
+   relink only permits whose stored link differs -> add/remove join rows -> delete entities nothing references
+   (guarded by `NOT EXISTS`) -> verify against the database. It never writes `address_id = NULL` and never deletes
+   a row before its replacement exists. Surviving rows keep their ids. It refuses to run (throws) if the permits read
+   is empty while entities exist. A membership change (insert the new join row, delete the old one) is committed in
+   one D1 batch per owning permit/project/address, so a failure leaves each owner with its old rows or its new rows,
+   never both; a permit's `project_permits` change is committed in the same batch as its relink, since
+   `permits.project_id` and `project_permits` are two views of one fact. An existing project that changes address moves in the same batch as the relinks of its permits, so a
+   failure cannot leave a project at one address and its permits at another. Relinks are still applied in
+   50-statement batches (see the residual-risk note below).
+2. **Project slugs [C].** `buildEntityGraph` takes `projectSlugByPermit` + `reservedProjectSlugs`: a project inherits
+   the stored slug of the project that held most of its permits (largest overlap first, each slug claimed once);
+   the rest mint as before and cannot collide with a stored slug. Falls back to `project_permits` for permits whose
+   own link was lost. Neighborhood slugs are preserved by name the same way. With no options the output is unchanged.
+3. **Failure visible [C].** The result now carries `ok`, `expected_linked`, `linked`, `unlinked`, `project_unlinked`
+   and per-table `changes`, measured from the database after the run. Cron and `POST /admin/build-graph` write an
+   `ingest_logs` row with `run_type = 'entity_graph'`, written as `running` before anything is mutated (the run does
+   not start if that write fails) and updated in place to `success` / `partial` / `error`; a row left at `running`
+   (process died, or the final write failed) is itself a failure signal. The admin route answers 500 unless `ok`. `ok` means every permit in the snapshot read at the start is linked; the result also
+   carries `snapshot_stale` (permit count moved during the run, e.g. an ingest route inserted a permit), and
+   such permits wait for the next run, as every permit written by `/ingest/*` already did (those routes never
+   link). Edits to an existing permit's address during a run are not detected. `/admin/entity-report` gains an `integrity` block (null, not 0, when a check query fails)
+   and `scripts/entity_report.mjs` prints `permits without address link`.
+4. **No 410 on an uncertain graph [C].** `/address/:slug` answers 503 + `Retry-After: 3600` + `Cache-Control: no-store`
+   when the address lookup or permit read throws, or when an address has no permits while any permit is still
+   unlinked or the latest `entity_graph` row is `running`, `error` or `partial` (a run in flight, or one that stopped
+   part-way through relinking; no rebuild row yet counts as clean). Because the marker covers the whole run, this also
+   closes the seconds-long window in which two permits swapping addresses between 50-statement batches could
+   briefly produce a false 410. 410 remains for a verified-empty address; 404 remains for an unknown slug. 503s are not edge-cached
+   (only 200s are).
+
+**Deviations from the section 6 proposal, and why**
+- **No `migration_entity_unique_keys.sql`.** The diff is computed in JS from the stored rows, so no new index is
+  needed and nothing has to be applied to D1 before deploy. Trade-off: two concurrent rebuilds (cron + manual POST)
+  are not prevented by a constraint; the existing `slug UNIQUE` makes the loser fail loudly rather than corrupt.
+- **Separate log row, not `partial` on the ingest row.** The homepage "last updated" and the ingest success rate
+  read `status = 'success'`; marking the ingest `partial` because the graph failed would make fresh permit data
+  look stale. The graph outcome is its own row instead. Because every reader of `ingest_logs` would otherwise
+  count those rows, the homepage and permits-page freshness queries and the admin stats (last run, 24h growth,
+  success rate) now exclude `run_type = 'entity_graph'`; the admin log list still shows them. Found while
+  auditing the change (a manual `/admin/build-graph` would have refreshed "last updated", and a first rebuild
+  would have added its 12k new addresses to "24h growth"); covered by a test.
+- **`scripts/check_seo_health.mjs` unchanged.** It already requires HTTP 200 on sampled sitemap pages, which a false
+  410/503 on a sampled address would fail; the unlinked count is exposed by `/admin/entity-report` and
+  `entity_report.mjs` instead.
+- **`HTML_CACHE_VERSION` not bumped.** No 200-page template changed, and error responses are never cached.
+
+**What the tests show (local, `npm test`: 177 pass, 0 fail) [C]**
+- `tests/entity_rebuild.test.js` runs the real rebuild on SQLite with the production schema: first run links 100%;
+  a second run issues zero writes and keeps every id and slug; after every committed batch no permit that was linked
+  before is unlinked or dangling; a D1 error injected at the first relink leaves every prior link and address id/slug
+  intact, logs `error`, and the next run heals; relink statements silently dropped -> `partial`, HTTP 500; empty
+  permits read -> refuses, graph untouched; project slug survives a rename and an earlier destructive run.
+- Against the pre-change `worker.js` all 9 fail (some only because the old result lacks the new fields, so this
+  is a weak check); with only project-slug preservation disabled, the three slug-dependent tests fail (measured).
+- `tests/empty_address.test.js`: 410 only with a clean integrity check; 503 on pending unlinked permits, on a failed
+  address lookup, permit read or integrity read; unknown slug still 404.
+- At the real 15,231-permit scale (scratchpad copy of the live permits, SQLite shim, **not D1**): first run
+  links 15,231/15,231 with 1,694 D1 round trips and 83,763 write statements (about what the old nightly run did every night);
+  an unchanged rebuild takes **11 round trips and 0 writes**; healing a third of permits unlinked rewrites only those
+  5,070 links; a fully wiped graph rebuilds to 15,231/15,231 with identical addresses.
+
+**Not done:** no CI run, no deploy, no production run, no measurement against live D1. D1 timing, batch limits and
+Worker CPU for the first post-deploy run are untested (that run does the same work as the old nightly rebuild).
+Project and neighborhood pages still use `safeFirst`, so a D1 outage there still yields 404 rather than 503; out of
+scope here because the false-410 defect was on address pages.
 
 ## 7. Evaluation — what can and cannot be shown
 
@@ -387,7 +474,7 @@ the recoverable cohort (section 6): nudge versus natural recrawl, which does all
 
 ## 8. Test, rollback
 
-**Tests [P]** (`node --test tests/*.test.js`, `pytest tests/` in CI): rebuild at 15k-permit scale links
+**Tests [P; the implemented subset is in 6a]** (`node --test tests/*.test.js`, `pytest tests/` in CI): rebuild at 15k-permit scale links
 100% (reuse `scripts/seo_investigation/rebuild_local.mjs`); a second rebuild is a no-op with identical ids and
 slugs; failure injected at relink batch N leaves every previous link intact; project slugs stable when a
 cluster gains a permit; `/address/:slug` returns 410 only with a good integrity check, else 503 +
@@ -395,22 +482,21 @@ cluster gains a permit; `/address/:slug` returns 410 only with a good integrity 
 JSON-LD/sitemap output is byte-identical for a fixture of existing URLs; every one of the 5,268 GSC URLs
 resolves to the same status class as in a healthy run.
 
-**Rollback [P]:** the unique-key migration is additive (`DROP INDEX`); behavioural rollback is a revert of
-`worker.js`; stale links are harmless to the old code, which rebuilds them. Bump `HTML_CACHE_VERSION` on
-deploy and rollback so cached 410s/200s do not linger.
+**Rollback [P]:** no migration was added, so rollback is a revert of `worker.js` + `entity_graph.js`; the old
+code rebuilds the graph from permits on its next run, and the extra `ingest_logs` rows (`run_type = 'entity_graph'`)
+are harmless. Error responses are not cached and no 200 template changed, so no `HTML_CACHE_VERSION` bump is needed.
 
 ## 9. Decisions and inputs needed
 
-1. **Approve implementing section 6** (items 1-4)? I recommend yes: it removes a measured defect. The
-   deploy path looks like GitHub auto-deploy from `main` (script modified 03:48 UTC, after #81 merged at
-   02:34 UTC); please confirm I may push and merge via PR.
+1. **Merge and deploy the section 6 implementation (6a)?** Code is on a PR, not merged. The deploy path looks
+   like GitHub auto-deploy from `main` (script modified 03:48 UTC, after #81 merged at 02:34 UTC), so merging
+   deploys; that needs your explicit OK. After deploy, check that the first run logs `entity_graph / success`.
 2. **Still needed from Search Console:** the **Indexed** URL list (1,000-row cap), the **Sitemaps** report (submitted
    vs indexed per child sitemap), and ideally URL Inspection API access, which would make the day-28 test in
    section 6 reliable. The drilldowns already received are in section 3c.
 3. **Approve the recovery test** in section 6 (after the fix has 7 healthy nights)? It means editing sitemap
    `lastmod` for half of 1,644 URLs only.
-4. Cloudflare is connected; nothing further needed there. A read-only verification is scheduled for
-   13:15 UTC today to confirm the 13:00 run heals the orphans.
+4. Cloudflare is connected; nothing further needed there. The 10-22 heal check is recorded in section 0, item 6.
 
 ## 10. Reproduction
 
