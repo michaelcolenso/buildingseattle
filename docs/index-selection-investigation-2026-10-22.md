@@ -1,16 +1,18 @@
-# Index-selection investigation — findings and fix (2026-10-22, rev 5)
+# Index-selection investigation — findings and fix (2026-10-24, rev 6)
 
-**Status: investigation complete to the limit of reachable inputs. Rev 5 implements the section 6 fix in code
-(branch `claude/entity-rebuild-incremental`); it is tested locally, not merged, not deployed, not verified in
-production.** Rev 2 used Cloudflare D1, Workers Logs and zone analytics and disproved two of rev 1's claims (section 0).
+**Status: investigation complete to the limit of reachable inputs. The section 6 fix is merged (#84, `df5ec23`,
+2026-10-23 19:22 UTC), deployed, and ran once in production on 2026-10-24 13:00 UTC (section 6b); one clean
+night is evidence, not proof.** Rev 2 used Cloudflare D1, Workers Logs and zone analytics and disproved two of rev 1's claims (section 0).
 Rev 3 added the Search Console Coverage and Performance exports of 2026-10-21 (section 3b).
 Rev 4 adds the per-URL drilldown exports of the same date (section 3c), which let me test the noindex lead
 and build the crawled-not-indexed and discovered-not-indexed cohorts.
 Rev 5 records the 2026-10-22 heal check and the implementation of section 6 (section 6a).
+Rev 6 records the first production run of the new rebuild (section 6b).
 
 Labels: **[M]** measured · **[I]** inference · **[H]** untested hypothesis · **[X]** falsified (a mechanism contradicted by direct evidence) · **[U]** unresolved: no support in the current evidence, not ruled out · **[B]** blocked ·
-**[P]** proposed, not implemented · **[C]** implemented in code and covered by tests run locally (`npm test`); not deployed.
-Nothing below is labelled passed-in-CI, deployed, or externally verified, because none of it is.
+**[P]** proposed, not implemented · **[C]** implemented in code and covered by tests run locally (`npm test`), CI green on the PR.
+**[D]** deployed and observed in production (section 6b). Nothing here is labelled externally verified by Google:
+no Search Console or URL Inspection evidence exists yet that indexing changed.
 
 ## 0. Corrections to rev 1 (read first)
 
@@ -441,10 +443,30 @@ rebuild is fixed would let the next nightly window re-poison the same pages.
   an unchanged rebuild takes **11 round trips and 0 writes**; healing a third of permits unlinked rewrites only those
   5,070 links; a fully wiped graph rebuilds to 15,231/15,231 with identical addresses.
 
-**Not done:** no CI run, no deploy, no production run, no measurement against live D1. D1 timing, batch limits and
-Worker CPU for the first post-deploy run are untested (that run does the same work as the old nightly rebuild).
-Project and neighborhood pages still use `safeFirst`, so a D1 outage there still yields 404 rather than 503; out of
+**Not done at the time of 6a (since superseded by 6b):** no deploy, no production run, no measurement against live
+D1. Project and neighborhood pages still use `safeFirst`, so a D1 outage there still yields 404 rather than 503; out of
 scope here because the false-410 defect was on address pages.
+
+## 6b. First production run [D][M]
+
+Merged 2026-10-23 19:22 UTC (#84); the deployed Worker bundle contains the new code (markers
+`runLoggedEntityGraphRebuild`, `planJoinRows`, `runEntityGroups`, `snapshot_stale`, the `run_type != 'entity_graph'`
+filters, the 503 page; the old `UPDATE permits SET address_id = NULL` is absent; searched, not read in full). First
+run of the new rebuild: the 2026-10-24 13:00 UTC cron.
+
+| Check | Result |
+|---|---|
+| `ingest_logs` | `entity_graph / scheduled / success` 13:03:29 -> 13:03:46 (**17 s**), 23 addresses added, 49 permits relinked; the scheduled ingest row `success` 13:02:36 -> 13:03:47 |
+| Old rebuild duration for comparison | the scheduled run took 6-8 minutes end to end on 10-20..10-22 (ingest plus the destructive rebuild) |
+| Integrity after the run (D1) | 15,321 permits; 0 with `address_id IS NULL`; 0 without a project; 0 orphan addresses; 0 orphan projects; 0 `permits.project_id` / `project_permits` mismatches; 12,088 addresses and 12,610 projects (12,067 / 12,593 the day before) |
+| Workers Logs 12:55-13:15 UTC | `Scheduled ingest complete: 32 added, 4968 updated`; no `Entity graph rebuild` error events |
+| Zone 410s by minute 12:55-14:05 UTC | **0** (10-22: 16 before the run and 31 during it; 10-15..10-20: 1-42 in the 13:00 hour) |
+| 12 sample URLs from the recrawl cohort, fetched live afterwards | 12 x HTTP 200 |
+
+**Caveats.** One run. 2026-10-24 is a Saturday, so lower crawler and human traffic could also contribute to the
+zero; the mechanism (no unlink, no delete before replacement, 503 instead of 410 while running) is what makes a
+repeat likely, not this single count. 17 s is the rebuild only, not the whole run. Nothing here shows an effect on
+Google's index; that is the recovery test (section 6), which needs 7 healthy nights first (this is night 1).
 
 ## 7. Evaluation — what can and cannot be shown
 
@@ -488,9 +510,8 @@ are harmless. Error responses are not cached and no 200 template changed, so no 
 
 ## 9. Decisions and inputs needed
 
-1. **Merge and deploy the section 6 implementation (6a)?** Code is on a PR, not merged. The deploy path looks
-   like GitHub auto-deploy from `main` (script modified 03:48 UTC, after #81 merged at 02:34 UTC), so merging
-   deploys; that needs your explicit OK. After deploy, check that the first run logs `entity_graph / success`.
+1. **Done:** section 6 implementation merged and deployed (6b). Healthy nights so far: 1 of the 7 required before
+   the recovery test.
 2. **Still needed from Search Console:** the **Indexed** URL list (1,000-row cap), the **Sitemaps** report (submitted
    vs indexed per child sitemap), and ideally URL Inspection API access, which would make the day-28 test in
    section 6 reliable. The drilldowns already received are in section 3c.
