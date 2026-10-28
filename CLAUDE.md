@@ -36,9 +36,21 @@ python sdci_scraper.py
 # Import scraped permits into running worker (requires INGEST_API_TOKEN)
 python direct_import.py
 
-# Run tests
+# Run Python tests (one file / one test)
 uv run --extra dev pytest tests/
+uv run --extra dev pytest tests/test_direct_import.py -k name
 ```
+
+### JS Tests
+
+```bash
+npm test                                   # node --test tests/*.test.js
+node --test tests/entity_graph.test.js     # single file
+node --test --test-name-pattern="name" tests/worker.test.js   # single test
+node --check worker.js                     # syntax check (CI runs this too)
+```
+
+CI (`.github/workflows/test.yml`) runs `node --check worker.js`, all Node tests, and pytest on every push. Secrets for local `wrangler dev` go in `.dev.vars` (gitignored).
 
 ### Gumroad Dataset Build
 
@@ -73,12 +85,14 @@ Seattle Open Data Portal (data.seattle.gov)
 
 ### worker.js Structure
 
-The entire backend lives in `worker.js` (~8,600 lines — not yet split into modules; `entity_graph.js` is the one exception, see Entity Graph below). It contains:
+The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split into sibling modules: `entity_graph.js` (see Entity Graph), `adu.js` (ADU/DADU classification), `entity_hubs.js` (hub-page SEO config), `basis_reset.js` + `basis_reset_routes.js` (Basis Reset Radar, see `docs/basis-reset-radar.md`), and `mcp.js` (MCP server at `/mcp`, tests in `tests/mcp.test.js`). `worker.js` contains:
 
 - Path-based route dispatch at the top of `fetch()`
 - **All HTML pages are inlined as template literals** — there is no separate templating engine or frontend build step
 - SQL queries are built inline with parameterized bindings via the D1 `prepare().bind()` API
 - CORS headers are added to every response
+- **Do not add non-function named exports to `worker.js`.** The Workers runtime rejects them and `wrangler dev` fails at startup. Constants/SQL fragments shared with tests go in a sibling module (this is why `adu.js` and `entity_hubs.js` exist).
+- A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`).
 
 Key routes:
 | Route | Purpose |
@@ -101,12 +115,15 @@ Key routes:
 | `POST /alerts/subscribe` | Per-permit status-change alert opt-in (double opt-in) |
 | `GET /alerts/confirm` | Confirm alert subscription |
 | `GET`/`POST /alerts/unsubscribe` | One-click unsubscribe (`List-Unsubscribe` compliant) |
+| `GET /api/{status-changes,basis-reset,plan-review,pipeline,housing,adu-dadu,map,contractor-scorecards,network}` | JSON behind the `/insights/*` pages |
+| `GET`/`POST /mcp` | MCP server (tools defined in `mcp.js`) |
+| `POST /ingest/basis-reset` | Basis Reset event ingest (requires `X-Ingest-Token`) |
 | `POST /admin/build-graph` | Rebuild the derived entity graph (admin auth) |
 | `GET /admin/entity-report` | Entity-graph validation report JSON (admin auth) |
 
 ### Database Schema (schema.sql)
 
-Core source tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time.
+Core source tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time. `schema.sql` is only the base; later columns/tables live in individual `migration_*.sql` files applied one at a time with `wrangler d1 execute buildingseattle --file migration_X.sql`. A new column usually needs both a migration and a `schema.sql` update.
 
 ### Entity Graph
 
@@ -144,6 +161,10 @@ keeps its own inline copy that tests assert never drifts. The scripts this
 pipeline superseded (`export_full.py`, `generate_csv.py`, and other one-off
 import/push helpers) live in `scripts/legacy/` for reference only.
 
+### SEO Tooling
+
+Search indexing is a major concern (programmatic entity pages + sitemaps). `scripts/check_seo_health.mjs` runs daily in `.github/workflows/seo-health.yml` against production (tests: `tests/seo_health.test.js`; it enforces e.g. required homepage links and filter-URL canonical policy). `scripts/seo_investigation/` is a separate, manually-run analysis toolkit with its own `requirements.txt` and generated `.seo_data/` (gitignored); see its README and the dated findings in `docs/`. `url_inspection.py` there is stdlib-only and tested by `tests/test_url_inspection.py`.
+
 ### Alerts
 
 `/alerts/*` is a free, per-permit status-change email subscription (double
@@ -153,6 +174,8 @@ ingest. This is the free top-of-funnel product; there is no paid alert tier yet.
 
 ## Key Constraints
 
+- `AGENTS.md` carries overlapping repo guidelines (style: 2-space indent, semicolons, double quotes in JS; snake_case Python). Keep the two files consistent. Design/brand direction for HTML pages is in `.impeccable.md`.
+- Admin endpoints use `X-Admin-Token` (`env.ADMIN_API_TOKEN`), separate from `X-Ingest-Token`.
 - **D1 database ID** is hardcoded in `wrangler.toml` — do not change without migrating data.
 - **Ingest endpoints require the `X-Ingest-Token` header** (checked against `env.INGEST_API_TOKEN`) — they are not open.
 - The Google Maps embed in permit detail pages requires a valid API key to render.
