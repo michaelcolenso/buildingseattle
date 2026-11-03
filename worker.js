@@ -2302,14 +2302,15 @@ async function renderPermitBrowser(request, env) {
         * { box-sizing: border-box; }
         body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg-alt); color: var(--text); }
         .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
-        .hero { padding: 3.5rem 0 2rem; }
+        .hero { padding: 1.5rem 0 0.5rem; }
         .hero h1 { margin: 0 0 0.75rem; font-size: clamp(2rem, 4vw, 3.25rem); line-height: 1.05; }
         .hero p { margin: 0; max-width: 720px; color: var(--text-muted); font-size: 1.05rem; }
         .permit-guide { max-width: 780px; margin: 2.5rem 0 2rem; color: var(--text-muted); line-height: 1.7; }
         .permit-guide h2 { margin: 0 0 0.75rem; color: var(--text); font-size: 1.35rem; }
         .permit-guide p { margin: 0 0 0.75rem; }
         .permit-guide a { color: var(--accent); font-weight: 650; }
-        .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
+        .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1rem 0 2rem; }
+        @media (min-width: 960px) { .filters { grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(160px, 1fr)) 10rem 6rem; } }
 	        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 0.4rem; }
 	        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
 	        button { background: var(--accent); color: white; font-weight: 700; cursor: pointer; border-color: var(--accent); }
