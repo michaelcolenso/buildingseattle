@@ -2892,3 +2892,27 @@ test("homepage ships a single task-first implementation inside SERP title/descri
   assert.match(html, /"@type":"FAQPage"/);
   assert.match(html, /"@type":"WebSite"/);
 });
+
+test("entity hub pages highlight their own nav item", async () => {
+  const env = {
+    DB: {
+      prepare() {
+        return {
+          bind() {
+            return this;
+          },
+          async all() {
+            return { results: [] };
+          },
+        };
+      },
+    },
+  };
+  const expected = { contractors: "Contractors", neighborhoods: "Neighborhoods", projects: null, addresses: null };
+  for (const [slug, label] of Object.entries(expected)) {
+    const response = await worker.fetch(new Request(`http://example.com/${slug}`), env, createCtx());
+    const html = await response.text();
+    const active = [...html.matchAll(/<a href="[^"]*" class="active">([^<]+)<\/a>/g)].map((m) => m[1]);
+    assert.deepEqual(active, label ? [label] : [], `/${slug} active nav`);
+  }
+});

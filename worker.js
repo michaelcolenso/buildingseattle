@@ -4920,7 +4920,7 @@ async function renderEntityHubPage(type, env, request) {
       jsonLd,
       noindex: items.length === 0 || state.hasFilters,
       body,
-      activeNav: "explore",
+      activeNav: type,
     }),
     { headers: { "Content-Type": "text/html; charset=utf-8" } },
   );
