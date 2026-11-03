@@ -2301,7 +2301,7 @@ async function renderPermitBrowser(request, env) {
         .hero { padding: 3.5rem 0 2rem; }
         .hero h1 { margin: 0 0 0.75rem; font-size: clamp(2rem, 4vw, 3.25rem); line-height: 1.05; }
         .hero p { margin: 0; max-width: 720px; color: var(--text-muted); font-size: 1.05rem; }
-        .permit-guide { max-width: 780px; margin: 0 0 2rem; color: var(--text-muted); line-height: 1.7; }
+        .permit-guide { max-width: 780px; margin: 2.5rem 0 2rem; color: var(--text-muted); line-height: 1.7; }
         .permit-guide h2 { margin: 0 0 0.75rem; color: var(--text); font-size: 1.35rem; }
         .permit-guide p { margin: 0 0 0.75rem; }
         .permit-guide a { color: var(--accent); font-weight: 650; }
@@ -2351,12 +2351,7 @@ async function renderPermitBrowser(request, env) {
     <main class="container" id="main-content">
         <section class="hero">
             <h1>Seattle Construction Permits</h1>
-            <p>Search live Seattle construction permits from public SDCI records. Filter the active permit stream by neighborhood and permit type — or look up any address, permit number, or contractor — then drill into the projects that matter to your team.</p>
-        </section>
-        <section class="permit-guide" aria-labelledby="permit-guide-heading">
-            <h2 id="permit-guide-heading">How to search Seattle permit records</h2>
-            <p>Start with a street address, permit number, or contractor, then combine the neighborhood, permit type, and status filters to narrow the public Seattle Department of Construction &amp; Inspections record. Each result surfaces the project description, declared valuation, issue date, current status, and linked property or contractor history. The data is refreshed daily.</p>
-            <p>Permit valuations are project estimates, and a status describes the city's review or issuance workflow rather than proving construction is complete. Read the <a href="/methodology">data methodology</a>, or compare activity across <a href="/neighborhoods">Seattle neighborhoods</a>, <a href="/contractors">contractors</a>, and <a href="/addresses">property records</a>.</p>
+            <p>Search live SDCI permit records by address, permit number or contractor, then filter by neighborhood, type and status.</p>
         </section>
         <form class="filters" action="/permits" method="GET">
             <div>
@@ -2413,6 +2408,11 @@ async function renderPermitBrowser(request, env) {
             ${cards || '<div class="empty">No permits matched these filters yet.</div>'}
         </section>
         ${totalPages > 1 ? renderPagination(url, page, totalPages, total, permits.length, offset) : ""}
+        <section class="permit-guide" aria-labelledby="permit-guide-heading">
+            <h2 id="permit-guide-heading">How to search Seattle permit records</h2>
+            <p>Start with a street address, permit number, or contractor, then combine the neighborhood, permit type, and status filters to narrow the public Seattle Department of Construction &amp; Inspections record. Each result surfaces the project description, declared valuation, issue date, current status, and linked property or contractor history. The data is refreshed daily.</p>
+            <p>Permit valuations are project estimates, and a status describes the city's review or issuance workflow rather than proving construction is complete. Read the <a href="/methodology">data methodology</a>, or compare activity across <a href="/neighborhoods">Seattle neighborhoods</a>, <a href="/contractors">contractors</a>, and <a href="/addresses">property records</a>.</p>
+        </section>
     </main>
     ${renderFooter()}
 </body>

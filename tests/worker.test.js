@@ -718,6 +718,10 @@ test("GET /permits aligns search and social metadata with its SDCI research guid
   assert.match(guide, /href="\/contractors"/);
   assert.match(guide, /href="\/neighborhoods"/);
   assert.match(guide, /href="\/addresses"/);
+  assert.ok(
+    html.indexOf('<form class="filters"') < html.indexOf('<section class="permit-guide"'),
+    "search form should come before the explainer",
+  );
 });
 
 test("GET /permits falls back to legacy search columns when graph columns are missing", async () => {
