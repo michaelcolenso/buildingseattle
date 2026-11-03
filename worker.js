@@ -1015,17 +1015,17 @@ function renderDesignTokens() {
   return `<style>
       :root {
         --primary: #0f172a;
-        --accent: #3b82f6;
-        --accent-hover: #2563eb;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
         --bg: #ffffff;
         --bg-alt: #f8fafc;
         --surface: #ffffff;
         --text: #1e293b;
         --text-muted: #64748b;
-        --text-subtle: #94a3b8;
+        --text-subtle: #64748b;
         --border: #e2e8f0;
-        --success: #10b981;
-        --warn: #f59e0b;
+        --success: #047857;
+        --warn: #b45309;
         --danger: #ef4444;
         --steel: #475569;
         --radius-sm: 0.5rem;
