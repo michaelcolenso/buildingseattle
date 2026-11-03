@@ -2301,7 +2301,7 @@ async function renderPermitBrowser(request, env) {
 	    <style>
         * { box-sizing: border-box; }
         body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg-alt); color: var(--text); }
-        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        .container { box-sizing: content-box; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
         .hero { padding: 1.5rem 0 0.5rem; }
         .hero h1 { margin: 0 0 0.75rem; font-size: clamp(2rem, 4vw, 3.25rem); line-height: 1.05; }
         .hero p { margin: 0; max-width: 720px; color: var(--text-muted); font-size: 1.05rem; }
@@ -5104,7 +5104,7 @@ function insightsStyles() {
       .ins-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
       .ins-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.25rem}
       .ins-feature{display:block;text-decoration:none;color:inherit}
-      .ins-feature .card{height:100%;margin:0;transition:box-shadow .2s ease,transform .2s ease}
+      .ins-feature .card{height:100%;margin:0;display:flex;flex-direction:column;}.ins-feature .ins-stat{margin-top:auto;padding-top:.25rem}.ins-feature .card{transition:box-shadow .2s ease,transform .2s ease}
       .ins-feature:hover .card{box-shadow:var(--shadow);transform:translateY(-2px)}
       .nb-contractor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1rem}
       .nb-contractor-card{border:1px solid var(--border);border-radius:16px;background:var(--bg);padding:1rem}
@@ -7098,7 +7098,9 @@ async function renderNetworkPage(env) {
 
 async function renderInsightsIndex(env) {
   const canonical = `${BASE_URL}/insights`;
-  const [pr, pipe, house, aduAgg, mapAgg, contractorAgg] = await Promise.all([
+  const segmentCount = (key) =>
+    safeFirst(env, `/* insights-index:${key} */ SELECT COUNT(*) AS total FROM permits WHERE ${MARKET_SEGMENTS[key].where}`);
+  const [pr, pipe, house, aduAgg, mapAgg, contractorAgg, multiAgg, commAgg, tiAgg] = await Promise.all([
     safeFirst(
       env,
       `SELECT COUNT(*) AS cnt, AVG(total_days_plan_review) AS avg_days
@@ -7132,7 +7134,14 @@ async function renderInsightsIndex(env) {
       `SELECT COUNT(DISTINCT contractor_id) AS active_contractors
        FROM permits WHERE contractor_id IS NOT NULL`,
     ),
+    segmentCount("multifamily"),
+    segmentCount("commercial"),
+    segmentCount("tenant-improvements"),
   ]);
+  const statLine = (n, unit) =>
+    n
+      ? `${n.toLocaleString()} <span style="font-size:0.9rem;color:var(--text-muted);font-weight:600;">${unit}</span>`
+      : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`;
 
   const prCount = Number(pr?.cnt) || 0;
   const prAvg = pr?.avg_days != null ? Math.round(Number(pr.avg_days)) : null;
@@ -7160,7 +7169,7 @@ async function renderInsightsIndex(env) {
         <div class="ent-kicker">${escapeHtml(kicker)}</div>
         <h2 style="margin:0.2rem 0 0.5rem;">${escapeHtml(h)}</h2>
         <p style="color:var(--text-muted);margin:0 0 1rem;font-size:0.9rem;">${escapeHtml(teaser)}</p>
-        <div style="font-size:1.5rem;font-weight:800;color:var(--accent);">${stat}</div>
+        <div class="ins-stat" style="font-size:1.5rem;font-weight:800;color:var(--accent);">${stat}</div>
       </div>
     </a>`;
 
@@ -7206,21 +7215,21 @@ async function renderInsightsIndex(env) {
         "Multifamily",
         "Multifamily construction pipeline",
         "Seattle apartment, condominium, townhouse, and multi-unit permit activity by stage and neighborhood.",
-        `<span style="font-size:1.1rem;">Explore multifamily activity &rarr;</span>`,
+        statLine(Number(multiAgg?.total) || 0, "multifamily permits"),
       )}
       ${feature(
         "/insights/commercial-projects",
         "Commercial",
         "High-value commercial projects",
         "Seattle commercial permits valued at $1 million or more, with neighborhoods, status, and recent activity.",
-        `<span style="font-size:1.1rem;">Explore commercial activity &rarr;</span>`,
+        statLine(Number(commAgg?.total) || 0, "permits of $1M+"),
       )}
       ${feature(
         "/insights/tenant-improvements",
         "Interiors",
         "Tenant-improvement activity",
         "Tenant-improvement and tenant-alteration permits by year, neighborhood, value, and recent activity.",
-        `<span style="font-size:1.1rem;">Explore TI activity &rarr;</span>`,
+        statLine(Number(tiAgg?.total) || 0, "tenant-improvement permits"),
       )}
       ${feature(
         "/insights/map",
@@ -7241,7 +7250,7 @@ async function renderInsightsIndex(env) {
         "Connections",
         "Who builds where",
         "A network linking Seattle's busiest contractors to the neighborhoods they build in.",
-        activeContractors ? `<span style="font-size:1.1rem;">Explore the network &rarr;</span>` : `<span style="font-size:0.95rem;color:var(--text-muted);">Awaiting data</span>`,
+        statLine(activeContractors, "contractors mapped"),
       )}
       ${feature(
         "/insights/basis-reset",
@@ -9292,7 +9301,7 @@ function renderApiDocs() {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; min-height: 100vh; }
-        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        .container { box-sizing: content-box; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
         main { flex: 1; padding-top: 6rem; padding-bottom: 4rem; }
         h1 { font-size: 2.25rem; font-weight: 800; color: var(--primary); margin-bottom: 0.5rem; }
         .lede { color: var(--text-muted); margin-bottom: 2rem; max-width: 640px; }
@@ -10560,7 +10569,7 @@ function renderAboutPage() {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.7; }
-        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        .container { box-sizing: content-box; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
         .hero { background: linear-gradient(135deg, var(--primary) 0%, #1e293b 100%); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
         .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1rem; }
         .hero p { font-size: 1.15rem; opacity: 0.85; max-width: 680px; }
@@ -10736,7 +10745,7 @@ async function renderDataPage(env) {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.7; }
-        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        .container { box-sizing: content-box; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
         .hero { background: linear-gradient(135deg, var(--primary) 0%, #1e293b 100%); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
         .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1rem; }
         .hero p { font-size: 1.15rem; opacity: 0.85; max-width: 680px; }
@@ -10862,7 +10871,7 @@ function render404(options) {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-alt); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; min-height: 100vh; }
-        .container { max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
+        .container { box-sizing: content-box; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
         main { flex: 1; }
         .error-section { padding-top: 8rem; padding-bottom: 6rem; text-align: center; }
         .error-section h1 { font-size: 6rem; font-weight: 800; color: var(--accent); margin-bottom: 1rem; line-height: 1; }
