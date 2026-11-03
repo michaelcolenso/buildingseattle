@@ -2310,7 +2310,7 @@ async function renderPermitBrowser(request, env) {
         .permit-guide p { margin: 0 0 0.75rem; }
         .permit-guide a { color: var(--accent); font-weight: 650; }
         .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1rem 0 2rem; }
-        @media (min-width: 960px) { .filters { grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(160px, 1fr)) 10rem 6rem; } }
+        @media (min-width: 1140px) { .filters { grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(160px, 1fr)) 10rem 6rem; } }
 	        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 0.4rem; }
 	        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
 	        button { background: var(--accent); color: white; font-weight: 700; cursor: pointer; border-color: var(--accent); }
