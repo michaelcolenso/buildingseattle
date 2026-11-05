@@ -305,7 +305,12 @@ export default {
 
       if (path === "/insights/basis-reset") {
         ctx.waitUntil(logPageView(request, env, "/insights/basis-reset"));
-        return secure(await renderBasisResetRadar(env));
+        try {
+          return secure(await renderBasisResetRadar(env));
+        } catch (error) {
+          console.error("basis-reset render failed:", error);
+          return secure(renderBasisResetUnavailable());
+        }
       }
 
       if (["/contractors", "/neighborhoods", "/projects", "/addresses"].includes(path)) {
@@ -1415,7 +1420,7 @@ export function renderHomepage(snapshot) {
   <style>
     .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:#0f172a;color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:800;text-decoration:none}.skip-link:focus{left:0}
     :root{color-scheme:light;--primary:#0f172a;--accent:#2563eb;--accent-hover:#1d4ed8;--success:#047857;--warning:#b45309;--bg:#fff;--bg-alt:#f8fafc;--panel:#fff;--text:#1e293b;--muted:#64748b;--border:#cbd5e1;--soft:#e2e8f0;--focus:#1d4ed8;--max:1200px}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0f172a}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:#0f172a;color:#fff;font-size:16px}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:#0f172a;background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(15,23,42,.14);z-index:40}.mobile-nav a{text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:#334155}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#1d4ed8;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#475569}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.search-form input{min-height:52px;width:100%;border:1px solid #64748b;border-radius:9px;padding:0 16px;background:#fff;color:#0f172a}.search-form button{min-height:52px;border:0;border-radius:9px;padding:0 24px;background:var(--accent);color:#fff;font-weight:800;cursor:pointer}.search-form button:hover{background:var(--accent-hover)}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .metric:first-child{border-top-width:3px;border-top-color:#0f172a}.hero-aside .metric strong{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.metric{border-top:3px solid #0f172a;padding:12px 4px 0;text-decoration:none;color:inherit}.metric:hover strong{color:var(--accent)}.metric strong{display:block;color:var(--primary);font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05;letter-spacing:-.025em}.metric span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35}.freshness{max-width:820px;margin:18px 0 0;color:#475569;font-size:13px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#475569}.text-link{font-weight:800;color:#1d4ed8;text-underline-offset:4px;white-space:nowrap}.changes{border-top:1px solid var(--border)}.change-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:center;padding:17px 2px;border-bottom:1px solid var(--border);text-decoration:none}.change-row:hover .change-title{text-decoration:underline;text-underline-offset:4px}.transition{font-size:12px;font-weight:850;letter-spacing:.04em;color:#0f172a}.change-title{font-weight:800;color:#0f172a}.change-meta{font-size:13px;color:#475569;text-align:right}.empty-state{border:1px dashed #94a3b8;border-radius:10px;padding:18px;color:#475569;background:var(--bg-alt)}.empty-state.compact{font-size:14px}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0f172a;font-size:16px}.market-card p{margin:5px 0 0;color:#475569;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#64748b;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0f172a;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#64748b;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0f172a;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0f172a;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#475569;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0f172a;padding:4px 0 4px 18px;color:#475569}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0f172a}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0f172a}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#475569}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#475569}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0f172a;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#cbd5e1}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0f172a;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0f172a}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#475569;text-underline-offset:3px}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0f172a}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:#0f172a;color:#fff;font-size:16px}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:#0f172a;background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(15,23,42,.14);z-index:40}.mobile-nav a{text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:#334155}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#1d4ed8;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#475569}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.search-form input{min-height:52px;width:100%;border:1px solid #64748b;border-radius:9px;padding:0 16px;background:#fff;color:#0f172a}.search-form button{min-height:52px;border:0;border-radius:9px;padding:0 24px;background:var(--accent);color:#fff;font-weight:800;cursor:pointer}.search-form button:hover{background:var(--accent-hover)}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .metric:first-child{border-top-width:3px;border-top-color:#0f172a}.hero-aside .metric strong{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.metric{border-top:3px solid #0f172a;padding:12px 4px 0;text-decoration:none;color:inherit}.metric:hover strong{color:var(--accent)}.metric strong{display:block;color:var(--primary);font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05;letter-spacing:-.025em}.metric span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35}.freshness{max-width:820px;margin:18px 0 0;color:#475569;font-size:13px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#475569}.text-link{font-weight:800;color:#1d4ed8;text-underline-offset:4px;white-space:nowrap}.changes{border-top:1px solid var(--border)}.change-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:center;padding:17px 2px;border-bottom:1px solid var(--border);text-decoration:none}.change-row:hover .change-title{text-decoration:underline;text-underline-offset:4px}.transition{font-size:12px;font-weight:850;letter-spacing:.04em;color:#0f172a}.change-title{font-weight:800;color:#0f172a}.change-meta{font-size:13px;color:#475569;text-align:right}.empty-state{border:1px dashed #94a3b8;border-radius:10px;padding:18px;color:#475569;background:var(--bg-alt)}.empty-state.compact{font-size:14px}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0f172a;font-size:16px}.market-card p{margin:5px 0 0;color:#475569;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#64748b;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0f172a;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#64748b;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0f172a;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0f172a;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#475569;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0f172a;padding:4px 0 4px 18px;color:#475569}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0f172a}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0f172a}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#475569}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#475569}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0f172a;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#cbd5e1}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0f172a;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0f172a}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#475569;text-underline-offset:3px}
     @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form button{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.change-row{grid-template-columns:1fr;gap:5px;padding:16px 2px}.change-meta{text-align:left}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
     @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.metric strong{font-size:1.16rem}.metric span{font-size:11px}.hero h1{font-size:2.05rem}}
     @media(prefers-color-scheme:dark){:root{color-scheme:dark;--primary:#f8fafc;--bg:#0f172a;--bg-alt:#111c30;--panel:#172033;--text:#e2e8f0;--muted:#94a3b8;--border:#475569;--soft:#334155;--focus:#93c5fd}.site-header{background:rgba(15,23,42,.96)}.brand,.nav a,.hero h1,.metric strong,.section h2,.change-title,.transition,.market-card h3,.rank-copy strong,.rank-value,.task strong,.trust-meta dd,summary,.footer-brand{color:#f8fafc}.brand-mark{background:#f8fafc;color:#0f172a}.hero-copy,.freshness,.section-deck,.change-meta,.market-card p,.rank-index,.rank-copy small,.rank-value small,.task p,.trust-note,.answer,.footer-nav a{color:#cbd5e1}.search-form input{background:#172033;color:#f8fafc;border-color:#64748b}.metric{border-top-color:#f8fafc}.trust-note{border-left-color:#f8fafc}.alert-panel{background:#020617}.alert-button{background:#f8fafc;color:#0f172a}.nav-toggle>summary{color:#f8fafc;background:#172033;border-color:#475569}.mobile-nav{background:#172033;border-color:#475569}.mobile-nav a{color:#f8fafc}.mobile-nav a:hover{background:#111c30}}
@@ -1502,7 +1507,7 @@ export function renderHomepage(snapshot) {
     <section class="section alt" aria-labelledby="trust-heading">
       <div class="container trust">
         <div class="trust-copy"><p class="section-kicker">Source &amp; methodology</p><h2 id="trust-heading">Built from Seattle public records</h2><p>Building Seattle organizes Seattle Department of Construction and Inspections records into searchable permits, addresses, projects, contractors, and neighborhoods.</p><p class="trust-note">Permit values are <strong>declared permit values</strong>, not verified total project costs. Some project and entity relationships are inferred from source records and should be read with the methodology in mind.</p><p><a class="text-link" href="/methodology">Read the methodology →</a> &nbsp; <a class="text-link" href="/data">Explore the dataset →</a></p></div>
-        <aside class="trust-meta" aria-label="Data freshness"><dl><div><dt>Source</dt><dd>Seattle SDCI Open Data</dd></div><div><dt>Ingest cadence</dt><dd>Scheduled daily</dd></div><div><dt>Last successful ingest</dt><dd>${escapeHtml(ingestLabel)}</dd></div><div><dt>Latest permit event</dt><dd>${escapeHtml(recordLabel)}</dd></div></dl></aside>
+        <section class="trust-meta" aria-label="Data freshness"><dl><div><dt>Source</dt><dd>Seattle SDCI Open Data</dd></div><div><dt>Ingest cadence</dt><dd>Scheduled daily</dd></div><div><dt>Last successful ingest</dt><dd>${escapeHtml(ingestLabel)}</dd></div><div><dt>Latest permit event</dt><dd>${escapeHtml(recordLabel)}</dd></div></dl></section>
       </div>
     </section>
 
@@ -3106,7 +3111,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             border: 1px solid var(--border);
             border-radius: 0.75rem;
             padding: 1.5rem;
-            transition: all 0.2s;
+            transition: box-shadow 0.2s, border-color 0.2s;
         }
         .card:hover {
             box-shadow: var(--shadow);
@@ -3184,7 +3189,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             font-weight: 600;
             font-size: 0.875rem;
             text-decoration: none;
-            transition: all 0.2s;
+            transition: background-color 0.2s, color 0.2s;
             border: none;
             cursor: pointer;
         }
@@ -3214,8 +3219,9 @@ async function renderPermitDetail(permitNumber, env, request) {
 	            color: var(--text-muted);
 	            font-size: 0.875rem;
 	        }
-	        .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; backdrop-filter: blur(4px); align-items: center; justify-content: center; }
-	        .modal.active { display: flex; }
+	        .modal { border: 0; padding: 0; background: transparent; max-width: none; }
+	        .modal::backdrop { background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); }
+	        .lead-error { color: var(--danger-solid); font-size: 0.875rem; margin: 0.5rem 0 0; }
 	        .modal-content { background: var(--bg); padding: 2rem; border-radius: 1rem; width: min(90vw, 500px); position: relative; box-shadow: var(--shadow-lg); }
 	        .modal-close { position: absolute; top: 1rem; right: 1rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); }
 	        .form-group { margin-bottom: 1.25rem; }
@@ -3239,7 +3245,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             <div class="permit-header">
 	                <div class="permit-number">PERMIT #${safePermitNumber}</div>
 	                <h1 class="permit-title">${safeAddress}</h1>
-	                <span class="status-badge" style="background: ${statusColor}20; color: ${statusColor};">
+	                <span class="status-badge" style="background: ${statusColor}20; color: var(--primary);">
 	                    <span class="status-dot"></span>
 	                    ${safeStatus}
                 </span>
@@ -3284,7 +3290,7 @@ async function renderPermitDetail(permitNumber, env, request) {
 
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Location &amp; Map</h2>
                 <div class="card" style="padding: 0; overflow: hidden;">
-	                    <iframe width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
+	                    <iframe title="Map of ${safeAddress}" width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
                     <div style="padding: 0.75rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: center;">
 	                        <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" style="font-size: 0.8125rem; color: var(--accent); text-decoration: none; font-weight: 500;">Google Maps &rarr;</a>
 	                        <a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${mapsQuery}" target="_blank" rel="noopener" style="font-size: 0.8125rem; color: var(--accent); text-decoration: none; font-weight: 500;">Street View &rarr;</a>
@@ -3311,7 +3317,7 @@ async function renderPermitDetail(permitNumber, env, request) {
         </div>
     </main>
 
-    <div id="leadModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
+    <dialog id="leadModal" class="modal" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
         <div class="modal-content">
             <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
             <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
@@ -3320,6 +3326,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                 <div class="form-group">
                     <label for="lead-email">Email *</label>
                     <input id="lead-email" type="email" name="email" required autocomplete="email" placeholder="you@example.com">
+                    <p id="lead-error" class="lead-error hidden"></p>
                 </div>
                 <button type="submit" class="btn btn-primary" style="width:100%;">
                     <span id="submitText">Email Me Status Changes</span>
@@ -3328,18 +3335,21 @@ async function renderPermitDetail(permitNumber, env, request) {
             </form>
             <div id="formSuccess" class="hidden" style="text-align:center;padding:2rem;">
                 <div style="font-size:3rem;margin-bottom:1rem;">&#10003;</div>
-                <h4>Check your inbox to confirm</h4>
+                <h4 id="formSuccessTitle" tabindex="-1">Check your inbox to confirm</h4>
                 <p style="color:var(--text-muted);">The alert starts after you confirm your email address.</p>
             </div>
         </div>
-    </div>
+    </dialog>
 
     ${renderFooter()}
     <script>
-        function openModal() { document.getElementById('leadModal').classList.add('active'); var field = document.getElementById('lead-email'); if (field) field.focus(); }
-        function closeModal() { document.getElementById('leadModal').classList.remove('active'); }
-        document.getElementById('leadModal').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeModal(); });
-        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+        var leadModal = document.getElementById('leadModal');
+        var leadTrigger;
+        function openModal() { leadTrigger = document.activeElement; leadModal.showModal(); var field = document.getElementById('lead-email'); if (field) field.focus(); }
+        function closeModal() { leadModal.close(); }
+        // Clicking the backdrop (the dialog box itself, outside .modal-content) closes it.
+        leadModal.addEventListener('click', function(e) { if (e.target === leadModal) closeModal(); });
+        leadModal.addEventListener('close', function() { if (leadTrigger && leadTrigger.focus) leadTrigger.focus(); });
 
         async function submitLead(e) {
             e.preventDefault();
@@ -3359,12 +3369,21 @@ async function renderPermitDetail(permitNumber, env, request) {
                 if (response.ok) {
                     form.style.display = 'none';
                     document.getElementById('formSuccess').classList.remove('hidden');
+                    document.getElementById('formSuccessTitle').focus();
                 } else {
                     var result = await response.json().catch(function() { return {}; });
-                    throw new Error(result.error || 'Submission failed');
+                    var failure = new Error('Submission failed');
+                    failure.serverMessage = result.error;
+                    throw failure;
                 }
             } catch (err) {
-                alert(err.message || 'Error submitting form. Please try again.');
+                var errorEl = document.getElementById('lead-error');
+                var emailField = document.getElementById('lead-email');
+                errorEl.textContent = (err && err.serverMessage) || "We couldn't save your alert. Check your connection and try again.";
+                errorEl.classList.remove('hidden');
+                emailField.setAttribute('aria-invalid', 'true');
+                emailField.setAttribute('aria-describedby', 'lead-error');
+                emailField.focus();
                 text.classList.remove('hidden');
                 loader.classList.add('hidden');
                 submitBtn.disabled = false;
@@ -4623,8 +4642,9 @@ function entStyles() {
   return `<style>
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:var(--bg-alt);color:var(--text);line-height:1.6}
     .container{max-width:var(--container-max);margin:0 auto;padding:0 1.5rem}
-    .ent-grid{display:grid;grid-template-columns:2fr 1fr;gap:2.5rem;align-items:start}
-    @media(max-width:860px){.ent-grid{grid-template-columns:1fr}}
+    .ent-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:2.5rem;align-items:start}
+    @media(max-width:860px){.ent-grid{grid-template-columns:minmax(0,1fr)}}
+    .table-scroll{overflow-x:auto;max-width:100%}
     .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.75rem;box-shadow:var(--shadow-sm);margin-bottom:1.75rem}
     .card h2{font-size:1.25rem;margin:0 0 1rem}
     .card h3{font-size:1rem;margin:0 0 0.75rem}
@@ -4638,7 +4658,7 @@ function entStyles() {
     table.ent{width:100%;border-collapse:collapse;font-size:0.875rem}
     table.ent th{text-align:left;color:var(--text-muted);font-weight:600;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border)}
     table.ent td{padding:0.6rem 0.75rem;border-bottom:1px solid var(--border);vertical-align:top}
-    .pill{display:inline-block;padding:0.15rem 0.6rem;border-radius:999px;font-size:0.7rem;font-weight:700;background:#eff6ff;color:#3b82f6;text-transform:capitalize}
+    .pill{display:inline-block;padding:0.15rem 0.6rem;border-radius:999px;font-size:0.7rem;font-weight:700;background:#eff6ff;color:var(--accent-hover);text-transform:capitalize}
     .ent-hero{margin-bottom:1.5rem}
     .ent-hero h1{font-size:2rem;font-weight:800;margin:0 0 0.5rem;color:var(--primary)}
     .ent-kicker{color:var(--text-muted);font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:0.4rem}
@@ -4722,6 +4742,23 @@ export function renderProjectReviewSummary(permits) {
         </div>`;
 }
 
+function renderBasisResetUnavailable() {
+  const html = renderEntityDoc({
+    title: "Basis Reset Radar | Building Seattle",
+    description: "Seattle properties where a lower basis and existing development work may change redevelopment economics.",
+    canonical: `${BASE_URL}/insights/basis-reset`,
+    noindex: true,
+    activeNav: "insights",
+    body: `${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Basis Reset Radar" }])}
+      <div class="ent-hero"><h1>Basis Reset Radar</h1></div>
+      <div class="card"><h2>Temporarily unavailable</h2><p>The radar's scores aren't loading right now. Try again later, or explore the <a class="ent-link" href="/insights">other Seattle permit insights</a>.</p></div>`,
+  });
+  return new Response(html, {
+    status: 503,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": "3600", "Cache-Control": "no-store" },
+  });
+}
+
 function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogType = "website", body, activeNav = "permits" }) {
   const metaDescription = truncateMetaDescription(description);
   const socialImage = `${BASE_URL}/social/${socialImageForCanonical(canonical)}.png`;
@@ -4781,7 +4818,7 @@ function entPermitRows(permits) {
       </tr>`,
     )
     .join("");
-  return `<table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<div class="table-scroll" role="region" aria-label="Permits" tabindex="0"><table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 export function latestPermitActivity(permits) {
@@ -5174,6 +5211,7 @@ function insightsStyles() {
       .pr-val{font-size:0.8rem;font-weight:700;color:var(--primary);white-space:nowrap}
       .pr-sub{font-weight:500;color:var(--text-muted);font-size:0.72rem}
       .pr-note{font-size:0.78rem;color:var(--text-muted);margin-top:1rem}
+      @media(max-width:600px){.pr-row{grid-template-columns:minmax(72px,120px) minmax(0,1fr) auto}.pr-sub{display:block;white-space:normal}}
       .ins-tabs{display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.5rem}
       .ins-tab{padding:0.4rem 0.9rem;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--text);text-decoration:none;font-size:0.82rem;font-weight:600}
       .ins-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -6202,7 +6240,7 @@ async function renderAduDaduPage(env) {
     </div>
     ${aduTimelineYearRows ? `<div class="card">
       <h2>Average application → issuance time by year</h2>
-      <div style="overflow-x:auto;">
+      <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
         <table class="ent">
           <thead><tr><th>Year</th><th>Type</th><th>Issued permits</th><th>Average days</th></tr></thead>
           <tbody>${aduTimelineYearRows}</tbody>
@@ -6275,7 +6313,7 @@ async function renderAduDaduPage(env) {
     </div>
     <div class="card">
       <h2>Recent Seattle ADU and DADU permits</h2>
-      <div style="overflow-x:auto;">
+      <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
         <table class="ent">
           <thead><tr><th>Permit</th><th>Type</th><th>Address</th><th>Neighborhood</th><th>Status</th><th>Value</th><th>Date</th></tr></thead>
           <tbody>${recentRows}</tbody>
@@ -6532,7 +6570,7 @@ async function renderMarketSegmentPage(env, segment) {
           <div class="card"><h2>How to read these numbers</h2><p class="pr-note">Active and in-review permits are the forward pipeline — work likely to start or continue in the coming months. Declared value is the cost stated on the application, so it understates true project cost but stays comparable across permits. The neighborhood ranking shows where this segment is actually clustering, usually a better demand signal than the citywide total.</p></div>
           <div class="card"><h2>Permit activity by year</h2>${prBarChart(yearRows, "var(--success)")}</div>
           <div class="card"><h2>Leading Seattle neighborhoods</h2>${prBarChart(neighborhoodRows)}</div>
-          <div class="card"><h2>Recent matching permits</h2><div style="overflow-x:auto;"><table class="ent">
+          <div class="card"><h2>Recent matching permits</h2><div class="table-scroll" role="region" aria-label="Recent matching permits" tabindex="0"><table class="ent">
             <thead><tr><th>Permit</th><th>Address</th><th>Neighborhood</th><th>Status</th><th>Type</th><th>Value</th><th>Date</th></tr></thead>
             <tbody>${recentRows}</tbody>
           </table></div></div>`
@@ -6884,7 +6922,7 @@ async function renderContractorsPage(env) {
     </div>
     <div class="card">
       <h2>Contractor scorecards</h2>
-      <div style="overflow-x:auto;">
+      <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
         <table class="ent">
           <thead><tr><th>Contractor</th><th>Permits</th><th>Value</th><th>Nbhds</th><th>Avg review</th><th>Active</th></tr></thead>
           <tbody>${tableRows}</tbody>
@@ -7051,7 +7089,7 @@ function svgBipartiteNetwork(contractors, neighborhoods, edges) {
     })
     .join("");
 
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Network of contractors linked to the Seattle neighborhoods they build in" style="width:100%;height:auto;color:var(--text);">
+  return `<svg viewBox="0 0 ${W} ${H}" role="group" aria-label="Network of contractors linked to the Seattle neighborhoods they build in" style="width:100%;height:auto;color:var(--text);">
     <text x="${colL}" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-muted)">Contractors</text>
     <text x="${colR}" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-muted)">Neighborhoods</text>
     ${edgePaths}
@@ -10952,7 +10990,7 @@ function render404(options) {
         .error-section h1 { font-size: 6rem; font-weight: 800; color: var(--accent); margin-bottom: 1rem; line-height: 1; }
         .error-section h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; color: var(--primary); }
         .error-section p { color: var(--text-muted); margin-bottom: 2rem; max-width: 500px; margin-left: auto; margin-right: auto; }
-        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; border-radius: var(--radius-sm); font-weight: 600; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; font-size: 0.875rem; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; border-radius: var(--radius-sm); font-weight: 600; text-decoration: none; transition: background-color 0.2s, color 0.2s; border: none; cursor: pointer; font-size: 0.875rem; }
         .btn-primary { background: var(--accent); color: white; }
         .btn-primary:hover { background: var(--accent-hover); }
         .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); margin-left: 0.5rem; }
