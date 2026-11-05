@@ -688,7 +688,10 @@ test("GET /permits renders a public permit browser instead of returning 404", as
   assert.match(html, /option value="residential" selected/);
   assert.match(html, /\/permits\/PERM456/);
   assert.doesNotMatch(html, /\/api\/permits\?permit=/);
-  assert.match(html, /Recently changed status/);
+  // The unrelated status-change feed is hidden on filtered views so it can't
+  // be mistaken for results; the heading names the filters instead.
+  assert.doesNotMatch(html, /Recently changed status/);
+  assert.match(html, /<h2 style="margin:0;">\d[\d,]* permits? · Ballard · /);
   assert.match(html, /pending/);
   assert.match(html, /active/);
   assert.match(html, /<meta name="robots" content="noindex,follow">/);
@@ -3024,4 +3027,53 @@ test("global nav hamburger exposes and toggles its expanded state", async () => 
   assert.match(html, /setAttribute\('aria-expanded',String\(/);
   assert.match(html, /event\.key==='Escape'/);
   assert.match(html, /scroll-padding-block-start: 5rem/);
+});
+
+test("GET /permits shows the status feed only on the unfiltered first page, above a counted results heading", async () => {
+  const response = await worker.fetch(new Request("http://example.com/permits"), createEnv(), createCtx());
+  const html = await response.text();
+  const feedAt = html.indexOf("Recently changed status");
+  const headingAt = html.search(/<h2 style="margin:0;">\d[\d,]* permits?<\/h2>/);
+  const resultsAt = html.indexOf('aria-label="Permit results"');
+  assert.ok(feedAt > -1, "feed shown on unfiltered page 1");
+  assert.ok(headingAt > feedAt && resultsAt > headingAt, "heading sits directly above the results");
+  assert.match(html, />Apply filters</);
+  assert.match(html, />Clear filters</);
+  assert.doesNotMatch(html, /<label>&nbsp;<\/label>/);
+  assert.match(html, /\.status-pill \{[^}]*color: var\(--accent-hover\)/);
+});
+
+test("GET /permits empty search names the query and offers a way out", async () => {
+  const env = createEnv();
+  env._state.permits.length = 0;
+  const response = await worker.fetch(new Request("http://example.com/permits?q=zzqqxx"), env, createCtx());
+  const html = await response.text();
+  assert.doesNotMatch(html, /Recently changed status/);
+  assert.match(html, /No permits matching “zzqqxx”/);
+  assert.match(html, /<a class="empty-link" href="\/permits">Clear all filters<\/a>/);
+  assert.doesNotMatch(html, /search: &quot;/);
+});
+
+test("GET /projects tells a failed query apart from an empty result", async () => {
+  const hubEnv = (all) => ({
+    DB: {
+      prepare() {
+        const statement = { bind: () => statement, all, first: async () => null, run: async () => ({}) };
+        return statement;
+      },
+    },
+  });
+  const failed = await (
+    await worker.fetch(new Request("http://example.com/projects"), hubEnv(async () => { throw new Error("no such table"); }), createCtx())
+  ).text();
+  assert.match(failed, /Listings are temporarily unavailable/);
+  assert.doesNotMatch(failed, /No matching projects/);
+
+  const empty = await (
+    await worker.fetch(new Request("http://example.com/projects?view=active"), hubEnv(async () => ({ results: [] })), createCtx())
+  ).text();
+  assert.match(empty, /No matching projects/);
+  assert.match(empty, /<a class="ent-link" href="\/projects">View all projects<\/a>/);
+  assert.match(empty, />Apply filters</);
+  assert.match(empty, /font:inherit;font-size:1rem/);
 });
