@@ -2078,9 +2078,14 @@ test("lead modals expose accessible dialog markup and associated labels", async 
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /role="dialog"/);
-  assert.match(html, /aria-modal="true"/);
-  assert.match(html, /aria-labelledby="leadModalTitle"/);
+  // Native <dialog> opened with showModal() supplies the dialog role, modality,
+  // an inert background and Escape handling, so no hand-rolled ARIA is needed.
+  assert.match(html, /<dialog id="leadModal"[^>]*aria-labelledby="leadModalTitle"/);
+  assert.match(html, /leadModal\.showModal\(\)/);
+  assert.match(html, /addEventListener\('close', function\(\) \{[^}]*leadTrigger\.focus\(\)/);
+  assert.match(html, /aria-describedby', 'lead-error'/);
+  assert.doesNotMatch(html, /alert\(err\.message/);
+  assert.match(html, /<iframe title="Map of /);
   assert.match(html, /aria-label="Close dialog"/);
   assert.match(html, /<label for="lead-email">Email \*<\/label>/);
   assert.match(html, /<input[^>]+id="lead-email"/);
@@ -3076,4 +3081,29 @@ test("GET /projects tells a failed query apart from an empty result", async () =
   assert.match(empty, /<a class="ent-link" href="\/projects">View all projects<\/a>/);
   assert.match(empty, />Apply filters</);
   assert.match(empty, /font:inherit;font-size:1rem/);
+});
+
+test("GET /insights/basis-reset degrades to a 503 page when its tables are missing", async () => {
+  const env = {
+    DB: {
+      prepare() {
+        const statement = {
+          bind: () => statement,
+          all: async () => { throw new Error("D1_ERROR: no such table: basis_reset_scores"); },
+          first: async () => { throw new Error("D1_ERROR: no such table: basis_reset_scores"); },
+          run: async () => ({}),
+        };
+        return statement;
+      },
+    },
+  };
+  const response = await worker.fetch(new Request("http://example.com/insights/basis-reset"), env, createCtx());
+  const html = await response.text();
+  assert.equal(response.status, 503);
+  assert.match(response.headers.get("Content-Type") || "", /text\/html/);
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /<main /);
+  assert.match(html, /Temporarily unavailable/);
+  assert.match(html, /noindex/);
+  assert.doesNotMatch(html, /D1_ERROR/);
 });
