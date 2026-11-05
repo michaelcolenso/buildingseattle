@@ -622,6 +622,12 @@ function escapeHtml(value) {
 // SEATTLE, WA"). Render title case for readability while keeping directionals,
 // unit types, and common business suffixes uppercase.
 const TITLECASE_KEEP_UPPER = new Set(["NE", "NW", "SE", "SW", "N", "S", "E", "W", "LLC", "LLP", "INC", "CO", "USA", "US", "WA", "ADU", "DADU", "HVAC", "IID", "IV", "III", "II"]);
+function countLabel(count, singular, plural) {
+  const n = Number(count) || 0;
+  const word = new Intl.PluralRules("en-US").select(n) === "one" ? singular : plural;
+  return `${n.toLocaleString("en-US")} ${word}`;
+}
+
 function smartTitleCase(value) {
   return String(value ?? "")
     .toLowerCase()
@@ -1027,6 +1033,7 @@ function renderDesignTokens() {
         --success: #047857;
         --warn: #b45309;
         --danger: #ef4444;
+        --danger-solid: #b91c1c;
         --steel: #475569;
         --radius-sm: 0.5rem;
         --radius-md: 0.75rem;
@@ -1037,6 +1044,7 @@ function renderDesignTokens() {
         --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
         --container-max: 1200px;
       }
+      html { scroll-padding-block-start: 5rem; }
       .global-nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 50; }
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       .global-nav-row { height: 4rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
@@ -1077,11 +1085,11 @@ function renderNav(activePage) {
   ];
   const link = ({ href, label, keys }) =>
     `<a href="${href}"${keys.includes(activePage) ? ' class="active"' : ""}>${label}</a>`;
-  return `<nav class="global-nav" id="global-nav">
+  return `<nav class="global-nav" id="global-nav" onkeydown="if(event.key==='Escape'){var l=document.getElementById('global-nav-links');if(l.classList.contains('open')){l.classList.remove('open');var b=this.querySelector('.global-nav-hamburger');b.setAttribute('aria-expanded','false');b.focus();}}">
       <div class="container global-nav-row">
         <a href="/" class="logo"><span class="logo-icon">B</span>Building Seattle</a>
-        <button class="global-nav-hamburger" onclick="document.querySelector('#global-nav .global-nav-links').classList.toggle('open')" aria-label="Menu" aria-expanded="false">&#9776;</button>
-        <div class="global-nav-links">
+        <button class="global-nav-hamburger" onclick="this.setAttribute('aria-expanded',String(document.getElementById('global-nav-links').classList.toggle('open')))" aria-label="Menu" aria-expanded="false" aria-controls="global-nav-links">&#9776;</button>
+        <div class="global-nav-links" id="global-nav-links">
           ${items.map(link).join("\n          ")}
         </div>
       </div>
@@ -3642,6 +3650,9 @@ async function renderContractorPage(slug, env, request) {
   const planReviewDays = metrics.avg_plan_review_days != null ? Math.round(metrics.avg_plan_review_days) : "—";
   const correctionsDays = metrics.avg_corrections_days != null ? Math.round(metrics.avg_corrections_days) : "—";
   const netHousingUnits = (metrics.units_added || 0) - (metrics.units_removed || 0);
+  const shownPermits = permits.results.length;
+  // metrics.total_count is the true total; the list query is capped at 10.
+  const totalPermits = Math.max(Number(metrics.total_count) || 0, shownPermits);
 
   if (wantsMarkdown(request)) {
     return markdownResponse(
@@ -3653,7 +3664,11 @@ async function renderContractorPage(slug, env, request) {
   const licenseStatusRaw = contractor.license_status ? String(contractor.license_status).trim() : "";
   const licenseStatusUpper = licenseStatusRaw.toUpperCase();
   const licenseBadgeColor =
-    licenseStatusUpper === "ACTIVE" ? "#10b981" : licenseStatusUpper === "EXPIRED" ? "#ef4444" : "#64748b";
+    licenseStatusUpper === "ACTIVE"
+      ? "var(--success)"
+      : licenseStatusUpper === "EXPIRED"
+        ? "var(--danger-solid)"
+        : "var(--steel)";
   const insuranceFormatted =
     Number.isFinite(Number(contractor.insurance_amount)) && Number(contractor.insurance_amount) > 0
       ? `$${Number(contractor.insurance_amount).toLocaleString()}`
@@ -3668,28 +3683,54 @@ async function renderContractorPage(slug, env, request) {
   const hasCredentials = Boolean(contractor.license_number || contractor.ubi || insuranceFormatted);
   const credentialsCard = hasCredentials
     ? `<div class="card">
-	          <h3 style="margin-top:0">WA L&amp;I Credentials</h3>
-	          ${
-              licenseStatusRaw
-                ? `<div style="display:inline-block;padding:0.25rem 0.75rem;border-radius:999px;background:${licenseBadgeColor};color:#fff;font-size:0.75rem;font-weight:700;letter-spacing:0.05em;margin-bottom:1rem">${escapeHtml(licenseStatusUpper)}</div>`
-                : ""
-            }
-	          ${contractor.license_number ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">License</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.license_number)}</span></p>` : ""}
-	          ${contractor.ubi ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">UBI</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.ubi)}</span></p>` : ""}
-	          ${insuranceFormatted ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:#64748b">Insurance</span> <span style="font-weight:600">${escapeHtml(insuranceFormatted)}</span>${insuranceExpiry ? ` <span style="color:#94a3b8;font-size:0.8125rem">(through ${escapeHtml(insuranceExpiry)})</span>` : ""}</p>` : ""}
-	          <p style="margin:1rem 0 0;font-size:0.75rem;color:#94a3b8">Verified via WA Labor &amp; Industries</p>
-	        </div>`
+          <h3 style="margin-top:0">WA L&amp;I Credentials</h3>
+          ${
+            licenseStatusRaw
+              ? `<div style="display:inline-block;padding:0.25rem 0.75rem;border-radius:999px;background:${licenseBadgeColor};color:#fff;font-size:0.75rem;font-weight:700;letter-spacing:0.05em;margin-bottom:1rem">${escapeHtml(licenseStatusUpper)}</div>`
+              : ""
+          }
+          ${contractor.license_number ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:var(--text-muted)">License</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.license_number)}</span></p>` : ""}
+          ${contractor.ubi ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:var(--text-muted)">UBI</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.ubi)}</span></p>` : ""}
+          ${insuranceFormatted ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:var(--text-muted)">Insurance</span> <span style="font-weight:600">${escapeHtml(insuranceFormatted)}</span>${insuranceExpiry ? ` <span style="color:var(--text-muted);font-size:0.8125rem">(through ${escapeHtml(insuranceExpiry)})</span>` : ""}</p>` : ""}
+          <p style="margin:1rem 0 0;font-size:0.75rem;color:var(--text-muted)">Verified via WA Labor &amp; Industries</p>
+        </div>`
     : "";
+  const contractorDisplayName = smartTitleCase(contractor.name);
   const safeContractorName = escapeHtml(contractor.name);
-  const safeContractorDisplayName = escapeHtml(smartTitleCase(contractor.name));
-  const fullContractorTitle = `${smartTitleCase(contractor.name)} — ${contractor.specialty || "Contractor"} | Building Seattle`;
+  const safeContractorDisplayName = escapeHtml(contractorDisplayName);
+  const fullContractorTitle = `${contractorDisplayName} — ${contractor.specialty || "Contractor"} | Building Seattle`;
   const contractorPageTitle =
-    fullContractorTitle.length <= 60 ? fullContractorTitle : `${smartTitleCase(contractor.name)} | Building Seattle`;
+    fullContractorTitle.length <= 60 ? fullContractorTitle : `${contractorDisplayName} | Building Seattle`;
   const safeContractorSpecialty = escapeHtml(contractor.specialty || "Contractor");
-  const safeContractorDescription = escapeHtml(contractor.description || "Seattle area construction professional");
+  // "General Contractor" already names the role, so don't append "contractor" again.
+  const specialtyRole = contractor.specialty
+    ? /contractor$/i.test(contractor.specialty.trim())
+      ? contractor.specialty.trim()
+      : `${contractor.specialty.trim()} contractor`
+    : "construction contractor";
+  const specialtyPhrase = `${/^[aeiou]/i.test(specialtyRole) ? "an" : "a"} ${specialtyRole}`;
+  const topNeighborhoods = (marketFocus.results || []).map((f) => f.neighborhood).filter(Boolean);
+  // Factual summary instead of placeholder copy when L&I has no description.
+  const heroSummary = contractor.description
+    ? contractor.description
+    : [
+        contractor.specialty || "Contractor",
+        countLabel(totalPermits, "Seattle permit", "Seattle permits"),
+        topNeighborhoods.length ? topNeighborhoods.join(", ") : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
   const safeContractorMetaDescription = escapeHtml(
-    `${contractor.name}: ${contractor.specialty || "Construction"} contractor in Seattle, WA. ${permits.results.length} permits, ${activeProjects} active. Permit timelines, review cycles & project history.`,
+    `${contractorDisplayName}: ${specialtyRole.charAt(0).toUpperCase()}${specialtyRole.slice(1)} in Seattle, WA. ${countLabel(totalPermits, "permit", "permits")}, ${activeProjects} active. Permit timelines, review cycles & project history.`,
   );
+  const permitListHeading =
+    totalPermits > shownPermits
+      ? `Recent permits (${shownPermits} of ${totalPermits.toLocaleString("en-US")})`
+      : `Permits (${shownPermits})`;
+  const dayUnit = (value) =>
+    typeof value === "number"
+      ? ` <span style="font-size:0.875rem; font-weight:400; color:#94a3b8">${new Intl.PluralRules("en-US").select(value) === "one" ? "day" : "days"}</span>`
+      : "";
   const contractorWebsite = safeHttpUrl(contractor.website);
   const contractorJsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -3728,59 +3769,67 @@ async function renderContractorPage(slug, env, request) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	    <title>${escapeHtml(contractorPageTitle)}</title>
-	    <meta name="description" content="${safeContractorMetaDescription}">
-	    <meta name="robots" content="index,follow,max-image-preview:large">
-	    <link rel="canonical" href="${canonical}">
-	    <meta property="og:title" content="${escapeHtml(contractorPageTitle)}">
-	    <meta property="og:description" content="${safeContractorMetaDescription}">
+    <title>${escapeHtml(contractorPageTitle)}</title>
+    <meta name="description" content="${safeContractorMetaDescription}">
+    <meta name="robots" content="index,follow,max-image-preview:large">
+    <link rel="canonical" href="${canonical}">
+    <meta property="og:title" content="${escapeHtml(contractorPageTitle)}">
+    <meta property="og:description" content="${safeContractorMetaDescription}">
     <meta property="og:type" content="profile">
     <meta property="og:url" content="${canonical}">
     <meta name="twitter:card" content="summary_large_image">
     <meta property="og:image" content="${BASE_URL}/social/contractor.png">
     <meta property="og:image:type" content="image/png">
     <meta property="og:image:alt" content="${safeContractorName} | Building Seattle">
-	    <meta property="og:image:width" content="1200">
-	    <meta property="og:image:height" content="630">
-	    <meta name="twitter:image" content="${BASE_URL}/social/contractor.png">
-	    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
-	    <link rel="manifest" href="/site.webmanifest">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:image" content="${BASE_URL}/social/contractor.png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32" type="image/png">
+    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:var(--bg-alt);color:var(--text)}
         .container{max-width:var(--container-max);margin:0 auto;padding:0 1.5rem}
         .seo-hero{background:linear-gradient(135deg,var(--primary) 0%,#1e293b 100%);color:white;padding:6rem 0 3rem;margin-top:4rem}
-        .grid{display:grid;grid-template-columns:2fr 1fr;gap:3rem}
+        .grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:3rem}
         .card{background:var(--surface);border-radius:var(--radius-lg);padding:2rem;box-shadow:var(--shadow-md);margin-bottom:2rem}
         .metric{text-align:center;padding:1.5rem;background:var(--bg-alt);border-radius:var(--radius-sm);border:1px solid var(--border)}
+        .metric-value{font-size:1.5rem;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums}
+        .metric-label{font-size:0.75rem;color:var(--text-muted)}
+        .entity-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));gap:1.5rem;margin-top:1rem}
+        .entity-links a{display:inline-block;padding-block:0.25rem;line-height:1.4;color:var(--accent);text-decoration:none}
+        .entity-links a:hover,.permit-row a:hover{text-decoration:underline}
+        .permit-row a{color:var(--accent);text-decoration:none}
         .btn{background:var(--accent);color:white;padding:0.75rem 1.5rem;border-radius:var(--radius-sm);text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:0.875rem;transition:background 0.2s}
         .btn:hover{background:var(--accent-hover)}
-        @media(max-width:768px){.grid{grid-template-columns:1fr}}
+        @media(max-width:768px){.grid{grid-template-columns:minmax(0,1fr)}}
     </style>
-	    <script type="application/ld+json">${contractorJsonLd}</script>
+    <script type="application/ld+json">${contractorJsonLd}</script>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     ${renderNav()}
 
+    <main id="main-content">
     <div class="seo-hero">
         <div class="container">
             <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:#94a3b8;margin-bottom:1rem;">
-	                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:#94a3b8;text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${safeContractorName}</span>
+                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:#94a3b8;text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${safeContractorDisplayName}</span>
             </nav>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:2rem;">
-                <div style="max-width:600px">
-	                    <div style="color:#94a3b8;font-size:0.875rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">${safeContractorSpecialty}</div>
-	                    <h1 style="font-size:3rem;font-weight:800;margin:0 0 1rem 0">${safeContractorDisplayName}</h1>
-	                    <p style="font-size:1.25rem;color:#94a3b8;margin:0">${safeContractorDescription}</p>
+                <div style="max-width:600px;min-width:0">
+                    <div style="color:#94a3b8;font-size:0.875rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">${safeContractorSpecialty}</div>
+                    <h1 style="font-size:clamp(2rem,8vw,3rem);font-weight:800;line-height:1.1;letter-spacing:-0.02em;overflow-wrap:anywhere;margin:0 0 1rem 0">${safeContractorDisplayName}</h1>
+                    <p style="font-size:1.25rem;color:#94a3b8;margin:0">${escapeHtml(heroSummary)}</p>
                 </div>
                 <div style="display:flex; gap:1.5rem;">
                     <div style="text-align:right">
                         <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase; margin-bottom:0.25rem">Permit Speed</div>
-                        <div style="font-size:1.5rem; font-weight:700;">${permitDays} <span style="font-size:0.875rem; font-weight:400; color:#94a3b8">days</span></div>
+                        <div style="font-size:1.5rem; font-weight:700;">${permitDays}${dayUnit(permitDays)}</div>
                     </div>
                     <div style="text-align:right">
                         <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase; margin-bottom:0.25rem">Build Speed</div>
-                        <div style="font-size:1.5rem; font-weight:700;">${buildDays} <span style="font-size:0.875rem; font-weight:400; color:#94a3b8">days</span></div>
+                        <div style="font-size:1.5rem; font-weight:700;">${buildDays}${dayUnit(buildDays)}</div>
                     </div>
                 </div>
             </div>
@@ -3791,27 +3840,27 @@ async function renderContractorPage(slug, env, request) {
         <div class="grid">
             <div>
                 <div class="card">
-                    <h2>About ${safeContractorName}</h2>
-                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0 0 1rem 0;">
-                        ${safeContractorName} is ${contractor.specialty ? `a ${escapeHtml(contractor.specialty)}` : "a construction"} contractor operating in Seattle, Washington. 
-                        Based on Seattle DCI permit records, this contractor has been involved in ${permits.results.length} permit${permits.results.length !== 1 ? "s" : ""} 
-                        across Seattle's neighborhoods${activeProjects > 0 ? `, with ${activeProjects} currently active` : ""}. 
-                        ${metrics.total_count > 0 ? `Permits by this contractor average ${permitDays} days from application to issuance, with an average of ${reviewCycles} review cycle${reviewCycles === "1.0" ? "" : "s"}.` : ""}
+                    <h2>About ${safeContractorDisplayName}</h2>
+                    <p style="font-size:1rem;line-height:1.6;color:var(--text-muted);margin:0 0 1rem 0;">
+                        ${safeContractorDisplayName} is ${escapeHtml(specialtyPhrase)} operating in Seattle, Washington.
+                        Based on Seattle DCI permit records, this contractor has been involved in ${countLabel(totalPermits, "permit", "permits")}
+                        across Seattle's neighborhoods${activeProjects > 0 ? `, with ${activeProjects.toLocaleString("en-US")} currently active` : ""}.
+                        ${metrics.total_count > 0 && typeof permitDays === "number" ? `Permits by this contractor average ${countLabel(permitDays, "day", "days")} from application to issuance${reviewCycles !== "—" ? `, with an average of ${reviewCycles} review ${reviewCycles === "1.0" ? "cycle" : "cycles"}` : ""}.` : ""}
                     </p>
-                    <p style="font-size:1rem;line-height:1.8;color:var(--text-muted);margin:0;">
-                        ${contractor.description 
-                          ? escapeHtml(contractor.description) 
-                          : `Track ${contractor.name}'s Seattle construction projects including permit valuations, review timelines, and building activity across the city. Contractors listed on Building Seattle are drawn from public SDCI permit data and may include general contractors, subcontractors, and specialty trades.`}
+                    <p style="font-size:1rem;line-height:1.6;color:var(--text-muted);margin:0;">
+                        ${contractor.description
+                          ? escapeHtml(contractor.description)
+                          : `Contractors listed on Building Seattle are drawn from public SDCI permit data and may include general contractors, subcontractors, and specialty trades.`}
                     </p>
                 </div>
                 <div class="card">
-                    <h2>Projects (${permits.results.length})</h2>
+                    <h2>${permitListHeading}</h2>
                     ${permits.results
                       .map(
                         (p) => `
-                        <div style="padding:1rem 0;border-bottom:1px solid #e2e8f0">
-	                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}" style="color:inherit;text-decoration:none">${escapeHtml(p.address)}</a></div>
-	                            <div style="font-size:0.875rem;color:#64748b">${escapeHtml(p.type || "Unknown")} &bull; $${(p.value || 0).toLocaleString()} &bull; ${escapeHtml(p.status)}</div>
+                        <div class="permit-row" style="padding:1rem 0;border-bottom:1px solid var(--border)">
+                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(p.address)}</a></div>
+                            <div style="font-size:0.875rem;color:var(--text-muted)">${escapeHtml(p.type || "Unknown")} &bull; ${p.value ? `$${Number(p.value).toLocaleString("en-US")}` : "Value not reported"} &bull; ${escapeHtml(p.status)}</div>
                         </div>
                     `,
                       )
@@ -3821,31 +3870,31 @@ async function renderContractorPage(slug, env, request) {
                   graphAddresses.length || graphProjects.length
                     ? `<div class="card">
                     <h3 style="margin-top:0">Addresses &amp; Projects</h3>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-top:1rem;">
+                    <div class="entity-links">
                       <div>
-                        <div style="font-size:0.8rem;color:#64748b;margin-bottom:0.5rem;font-weight:600;">Addresses worked on</div>
+                        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;font-weight:600;">Addresses worked on</div>
                         ${
                           graphAddresses.length
                             ? graphAddresses
                                 .map(
                                   (a) =>
-                                    `<div style="margin-bottom:0.4rem;font-size:0.9rem;"><a href="/address/${encodeURIComponent(a.slug)}" style="color:#3b82f6;text-decoration:none;">${escapeHtml(a.display_address)}</a> <span style="color:#94a3b8;font-size:0.8rem;">· ${a.permits}</span></div>`,
+                                    `<div style="font-size:0.9rem;"><a href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">· ${countLabel(a.permits, "permit", "permits")}</span></div>`,
                                 )
                                 .join("")
-                            : '<div style="color:#94a3b8;font-size:0.85rem;">—</div>'
+                            : '<div style="color:var(--text-muted);font-size:0.85rem;">No linked addresses yet.</div>'
                         }
                       </div>
                       <div>
-                        <div style="font-size:0.8rem;color:#64748b;margin-bottom:0.5rem;font-weight:600;">Inferred projects</div>
+                        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;font-weight:600;">Inferred projects</div>
                         ${
                           graphProjects.length
                             ? graphProjects
                                 .map(
                                   (pr) =>
-                                    `<div style="margin-bottom:0.4rem;font-size:0.9rem;"><a href="/project/${encodeURIComponent(pr.slug)}" style="color:#3b82f6;text-decoration:none;">${escapeHtml(pr.name)}</a></div>`,
+                                    `<div style="font-size:0.9rem;"><a href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a></div>`,
                                 )
                                 .join("")
-                            : '<div style="color:#94a3b8;font-size:0.85rem;">—</div>'
+                            : '<div style="color:var(--text-muted);font-size:0.85rem;">No multi-permit projects yet.</div>'
                         }
                       </div>
                     </div>
@@ -3858,25 +3907,25 @@ async function renderContractorPage(slug, env, request) {
                 <div class="card">
                     <h3>Market Specialization</h3>
                     <div style="margin-top:1.5rem">
-                        <div style="font-size:0.875rem; color:#64748b; margin-bottom:0.75rem">Top Neighborhoods</div>
+                        <div style="font-size:0.875rem; color:var(--text-muted); margin-bottom:0.75rem">Top Neighborhoods</div>
                         ${marketFocus.results
                           .map(
                             (f) => `
-                            <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.9375rem">
-	                                <span style="font-weight:600">${escapeHtml(f.neighborhood)}</span>
-                                <span style="color:#64748b">${f.count} projects</span>
+                            <div style="display:flex; justify-content:space-between; gap:1rem; margin-bottom:0.5rem; font-size:0.9375rem">
+                                <span style="font-weight:600">${escapeHtml(f.neighborhood)}</span>
+                                <span style="color:var(--text-muted);white-space:nowrap">${countLabel(f.count, "permit", "permits")}</span>
                             </div>
                         `,
                           )
                           .join("")}
                     </div>
-                    <div style="margin-top:1.5rem; padding-top:1.5rem; border-top:1px solid #e2e8f0">
-                        <div style="font-size:0.875rem; color:#64748b; margin-bottom:0.75rem">Project Composition</div>
+                    <div style="margin-top:1.5rem; padding-top:1.5rem; border-top:1px solid var(--border)">
+                        <div style="font-size:0.875rem; color:var(--text-muted); margin-bottom:0.75rem">Permit Mix</div>
                         <div style="display:flex; flex-wrap:wrap; gap:0.5rem">
                             ${projectTypes.results
                               .map(
                                 (t) => `
-	                                <span style="background:#eff6ff; color:#3b82f6; padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
+                                <span style="background:#eff6ff; color:var(--accent); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
                             `,
                               )
                               .join("")}
@@ -3888,40 +3937,41 @@ async function renderContractorPage(slug, env, request) {
                     <h3>Efficiency Metrics</h3>
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin:1.5rem 0">
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${completionRate}%</div>
-                            <div style="font-size:0.75rem;color:#64748b">Completion Rate</div>
+                            <div class="metric-value">${completionRate}%</div>
+                            <div class="metric-label">Completion Rate</div>
                         </div>
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${activeProjects}</div>
-                            <div style="font-size:0.75rem;color:#64748b">Active Projects</div>
+                            <div class="metric-value">${activeProjects}</div>
+                            <div class="metric-label">Active Permits</div>
                         </div>
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${reviewCycles}</div>
-                            <div style="font-size:0.75rem;color:#64748b">Avg Review Cycles</div>
+                            <div class="metric-value">${reviewCycles}</div>
+                            <div class="metric-label">Avg Review Cycles</div>
                         </div>
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${planReviewDays}</div>
-                            <div style="font-size:0.75rem;color:#64748b">Plan-Review Days</div>
+                            <div class="metric-value">${planReviewDays}</div>
+                            <div class="metric-label">Plan-Review Days</div>
                         </div>
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:#3b82f6">${correctionsDays}</div>
-                            <div style="font-size:0.75rem;color:#64748b">Days in Corrections</div>
+                            <div class="metric-value">${correctionsDays}</div>
+                            <div class="metric-label">Days in Corrections</div>
                         </div>
                         <div class="metric">
-                            <div style="font-size:1.5rem;font-weight:800;color:${netHousingUnits > 0 ? "#10b981" : netHousingUnits < 0 ? "#ef4444" : "#3b82f6"}">${netHousingUnits > 0 ? "+" : ""}${netHousingUnits}</div>
-                            <div style="font-size:0.75rem;color:#64748b">Net Housing Units</div>
+                            <div class="metric-value" style="color:${netHousingUnits > 0 ? "var(--success)" : netHousingUnits < 0 ? "var(--danger-solid)" : "var(--accent)"}">${netHousingUnits > 0 ? "+" : ""}${netHousingUnits}</div>
+                            <div class="metric-label">Net Housing Units</div>
                         </div>
                     </div>
 
-                    <div style="padding-top:1rem; border-top:1px solid #e2e8f0">
-	                        ${contractor.phone ? `<p style="margin:0.5rem 0">Phone <span style="font-weight:500">${escapeHtml(contractor.phone)}</span></p>` : ""}
-	                        ${contractor.email ? `<p style="margin:0.5rem 0">Email <span style="font-weight:500">${escapeHtml(contractor.email)}</span></p>` : ""}
-	                        ${contractorWebsite ? `<p style="margin:0.5rem 0">Web <a href="${escapeHtml(contractorWebsite)}" target="_blank" rel="noopener" style="color:#3b82f6; text-decoration:none">${escapeHtml(contractorWebsite.replace("https://", "").replace("http://", ""))}</a></p>` : ""}
+                    <div style="padding-top:1rem; border-top:1px solid var(--border)">
+                        ${contractor.phone ? `<p style="margin:0.5rem 0">Phone <span style="font-weight:500">${escapeHtml(contractor.phone)}</span></p>` : ""}
+                        ${contractor.email ? `<p style="margin:0.5rem 0">Email <span style="font-weight:500">${escapeHtml(contractor.email)}</span></p>` : ""}
+                        ${contractorWebsite ? `<p style="margin:0.5rem 0">Web <a href="${escapeHtml(contractorWebsite)}" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:none">${escapeHtml(contractorWebsite.replace("https://", "").replace("http://", ""))}</a></p>` : ""}
                     </div>
                 </div>
             </div>
         </div>
     </div>
+    </main>
     ${renderFooter()}
 </body>
 </html>`;
