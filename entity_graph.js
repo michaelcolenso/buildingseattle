@@ -268,9 +268,12 @@ export function projectNameFor(permits, street) {
     .toLowerCase();
 
   let prefix;
+  // New construction is tested before demolition: SDCI descriptions for a
+  // rebuild read "demolish existing ... construct new ...", and the project is
+  // the new building, not the teardown.
   if (/tenant improvement|tenant impr|\bt\.?i\.?\b/.test(text)) prefix = "Tenant improvement at";
-  else if (/demolition|demolish/.test(text)) prefix = "Demolition at";
   else if (/new construction|construct new|new building|establish use|new .*(townhouse|residence|dwelling|building)/.test(text)) prefix = "New construction at";
+  else if (/demolition|demolish/.test(text)) prefix = "Demolition at";
   else if (/electrical/.test(text)) prefix = "Electrical upgrade at";
   else if (/mechanical|hvac/.test(text)) prefix = "Mechanical upgrade at";
   else if (/\baddition\b/.test(text)) prefix = "Addition at";

@@ -2098,7 +2098,7 @@ function renderStatusChangeCards(changes) {
       const neighborhood = escapeHtml(change.neighborhood || "Seattle");
       const permitNumber = escapeHtml(change.permit_number);
       const type = escapeHtml(change.type || "General");
-      const value = change.value ? `$${Number(change.value).toLocaleString()}` : "Value pending";
+      const value = change.value ? `$${Number(change.value).toLocaleString("en-US")}` : "Value not reported";
 
       return `<article class="change-card">
         <div>
@@ -2227,8 +2227,27 @@ async function renderPermitBrowser(request, env) {
         `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}</option>`,
     )
     .join("");
-  const activeFilterDesc =
-    [q ? `search: "${q}"` : null, neighborhood, type, status].filter(Boolean).join(", ") || "All permits";
+  const isFilteredView = Boolean(q || neighborhood || type || status);
+  const filterLabels = [
+    neighborhood,
+    type ? permitTypeLabel(type) : null,
+    status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : null,
+  ].filter(Boolean);
+  const queryLabel = q ? ` matching \u201c${q}\u201d` : "";
+  const filterSuffix = filterLabels.length ? ` \u00b7 ${filterLabels.join(" \u00b7 ")}` : "";
+  const resultsHeading =
+    total === 0 && isFilteredView
+      ? `No permits${queryLabel || " match these filters"}${filterSuffix}`
+      : `${countLabel(total, "permit", "permits")}${queryLabel}${filterSuffix}`;
+  const clearSearchParams = new URLSearchParams();
+  if (neighborhood) clearSearchParams.set("neighborhood", neighborhood);
+  if (type) clearSearchParams.set("type", type);
+  if (status) clearSearchParams.set("status", status);
+  const clearSearchHref = `/permits${clearSearchParams.toString() ? `?${clearSearchParams}` : ""}`;
+  const emptyResults = `<div class="empty">
+                <p style="margin:0 0 0.75rem;">${q ? "Check the spelling, or search by street address or permit number." : "Try fewer filters."}</p>
+                ${q && filterLabels.length ? `<a class="empty-link" href="${escapeHtml(clearSearchHref)}">Clear search</a> &middot; ` : ""}<a class="empty-link" href="/permits">Clear all filters</a>
+            </div>`;
   const approvedPermitParams = new Set(["page", "neighborhood", "type", "status", "q"]);
   const hasUnknownPermitParams = [...url.searchParams.keys()].some((key) => !approvedPermitParams.has(key));
   const rawPermitPage = url.searchParams.get("page");
@@ -2239,9 +2258,12 @@ async function renderPermitBrowser(request, env) {
   const permitCanonical =
     !hasPermitFilters && page > 1 ? `${BASE_URL}/permits?page=${page}` : `${BASE_URL}/permits`;
   const recentChangeCards = renderStatusChangeCards(recentStatusChanges);
+  // The feed is unrelated to a search; showing it above filtered results made
+  // an empty search look like it had hits.
+  const showStatusFeed = !isFilteredView && page === 1;
   const cards = permits
     .map((permit) => {
-      const value = permit.value ? `$${Number(permit.value).toLocaleString()}` : "Value pending";
+      const value = permit.value ? `$${Number(permit.value).toLocaleString("en-US")}` : "Value not reported";
       const issued = permit.issued_date
         ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
         : "Date pending";
@@ -2317,10 +2339,12 @@ async function renderPermitBrowser(request, env) {
         .permit-guide h2 { margin: 0 0 0.75rem; color: var(--text); font-size: 1.35rem; }
         .permit-guide p { margin: 0 0 0.75rem; }
         .permit-guide a { color: var(--accent); font-weight: 650; }
-        .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1rem 0 2rem; }
-        @media (min-width: 1140px) { .filters { grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(160px, 1fr)) 10rem 6rem; } }
+        .filters { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; align-items: end; margin: 1rem 0 2rem; }
+        @media (min-width: 1140px) { .filters { grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(190px, 1fr)) auto auto; } }
 	        label { display: block; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 0.4rem; }
 	        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
+        select { background: var(--surface); color: var(--text); }
+        .empty-link { color: var(--accent); font-weight: 650; }
 	        button { background: var(--accent); color: white; font-weight: 700; cursor: pointer; border-color: var(--accent); }
 	        .secondary-link { background: transparent; color: var(--text); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
         .results-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
@@ -2342,8 +2366,8 @@ async function renderPermitBrowser(request, env) {
         .permit-meta, .permit-number, .permit-description { color: var(--text-muted); }
         .permit-description { margin: 0.85rem 0 1rem; line-height: 1.6; }
         .permit-value { font-size: 1.35rem; font-weight: 800; color: var(--primary); }
-        .status-pill { background: rgba(37,99,235,0.12); color: var(--accent); border-radius: 999px; padding: 0.35rem 0.7rem; text-transform: capitalize; font-size: 0.8rem; font-weight: 700; }
-        .status-pill.muted { background: rgba(100,116,139,0.12); color: var(--text-muted); }
+        .status-pill { background: rgba(37,99,235,0.12); color: var(--accent-hover); border-radius: 999px; padding: 0.35rem 0.7rem; text-transform: capitalize; font-size: 0.8rem; font-weight: 700; }
+        .status-pill.muted { background: rgba(100,116,139,0.12); color: var(--steel); }
         .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 1rem; padding: 2rem; text-align: center; color: var(--text-muted); }
         @media (max-width: 720px) {
           .permit-card-top, .permit-footer, .results-head, .status-changes-header, .change-card { flex-direction: column; align-items: stretch; }
@@ -2369,7 +2393,7 @@ async function renderPermitBrowser(request, env) {
         <form class="filters" action="/permits" method="GET">
             <div>
                 <label for="q">Search</label>
-                <input type="text" id="q" name="q" value="${escapeHtml(q || "")}" placeholder="Address, permit #, contractor..." style="width:100%;border-radius:0.75rem;border:1px solid var(--border);padding:0.8rem 0.9rem;font:inherit;">
+                <input type="text" id="q" name="q" value="${escapeHtml(q || "")}" placeholder="e.g. 1201 3rd Ave" style="width:100%;border-radius:0.75rem;border:1px solid var(--border);padding:0.8rem 0.9rem;font:inherit;">
             </div>
             <div>
                 <label for="neighborhood">Neighborhood</label>
@@ -2393,18 +2417,13 @@ async function renderPermitBrowser(request, env) {
                 </select>
             </div>
             <div>
-                <label>&nbsp;</label>
-                <button type="submit">Apply Filters</button>
+                <button type="submit">Apply filters</button>
             </div>
             <div>
-                <label>&nbsp;</label>
-                <a class="secondary-link" href="/permits">Clear</a>
+                <a class="secondary-link" href="/permits">Clear filters</a>
             </div>
         </form>
-        <div class="results-head">
-            <h2 style="margin:0;">${escapeHtml(activeFilterDesc)}</h2>
-            <p>Updated ${lastUpdated}</p>
-        </div>
+        ${showStatusFeed ? `
         <section class="status-changes" aria-labelledby="status-changes-heading">
             <div class="status-changes-header">
                 <div>
@@ -2416,9 +2435,13 @@ async function renderPermitBrowser(request, env) {
             <div class="change-list">
                 ${recentChangeCards}
             </div>
-        </section>
-        <section class="permits">
-            ${cards || '<div class="empty">No permits matched these filters yet.</div>'}
+        </section>` : ""}
+        <div class="results-head">
+            <h2 style="margin:0;">${escapeHtml(resultsHeading)}</h2>
+            <p>Updated ${lastUpdated}</p>
+        </div>
+        <section class="permits" aria-label="Permit results">
+            ${cards || emptyResults}
         </section>
         ${totalPages > 1 ? renderPagination(url, page, totalPages, total, permits.length, offset) : ""}
         <section class="permit-guide" aria-labelledby="permit-guide-heading">
@@ -4890,8 +4913,8 @@ function renderEntityHubFilters(type, state) {
   return `<form method="get" action="/${type}" class="hub-filters">
       <label>Sort<select name="sort">${sortOptions}</select></label>
       ${contractorFilters}${projectFilters}${addressFilters}${valueFilter}
-      <button type="submit">Apply</button>
-      <a class="ent-link" href="/${type}">Reset</a>
+      <button type="submit">Apply filters</button>
+      <a class="ent-link" href="/${type}">Clear filters</a>
     </form>`;
 }
 
@@ -4902,10 +4925,12 @@ async function renderEntityHubPage(type, env, request) {
   const state = buildEntityHubState(type, request);
   const query = buildEntityHubQuery(type, state);
   let items = [];
+  let queryFailed = false;
   try {
     const result = await env.DB.prepare(query.sql).bind(...query.binds).all();
     items = result.results || [];
   } catch (error) {
+    queryFailed = true;
     // Graph migrations may briefly lag a deployment; keep the route available
     // but prevent an empty fallback from entering the index. Log it so a
     // permanently failing hub query is visible instead of silently empty.
@@ -4958,13 +4983,13 @@ async function renderEntityHubPage(type, env, request) {
   const body = `<style>
       .hub-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.8rem;align-items:end;background:var(--surface);border:1px solid var(--border);border-radius:1rem;padding:1rem;margin:1.25rem 0}
       .hub-filters label{display:grid;gap:0.35rem;font-size:0.72rem;font-weight:750;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
-      .hub-filters select,.hub-filters input,.hub-filters button{width:100%;min-width:0;box-sizing:border-box;height:2.75rem;border:1px solid var(--steel);border-radius:.65rem;padding:0 .75rem;background:var(--bg);color:var(--text);font:inherit;text-transform:none;letter-spacing:normal}
+      .hub-filters select,.hub-filters input,.hub-filters button{width:100%;min-width:0;box-sizing:border-box;height:2.75rem;border:1px solid var(--steel);border-radius:.65rem;padding:0 .75rem;background:var(--bg);color:var(--text);font:inherit;font-size:1rem;text-transform:none;letter-spacing:normal}
       .hub-filters input::placeholder{color:var(--text-muted);font-weight:400}.hub-filters input:not(:placeholder-shown),.hub-filters select{font-weight:500}.hub-filters .ent-link{display:inline-flex;align-items:center;height:2.75rem}.hub-filters button{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:750;cursor:pointer}
     </style>
     <nav aria-label="Breadcrumb" style="font-size:0.8125rem;margin-bottom:1.25rem;"><a class="ent-link" href="/">Home</a> / ${escapeHtml(config.title)}</nav>
     <header style="max-width:800px;margin-bottom:2rem;"><h1>${escapeHtml(config.title)}</h1><p style="font-size:1.08rem;color:var(--text-muted);line-height:1.7;">${escapeHtml(config.intro)}</p></header>
     ${renderEntityHubFilters(type, state)}
-    ${items.length ? `<p style="color:var(--text-muted);">Page ${state.page}: showing ${items.length} ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>${pagination}` : '<div class="card"><h2>No matching records</h2><p>Try removing a filter or return to the unfiltered index.</p></div>'}
+    ${items.length ? `<p style="color:var(--text-muted);">Page ${state.page}: showing ${items.length} ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>${pagination}` : queryFailed ? `<div class="card"><h2>Listings are temporarily unavailable</h2><p>We couldn't load ${escapeHtml(config.itemLabel)} right now. Try again in a few minutes.</p></div>` : `<div class="card"><h2>No matching ${escapeHtml(config.itemLabel)}</h2><p>No ${escapeHtml(config.itemLabel)} match these filters. <a class="ent-link" href="/${type}">View all ${escapeHtml(config.itemLabel)}</a></p></div>`}
     ${renderDataTrustNote(updatedThrough, "Hub rankings aggregate public permit records; declared value is not verified project cost.")}`;
 
   return new Response(

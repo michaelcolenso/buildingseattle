@@ -65,6 +65,18 @@ test("projectNameFor picks a descriptive prefix", () => {
   assert.match(projectNameFor([{ description: "Tenant improvement for office" }], "401 5th Ave"), /^Tenant improvement at 401 5th Ave/);
   assert.match(projectNameFor([{ description: "Construct new building" }], "1301 Second Ave"), /^New construction at 1301 Second Ave/);
   assert.match(projectNameFor([{ description: "routine work" }], "900 Pine St"), /^Construction activity at 900 Pine St/);
+  // A demolish-and-rebuild cluster is named for the new building.
+  assert.match(
+    projectNameFor(
+      [
+        { type: "demolition", description: "Demolish existing single family residence" },
+        { description: "Construct new 7-story apartment building" },
+      ],
+      "4747 30th Ave NE",
+    ),
+    /^New construction at 4747 30th Ave NE/,
+  );
+  assert.match(projectNameFor([{ description: "Demolish existing garage" }], "12 Elm St"), /^Demolition at 12 Elm St/);
 });
 
 test("buildEntityGraph preserves previously-minted slugs", () => {
