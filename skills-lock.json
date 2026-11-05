@@ -73,12 +73,6 @@
       "skillPath": "skills/state-machine/SKILL.md",
       "computedHash": "f5b8d15d09ad91de8ad969fc6314f3e45a3cc625e0ea8046f109add9e86a33eb"
     },
-    "teardown": {
-      "source": "jakubkrehel/skills",
-      "sourceType": "github",
-      "skillPath": "skills/teardown/SKILL.md",
-      "computedHash": "6d593a47c2e69f5e8f8e0e77bff93244d0a94d1d3c271d861ad3f2e3e67a835e"
-    },
     "variant": {
       "source": "jakubkrehel/skills",
       "sourceType": "github",
