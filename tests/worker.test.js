@@ -2920,3 +2920,108 @@ test("entity hub pages highlight their own nav item", async () => {
     assert.deepEqual(active, label ? [label] : [], `/${slug} active nav`);
   }
 });
+
+function createContractorPageEnv({ contractor, permits, totalCount, neighborhoods = [], types = [], addresses = [], projects = [] }) {
+  return {
+    DB: {
+      prepare(query) {
+        const sql = query.replace(/\s+/g, " ").trim();
+        const statement = {
+          bind() {
+            return statement;
+          },
+          async first() {
+            if (sql.startsWith("SELECT * FROM contractors WHERE slug = ?")) return contractor;
+            if (sql.includes("AVG(JulianDay(issued_date) - JulianDay(applied_date))")) {
+              return {
+                avg_permit_days: 1,
+                avg_build_days: 62,
+                avg_review_cycles: 1,
+                avg_plan_review_days: null,
+                avg_corrections_days: null,
+                units_added: 0,
+                units_removed: 0,
+                total_count: totalCount,
+                active_count: 18,
+                completed_count: 5,
+              };
+            }
+            return null;
+          },
+          async all() {
+            if (sql.startsWith("SELECT * FROM permits WHERE contractor_id = ?")) return { results: permits };
+            if (sql.includes("GROUP BY neighborhood")) return { results: neighborhoods };
+            if (sql.includes("GROUP BY type")) return { results: types };
+            if (sql.includes("JOIN addresses a")) return { results: addresses };
+            if (sql.includes("JOIN projects pr")) return { results: projects };
+            return { results: [] };
+          },
+          async run() {
+            return { success: true };
+          },
+        };
+        return statement;
+      },
+    },
+  };
+}
+
+test("GET /contractor/:slug reports the true permit total, not the capped list length", async () => {
+  const permits = Array.from({ length: 10 }, (_, i) => ({
+    permit_number: `P${i}`,
+    address: `${100 + i} PINE ST, SEATTLE, WA`,
+    type: "commercial",
+    value: i === 0 ? null : 1000 * i,
+    status: "active",
+  }));
+  const env = createContractorPageEnv({
+    contractor: {
+      id: 1,
+      name: "ABBOTT CONSTRUCTION LLC",
+      slug: "abbott-construction-llc",
+      specialty: "General Contractor",
+      description: null,
+      license_status: "ACTIVE",
+      license_number: "ABBOTCL781KS",
+    },
+    permits,
+    totalCount: 27,
+    neighborhoods: [{ neighborhood: "Downtown", count: 1, total_value: 0 }],
+    addresses: [{ slug: "100-pine-st", display_address: "100 PINE ST, SEATTLE, WA", permits: 1, total_value: 0 }],
+  });
+
+  const response = await worker.fetch(new Request("http://example.com/contractor/abbott-construction-llc"), env, createCtx());
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /Recent permits \(10 of 27\)/);
+  assert.match(html, /involved in 27 permits/);
+  assert.match(html, /<meta name="description" content="[^"]*27 permits, 18 active/);
+  assert.doesNotMatch(html, /General Contractor contractor/);
+  assert.match(html, /is a General Contractor operating in Seattle/);
+  assert.doesNotMatch(html, /Seattle area construction professional/);
+  assert.match(html, /General Contractor · 27 Seattle permits · Downtown/);
+  assert.match(html, /Downtown<\/span>\s*<span[^>]*>1 permit<\/span>/);
+  assert.match(html, /· 1 permit<\/span>/);
+  assert.match(html, /1 <span[^>]*>day<\/span>/);
+  assert.match(html, /Value not reported/);
+  assert.match(html, /<main id="main-content"/);
+  assert.match(html, /<a class="skip-link" href="#main-content">/);
+  assert.match(html, /About Abbott Construction LLC/);
+  assert.doesNotMatch(html, /#3b82f6/);
+  assert.match(html, /color:var\(--text-muted\)">Verified via WA Labor/);
+  assert.match(html, /background:var\(--success\);color:#fff/);
+});
+
+test("global nav hamburger exposes and toggles its expanded state", async () => {
+  const response = await worker.fetch(new Request("http://example.com/contractor/abbott-construction-llc"), createContractorPageEnv({
+    contractor: { id: 1, name: "X LLC", slug: "x-llc", specialty: null },
+    permits: [],
+    totalCount: 0,
+  }), createCtx());
+  const html = await response.text();
+  assert.match(html, /aria-controls="global-nav-links"/);
+  assert.match(html, /setAttribute\('aria-expanded',String\(/);
+  assert.match(html, /event\.key==='Escape'/);
+  assert.match(html, /scroll-padding-block-start: 5rem/);
+});
