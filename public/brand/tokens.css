@@ -1,0 +1,166 @@
+/* buildingseattle design tokens — generated from the design system tokens.json. Light values on :root; dark values only under [data-theme="dark"] (not yet enabled on the site). */
+:root, [data-theme="light"] {
+  --brand-navy: #0B2945;
+  --brand-blue: #0D78D9;
+  --brand-sky: #4CC3FF;
+  --brand-signal: #F97316;
+  --surface: #FFFFFF;
+  --surface-alt: #F5F7FA;
+  --surface-raised: #FFFFFF;
+  --surface-sunken: #EDF1F5;
+  --surface-inverse: #0B2945;
+  --ink: #0B2945;
+  --ink-secondary: #3B4D63;
+  --ink-muted: #5B6B7F;
+  --ink-inverse: #FFFFFF;
+  --line-subtle: #E5E9EF;
+  --line: #CBD3DD;
+  --line-strong: #7B8A9C;
+  --accent: #0D6EC9;
+  --accent-hover: #0A5BA8;
+  --on-accent: #FFFFFF;
+  --accent-soft: #E6F1FC;
+  --link: #0B66BA;
+  --focus: #0B66BA;
+  --signal: #D9530A;
+  --signal-ink: #B2440A;
+  --signal-soft: #FFF1E6;
+  --status-new: #0B66BA;
+  --status-new-soft: #E6F1FC;
+  --status-pending: #8A5A00;
+  --status-pending-soft: #FDF3DC;
+  --status-active: #0B2945;
+  --status-active-soft: #0B2945;
+  --status-completed: #0E6B5C;
+  --status-completed-soft: #E2F4F0;
+  --status-expired: #5B6B7F;
+  --status-expired-soft: #EEF1F4;
+  --info: #0B66BA;
+  --success: #0E6B5C;
+  --warning: #8A5A00;
+  --danger: #B42318;
+  --danger-soft: #FDECEA;
+  --data-1: #0B2945;
+  --data-2: #0D78D9;
+  --data-3: #4CC3FF;
+  --data-4: #8FA3B8;
+  --data-seq-1: #E6F1FC;
+  --data-seq-2: #A9D2F5;
+  --data-seq-3: #4C9EE6;
+  --data-seq-4: #0D6EC9;
+  --data-seq-5: #0B2945;
+  --map-land: #EEF1F4;
+  --map-water: #D6E6F3;
+  --map-parcel: #FFFFFF;
+  --map-parcel-line: #B7C2CF;
+  --shadow-1: 0 1px 2px rgba(11,41,69,0.08);
+  --shadow-2: 0 8px 24px rgba(11,41,69,0.14);
+}
+[data-theme="dark"] {
+  --brand-navy: #0B2945;
+  --brand-blue: #0D78D9;
+  --brand-sky: #4CC3FF;
+  --brand-signal: #F97316;
+  --surface: #08182A;
+  --surface-alt: #0C2034;
+  --surface-raised: #11283F;
+  --surface-sunken: #061322;
+  --surface-inverse: #E6EEF6;
+  --ink: #E6EEF6;
+  --ink-secondary: #B7C6D6;
+  --ink-muted: #8FA3B8;
+  --ink-inverse: #0B2945;
+  --line-subtle: #1A3450;
+  --line: #27466A;
+  --line-strong: #6F87A3;
+  --accent: #4DA9FF;
+  --accent-hover: #7BBEFF;
+  --on-accent: #06192C;
+  --accent-soft: #0F3354;
+  --link: #6CB6FF;
+  --focus: #7BC4FF;
+  --signal: #FF8A3D;
+  --signal-ink: #FF9F5E;
+  --signal-soft: #3A1E0C;
+  --status-new: #6CB6FF;
+  --status-new-soft: #0F3354;
+  --status-pending: #E8B44C;
+  --status-pending-soft: #33270A;
+  --status-active: #E6EEF6;
+  --status-active-soft: #E6EEF6;
+  --status-completed: #4CC9B0;
+  --status-completed-soft: #0B2E29;
+  --status-expired: #8FA3B8;
+  --status-expired-soft: #152A40;
+  --info: #6CB6FF;
+  --success: #4CC9B0;
+  --warning: #E8B44C;
+  --danger: #FF7A70;
+  --danger-soft: #3A1412;
+  --data-1: #E6EEF6;
+  --data-2: #4DA9FF;
+  --data-3: #2B7FC0;
+  --data-4: #5B6B7F;
+  --data-seq-1: #0F2A45;
+  --data-seq-2: #1A4A78;
+  --data-seq-3: #2E78BE;
+  --data-seq-4: #5AAEF5;
+  --data-seq-5: #B9DCFF;
+  --map-land: #0C1D30;
+  --map-water: #07253F;
+  --map-parcel: #12304D;
+  --map-parcel-line: #2C4C70;
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-2: 0 8px 24px rgba(0,0,0,0.5);
+}
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --control-sm: 32px;
+  --control-md: 40px;
+  --control-lg: 52px;
+  --header-height: 64px;
+  --content-max: 1200px;
+  --icon-md: 20px;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-condensed: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.display { font-family: var(--font-sans); font-size: 56px; line-height: 58px; font-weight: 600; letter-spacing: -0.03em; }
+.heading-1 { font-family: var(--font-sans); font-size: 40px; line-height: 44px; font-weight: 600; letter-spacing: -0.025em; }
+.heading-2 { font-family: var(--font-sans); font-size: 28px; line-height: 32px; font-weight: 600; letter-spacing: -0.02em; }
+.heading-3 { font-family: var(--font-sans); font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: -0.01em; }
+.heading-4 { font-family: var(--font-sans); font-size: 16px; line-height: 22px; font-weight: 600; }
+.overline { font-family: var(--font-sans); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; }
+.body-lg { font-family: var(--font-sans); font-size: 18px; line-height: 28px; font-weight: 400; }
+.body { font-family: var(--font-sans); font-size: 16px; line-height: 24px; font-weight: 400; }
+.body-sm { font-family: var(--font-sans); font-size: 14px; line-height: 20px; font-weight: 400; }
+.label { font-family: var(--font-sans); font-size: 13px; line-height: 16px; font-weight: 500; }
+.caption { font-family: var(--font-sans); font-size: 12px; line-height: 16px; font-weight: 400; }
+.data { font-family: var(--font-condensed); font-size: 14px; line-height: 20px; font-weight: 400; }
+.data-sm { font-family: var(--font-condensed); font-size: 12px; line-height: 16px; font-weight: 500; }
+.metric { font-family: var(--font-sans); font-size: 32px; line-height: 34px; font-weight: 600; letter-spacing: -0.02em; }
+.map-label { font-family: var(--font-condensed); font-size: 11px; line-height: 12px; font-weight: 600; letter-spacing: 0.04em; }
+.permit-id { font-family: var(--font-mono); font-size: 14px; line-height: 20px; font-weight: 500; }
+.code { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 400; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/brand/fonts/IBMPlexSans-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/brand/fonts/IBMPlexSans-Medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/brand/fonts/IBMPlexSans-SemiBold.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/brand/fonts/IBMPlexSans-Bold.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans Condensed"; src: url("/brand/fonts/IBMPlexSansCondensed-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans Condensed"; src: url("/brand/fonts/IBMPlexSansCondensed-Medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans Condensed"; src: url("/brand/fonts/IBMPlexSansCondensed-SemiBold.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/brand/fonts/IBMPlexMono-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/brand/fonts/IBMPlexMono-Medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }

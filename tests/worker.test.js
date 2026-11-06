@@ -925,16 +925,16 @@ test("GET /favicon.ico returns the site icon", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("Content-Type") || "", /image\/png/);
   const bytes = new Uint8Array(await response.arrayBuffer());
-  assert.equal(bytes.length, 155);
+  assert.equal(bytes.length, 895);
   assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 32, 0, 0, 0, 32]);
   assert.match(response.headers.get("Cache-Control") || "", /immutable/);
 });
 
 test("GET /icons serves square install icons at their declared dimensions", async () => {
   for (const [size, expectedLength] of [
-    [32, 155],
-    [192, 663],
-    [512, 742],
+    [32, 895],
+    [192, 1367],
+    [512, 3605],
   ]) {
     const response = await worker.fetch(
       new Request(`http://example.com/icons/icon-${size}.png`),
