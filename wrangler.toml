@@ -2,6 +2,11 @@ name = "buildingseattle"
 main = "worker.js"
 compatibility_date = "2026-03-14"
 
+# Static brand assets (design tokens, IBM Plex fonts, SVG favicon) served from ./public.
+# Matching paths are served before the Worker runs; everything else falls through to worker.js.
+[assets]
+directory = "./public"
+
 [triggers]
 crons = ["0 13 * * *"]
 
