@@ -35,17 +35,19 @@ jobs:
               raise SystemExit("INGEST_API_TOKEN secret is empty")
           for item in items:
               label = item.get("address")
+              # workers.dev skips the apex bot-fight rule that 1010s GitHub runners.
               req = urllib.request.Request(
-                  "https://buildingseattle.com/ingest/basis-reset",
+                  "https://buildingseattle.aged-morning-c8e4.workers.dev/ingest/basis-reset",
                   data=json.dumps(item).encode(),
-                  headers={"Content-Type": "application/json", "X-Ingest-Token": token},
+                  headers={"Content-Type": "application/json", "X-Ingest-Token": token, "User-Agent": "buildingseattle-ingest"},
                   method="POST",
               )
               try:
                   with urllib.request.urlopen(req, timeout=30) as resp:
                       print(f"HTTP {resp.status} {label} {resp.read().decode()}")
               except urllib.error.HTTPError as exc:
-                  print(f"HTTP {exc.code} {label} {exc.read().decode()}")
-                  if exc.code >= 500:
+                  body = exc.read().decode()
+                  print(f"HTTP {exc.code} {label} {body}")
+                  if exc.code != 409:
                       raise SystemExit(1)
           PY
