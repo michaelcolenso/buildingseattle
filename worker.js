@@ -1055,7 +1055,9 @@ function renderDesignTokens() {
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       .global-nav-row { height: 4rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
       .global-nav .logo { font-weight: 800; font-size: 1.25rem; color: var(--ink); text-decoration: none; display: flex; align-items: center; gap: 0.5rem; }
-      .global-nav .logo img { display: block; height: 24px; width: auto; }
+      .global-nav .logo { min-width: 0; flex: 0 1 auto; }
+      .global-nav .logo img { display: block; height: auto; max-height: 24px; width: auto; max-width: 100%; }
+      @media (max-width: 380px) { .global-nav-row, .global-nav-end { gap: 0.5rem; } }
       .global-nav-links { display: none; gap: 1.75rem; align-items: center; }
       .global-nav-links a { color: var(--ink-muted); text-decoration: none; font-weight: 500; font-size: 0.875rem; }
       .global-nav-links a:hover, .global-nav-links a.active { color: var(--link); }
@@ -1439,7 +1441,7 @@ export function renderHomepage(snapshot) {
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
     [data-theme="dark"] .site-header{--header-bg:rgba(8,24,42,.96)}
     [data-theme="dark"] .alert-panel{box-shadow:inset 0 0 0 1px var(--line)}
-    .header-end{display:flex;align-items:center;gap:12px}
+    .header-end{display:flex;align-items:center;gap:12px;flex:0 0 auto}.brand{min-width:0;flex:0 1 auto}.brand img{max-width:100%;height:auto;max-height:24px}@media(max-width:380px){.header-inner,.header-end{gap:8px}}
     ${themeToggleStyles()}
   </style>
 </head>
@@ -2378,7 +2380,7 @@ async function renderPermitBrowser(request, env) {
 	        select, button, .secondary-link { width: 100%; border-radius: 0.75rem; border: 1px solid var(--border); padding: 0.8rem 0.9rem; font: inherit; }
         select { background: var(--surface); color: var(--text); }
         .empty-link { color: var(--accent); font-weight: 650; }
-	        button { background: var(--accent); color: white; font-weight: 700; cursor: pointer; border-color: var(--accent); }
+	        button { background: var(--accent); color: var(--on-accent); font-weight: 700; cursor: pointer; border-color: var(--accent); }
 	        .secondary-link { background: transparent; color: var(--text); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
         .results-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
         .results-head p { margin: 0; color: var(--text-muted); }
@@ -2606,7 +2608,7 @@ export function renderPermitTimeline(permit) {
                       .timeline-foot{margin-top:1rem;font-size:0.72rem;color:var(--text-muted);line-height:1.5}
                     </style>
                     <div class="card-label">Construction Permit Timeline</div>
-                    <div class="timeline-scroll"><div class="bs-timeline" style="--steps:${nodes.length}"><span class="bs-timeline__bar" style="width:${progress}"></span>${nodesHtml}</div></div>
+                    <div class="timeline-scroll" role="region" aria-label="Permit timeline" tabindex="0"><div class="bs-timeline" style="--steps:${nodes.length}"><span class="bs-timeline__bar" style="width:${progress}"></span>${nodesHtml}</div></div>
                     ${metricsHtml}
                     ${nextStepHtml}
                     <div class="timeline-foot">Plan-review data from Seattle DCI. &ldquo;City control&rdquo; is total plan-review days minus the days the applicant held the permit for corrections.</div>
@@ -3090,14 +3092,14 @@ async function renderPermitDetail(permitNumber, env, request) {
         /* Grid Layout */
         .detail-grid {
             display: grid;
-            grid-template-columns: 1fr;
+            grid-template-columns: minmax(0, 1fr);
             gap: 1.5rem;
         }
         @media (min-width: 768px) {
-            .detail-grid { grid-template-columns: repeat(2, 1fr); }
+            .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (min-width: 1024px) {
-            .detail-grid { grid-template-columns: repeat(3, 1fr); }
+            .detail-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         }
 
         /* Cards */
@@ -4620,7 +4622,7 @@ function entBreadcrumb(items) {
   const parts = items
     .map((it) =>
       it.href
-        ? `<a href="${escapeHtml(it.href)}" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(it.label)}</a>`
+        ? `<a href="${escapeHtml(it.href)}" style="color:var(--text-muted);text-decoration:underline;text-underline-offset:2px;">${escapeHtml(it.label)}</a>`
         : `<span style="color:var(--text);font-weight:600;">${escapeHtml(it.label)}</span>`,
     )
     .join(' <span style="margin:0 0.4rem;color:var(--text-subtle);">/</span> ');
@@ -6198,7 +6200,7 @@ async function renderAduDaduPage(env) {
     </div>
     ${aduTimelineYearRows ? `<div class="bs-card">
       <h2>Average application → issuance time by year</h2>
-      <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
+      <div class="table-scroll" role="region" aria-label="Application to issuance time by year" tabindex="0">
         <table class="ent">
           <thead><tr><th>Year</th><th>Type</th><th>Issued permits</th><th>Average days</th></tr></thead>
           <tbody>${aduTimelineYearRows}</tbody>
@@ -6271,7 +6273,7 @@ async function renderAduDaduPage(env) {
     </div>
     <div class="bs-card">
       <h2>Recent Seattle ADU and DADU permits</h2>
-      <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
+      <div class="table-scroll" role="region" aria-label="Recent ADU and DADU permits" tabindex="0">
         <table class="ent">
           <thead><tr><th>Permit</th><th>Type</th><th>Address</th><th>Neighborhood</th><th>Status</th><th>Value</th><th>Date</th></tr></thead>
           <tbody>${recentRows}</tbody>
@@ -6880,7 +6882,7 @@ async function renderContractorsPage(env) {
     </div>
     <div class="bs-card">
       <h2>Contractor scorecards</h2>
-      <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
+      <div class="table-scroll" role="region" aria-label="Contractor scorecards" tabindex="0">
         <table class="ent">
           <thead><tr><th>Contractor</th><th>Permits</th><th>Value</th><th>Nbhds</th><th>Avg review</th><th>Active</th></tr></thead>
           <tbody>${tableRows}</tbody>

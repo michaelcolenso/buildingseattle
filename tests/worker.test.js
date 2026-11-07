@@ -3107,3 +3107,17 @@ test("GET /insights/basis-reset degrades to a 503 page when its tables are missi
   assert.match(html, /noindex/);
   assert.doesNotMatch(html, /D1_ERROR/);
 });
+
+test("global header and permit timeline reflow at 320px instead of widening the page", async () => {
+  const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), createEnv(), createCtx());
+  const html = await response.text();
+  // The 209px lockup may shrink so the theme toggle and menu button stay on screen.
+  assert.match(html, /\.global-nav \.logo \{ min-width: 0; flex: 0 1 auto; \}/);
+  assert.match(html, /\.global-nav \.logo img \{[^}]*max-width: 100%/);
+  // Grid tracks can shrink, so the timeline scrolls inside its card.
+  assert.match(html, /grid-template-columns: minmax\(0, 1fr\);/);
+  assert.doesNotMatch(html, /\.detail-grid \{ grid-template-columns: repeat\(\d, 1fr\)/);
+
+  const browser = await worker.fetch(new Request("http://example.com/permits"), createEnv(), createCtx());
+  assert.match(await browser.text(), /button \{ background: var\(--accent\); color: var\(--on-accent\)/);
+});
