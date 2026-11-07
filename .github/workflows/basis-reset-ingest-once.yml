@@ -1,0 +1,51 @@
+name: Basis Reset ingest once
+
+# One-shot dispatcher. Uses the repo INGEST_API_TOKEN secret so the value
+# never has to live on a workstation. Safe to re-run: duplicates return 409.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: POST example candidates
+        env:
+          INGEST_API_TOKEN: ${{ secrets.INGEST_API_TOKEN }}
+        run: |
+          python3 - << 'PY'
+          import json, os, urllib.error, urllib.request
+          from pathlib import Path
+
+          items = json.loads(Path("data/basis_reset_candidates.example.json").read_text())["candidates"]
+          # Example strings include ZIP+9 city form; D1 stores the display address without ZIP.
+          items[0]["address_id"] = 1555071
+          items[0]["address"] = "600 STEWART ST, SEATTLE, WA"
+          items[1]["address_id"] = 1555302
+          items[1]["address"] = "1412 23RD AVE, SEATTLE, WA"
+          token = os.environ.get("INGEST_API_TOKEN") or ""
+          if not token:
+              raise SystemExit("INGEST_API_TOKEN secret is empty")
+          for item in items:
+              label = item.get("address")
+              req = urllib.request.Request(
+                  "https://buildingseattle.com/ingest/basis-reset",
+                  data=json.dumps(item).encode(),
+                  headers={"Content-Type": "application/json", "X-Ingest-Token": token},
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      print(f"HTTP {resp.status} {label} {resp.read().decode()}")
+              except urllib.error.HTTPError as exc:
+                  print(f"HTTP {exc.code} {label} {exc.read().decode()}")
+                  if exc.code >= 500:
+                      raise SystemExit(1)
+          PY
