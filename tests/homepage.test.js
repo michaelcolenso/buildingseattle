@@ -55,16 +55,17 @@ test("homepage is task-first and uses mechanically correct data labels", async (
 
   assert.equal(response.status, 200);
   assert.match(html, /Seattle construction permits, projects &amp; contractor activity/);
-  assert.match(html, /<form class="search-form" action="\/permits" method="get" role="search">/);
+  assert.match(html, /<form class="bs-search search-form" action="\/permits" method="get" role="search">/);
   assert.match(html, /name="q" type="search"/);
-  assert.match(html, />7<\/strong><span>active permits/);
-  assert.match(html, />2<\/strong><span>contractors linked to permits/);
-  assert.match(html, /\$12\.5M<\/strong><span>declared permit value/);
+  assert.match(html, />7<\/span><span class="bs-metric__label">active permits/);
+  assert.match(html, />2<\/span><span class="bs-metric__label">contractors linked to permits/);
+  assert.match(html, /\$12\.5M<\/span><span class="bs-metric__label">declared permit value/);
   assert.match(html, /Scheduled daily ingest/);
   assert.match(html, /Last successful ingest/);
   assert.match(html, /Latest permit event/);
   assert.match(html, /What changed/);
-  assert.match(html, /PENDING → ACTIVE/);
+  assert.match(html, /<span class="bs-status" data-status="pending">Pending<\/span><svg [^>]*>.*?<\/svg><span class="bs-status" data-status="active">Active<\/span>/);
+  assert.match(html, /aria-label="Pending to Active"/);
   assert.match(html, /Contractors with new active work/);
   assert.match(html, /past 30 days/);
   assert.match(html, /Find prospective work/);

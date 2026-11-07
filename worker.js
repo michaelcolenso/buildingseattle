@@ -15,6 +15,7 @@ import {
   classifyAduPermit,
 } from "./adu.js";
 import { ENTITY_HUBS } from "./entity_hubs.js";
+import { bsIcon, bsStatusPill, bsTransition } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadar } from "./basis_reset_routes.js";
 
@@ -55,7 +56,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v7";
+const HTML_CACHE_VERSION = "v8";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
@@ -1294,7 +1295,7 @@ function transitionLabel(change) {
 
 function renderChanges(changes) {
   if (!changes.length) {
-    return `<div class="empty-state">No recent status changes are available in the current data snapshot.</div>`;
+    return `<div class="bs-empty">No recent status changes are available in the current data snapshot.</div>`;
   }
 
   return changes
@@ -1306,17 +1307,17 @@ function renderChanges(changes) {
         change.value ? `${compactMetricMoney(change.value)} declared value` : null,
         change.changed_at ? formatDate(change.changed_at, true) : null,
       ].filter(Boolean);
-      return `<a class="change-row" href="/permits/${permit}">
-        <span class="transition">${escapeHtml(transitionLabel(change))}</span>
-        <span class="change-title">${escapeHtml(title)}</span>
-        <span class="change-meta">${escapeHtml(metadata.join(" · "))}</span>
+      return `<a class="bs-change" href="/permits/${permit}">
+        ${bsTransition(change?.previous_status, change?.new_status, humanize(change?.previous_status, "New"), humanize(change?.new_status, "Updated"))}
+        <span class="bs-change__title">${escapeHtml(title)}</span>
+        <span class="bs-change__meta">${escapeHtml(metadata.join(" · "))}</span>
       </a>`;
     })
     .join("");
 }
 
 function renderRanking(rows, type) {
-  if (!rows.length) return `<div class="empty-state compact">No qualifying records in this snapshot.</div>`;
+  if (!rows.length) return `<div class="bs-empty">No qualifying records in this snapshot.</div>`;
 
   return rows
     .map((row, index) => {
@@ -1398,6 +1399,7 @@ export function renderHomepage(snapshot) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
   <meta charset="utf-8">
@@ -1426,10 +1428,10 @@ export function renderHomepage(snapshot) {
   <style>
     .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:#0B2945;color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:800;text-decoration:none}.skip-link:focus{left:0}
     :root{color-scheme:light;--primary:#0B2945;--accent:#0D6EC9;--accent-hover:#0A5BA8;--success:#0E6B5C;--warning:#8A5A00;--bg:#fff;--bg-alt:#F5F7FA;--panel:#fff;--text:#0B2945;--muted:#5B6B7F;--border:#CBD3DD;--soft:#E5E9EF;--focus:#0B66BA;--max:1200px}
-    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0B2945}.brand img{display:block;height:24px;width:auto}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:#0B2945;background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(11,41,69,.14);z-index:40}.mobile-nav a{text-decoration:none;color:#0B2945;font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:#3B4D63}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#0B66BA;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#3B4D63}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.search-form input{min-height:52px;width:100%;border:1px solid #5B6B7F;border-radius:9px;padding:0 16px;background:#fff;color:#0B2945}.search-form button{min-height:52px;border:0;border-radius:9px;padding:0 24px;background:var(--accent);color:#fff;font-weight:800;cursor:pointer}.search-form button:hover{background:var(--accent-hover)}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .metric:first-child{border-top-width:3px;border-top-color:#0B2945}.hero-aside .metric strong{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.metric{border-top:3px solid #0B2945;padding:12px 4px 0;text-decoration:none;color:inherit}.metric:hover strong{color:var(--accent)}.metric strong{display:block;color:var(--primary);font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05;letter-spacing:-.025em}.metric span{display:block;margin-top:5px;color:#3B4D63;font-size:12px;line-height:1.35}.freshness{max-width:820px;margin:18px 0 0;color:#3B4D63;font-size:13px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#3B4D63}.text-link{font-weight:800;color:#0B66BA;text-underline-offset:4px;white-space:nowrap}.changes{border-top:1px solid var(--border)}.change-row{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:center;padding:17px 2px;border-bottom:1px solid var(--border);text-decoration:none}.change-row:hover .change-title{text-decoration:underline;text-underline-offset:4px}.transition{font-size:12px;font-weight:850;letter-spacing:.04em;color:#0B2945}.change-title{font-weight:800;color:#0B2945}.change-meta{font-size:13px;color:#3B4D63;text-align:right}.empty-state{border:1px dashed #7B8A9C;border-radius:10px;padding:18px;color:#3B4D63;background:var(--bg-alt)}.empty-state.compact{font-size:14px}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0B2945;font-size:16px}.market-card p{margin:5px 0 0;color:#3B4D63;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#5B6B7F;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0B2945;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#5B6B7F;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0B2945;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0B2945;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#3B4D63;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0B2945;padding:4px 0 4px 18px;color:#3B4D63}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#5B6B7F}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0B2945}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0B2945}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#3B4D63}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#3B4D63}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0B2945;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0B2945;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0B2945}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#3B4D63;text-underline-offset:3px}
-    @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form button{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.change-row{grid-template-columns:1fr;gap:5px;padding:16px 2px}.change-meta{text-align:left}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
-    @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.metric strong{font-size:1.16rem}.metric span{font-size:11px}.hero h1{font-size:2.05rem}}
-    @media(prefers-color-scheme:dark){:root{color-scheme:dark;--primary:#f8fafc;--bg:#0f172a;--bg-alt:#111c30;--panel:#172033;--text:#e2e8f0;--muted:#94a3b8;--border:#475569;--soft:#334155;--focus:#93c5fd}.site-header{background:rgba(15,23,42,.96)}.brand,.nav a,.hero h1,.metric strong,.section h2,.change-title,.transition,.market-card h3,.rank-copy strong,.rank-value,.task strong,.trust-meta dd,summary,.footer-brand{color:#f8fafc}.brand-mark{background:#f8fafc;color:#0f172a}.hero-copy,.freshness,.section-deck,.change-meta,.market-card p,.rank-index,.rank-copy small,.rank-value small,.task p,.trust-note,.answer,.footer-nav a{color:#cbd5e1}.search-form input{background:#172033;color:#f8fafc;border-color:#64748b}.metric{border-top-color:#f8fafc}.trust-note{border-left-color:#f8fafc}.alert-panel{background:#020617}.alert-button{background:#f8fafc;color:#0f172a}.nav-toggle>summary{color:#f8fafc;background:#172033;border-color:#475569}.mobile-nav{background:#172033;border-color:#475569}.mobile-nav a{color:#f8fafc}.mobile-nav a:hover{background:#111c30}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0B2945}.brand img{display:block;height:24px;width:auto}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:#0B2945;background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(11,41,69,.14);z-index:40}.mobile-nav a{text-decoration:none;color:#0B2945;font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:#3B4D63}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#0B66BA;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#3B4D63}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .bs-metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .bs-metric:first-child{border-top-width:3px;border-top-color:#0B2945}.hero-aside .bs-metric__value{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.bs-metric:hover .bs-metric__value{color:var(--accent)}.bs-metric__value{font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05}.freshness{max-width:820px;margin:18px 0 0;flex-wrap:nowrap;align-items:flex-start}.freshness>span{flex:1;min-width:0}.freshness>.bs-icon{margin-top:1px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#3B4D63}.text-link{font-weight:800;color:#0B66BA;text-underline-offset:4px;white-space:nowrap}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0B2945;font-size:16px}.market-card p{margin:5px 0 0;color:#3B4D63;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#5B6B7F;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0B2945;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#5B6B7F;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0B2945;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0B2945;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#3B4D63;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0B2945;padding:4px 0 4px 18px;color:#3B4D63}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#5B6B7F}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0B2945}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0B2945}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#3B4D63}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#3B4D63}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0B2945;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0B2945;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0B2945}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#3B4D63;text-underline-offset:3px}
+    @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form .bs-btn{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
+    @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.bs-metric__value{font-size:1.16rem}.bs-metric__label{font-size:11px}.hero h1{font-size:2.05rem}}
+    @media(prefers-color-scheme:dark){:root{color-scheme:dark;--surface:#0f172a;--surface-alt:#111c30;--surface-raised:#172033;--surface-sunken:#1e293b;--ink:#f8fafc;--ink-secondary:#e2e8f0;--ink-muted:#94a3b8;--line:#475569;--line-subtle:#334155;--line-strong:#64748b;--primary:#f8fafc;--bg:#0f172a;--bg-alt:#111c30;--panel:#172033;--text:#e2e8f0;--muted:#94a3b8;--border:#475569;--soft:#334155;--focus:#93c5fd}.site-header{background:rgba(15,23,42,.96)}.brand,.nav a,.hero h1,.section h2,.market-card h3,.rank-copy strong,.rank-value,.task strong,.trust-meta dd,summary,.footer-brand{color:#f8fafc}.brand-mark{background:#f8fafc;color:#0f172a}.hero-copy,.freshness,.section-deck,.market-card p,.rank-index,.rank-copy small,.rank-value small,.task p,.trust-note,.answer,.footer-nav a{color:#cbd5e1}.bs-metric{border-top-color:#f8fafc}.trust-note{border-left-color:#f8fafc}.alert-panel{background:#020617}.alert-button{background:#f8fafc;color:#0f172a}.nav-toggle>summary{color:#f8fafc;background:#172033;border-color:#475569}.mobile-nav{background:#172033;border-color:#475569}.mobile-nav a{color:#f8fafc}.mobile-nav a:hover{background:#111c30}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
   </style>
 </head>
@@ -1456,20 +1458,20 @@ export function renderHomepage(snapshot) {
         <p class="eyebrow">Seattle SDCI permit data</p>
         <h1>Seattle construction permits, projects &amp; contractor activity</h1>
         <p class="hero-copy">Search current Seattle permit records by address, permit number, contractor, neighborhood, or project description.</p>
-        <form class="search-form" action="/permits" method="get" role="search">
+        <form class="bs-search search-form" action="/permits" method="get" role="search">
           <label for="home-search">Search Seattle construction permits</label>
-          <input id="home-search" name="q" type="search" autocomplete="off" placeholder="Address, permit #, contractor, neighborhood…">
-          <button type="submit">Search</button>
+          <span class="bs-search__box"><span data-icon="search">${bsIcon("search", 20)}</span><input class="bs-input" id="home-search" name="q" type="search" autocomplete="off" placeholder="Address, permit #, contractor, neighborhood…"></span>
+          <button class="bs-btn bs-btn--primary" type="submit">Search</button>
         </form>
         <div class="hero-subactions"><a href="/permits">Browse all permits →</a><a href="/projects">Explore projects →</a></div>
         </div>
         <aside class="hero-aside" aria-label="Database snapshot">
         <div class="metric-strip" aria-label="Current database metrics">
-          <a class="metric" href="/permits?status=active"><strong>${escapeHtml(stats.active_permits.toLocaleString("en-US"))}</strong><span>active permits</span></a>
-          <a class="metric" href="/contractors"><strong>${escapeHtml(stats.contractors.toLocaleString("en-US"))}</strong><span>contractors linked to permits</span></a>
-          <a class="metric" href="/permits"><strong>${escapeHtml(compactMetricMoney(stats.total_value))}</strong><span>declared permit value</span></a>
+          <a class="bs-metric" href="/permits?status=active"><span class="bs-metric__value">${escapeHtml(stats.active_permits.toLocaleString("en-US"))}</span><span class="bs-metric__label">active permits</span></a>
+          <a class="bs-metric" href="/contractors"><span class="bs-metric__value">${escapeHtml(stats.contractors.toLocaleString("en-US"))}</span><span class="bs-metric__label">contractors linked to permits</span></a>
+          <a class="bs-metric" href="/permits"><span class="bs-metric__value">${escapeHtml(compactMetricMoney(stats.total_value))}</span><span class="bs-metric__label">declared permit value</span></a>
         </div>
-        <p class="freshness">Seattle SDCI Open Data · Scheduled daily ingest · Last successful ingest <strong>${escapeHtml(ingestLabel)}</strong> · Latest permit event <strong>${escapeHtml(recordLabel)}</strong> · <a href="/methodology">Methodology</a></p>
+        <p class="bs-source freshness">${bsIcon("source", 14)}<span>Seattle SDCI Open Data · Scheduled daily ingest · Last successful ingest <strong>${escapeHtml(ingestLabel)}</strong> · Latest permit event <strong>${escapeHtml(recordLabel)}</strong> · <a href="/methodology">Methodology</a></span></p>
         </aside>
       </div>
     </section>
@@ -1477,7 +1479,7 @@ export function renderHomepage(snapshot) {
     <section class="section" aria-labelledby="changes-heading">
       <div class="container">
         <div class="section-head"><div><p class="section-kicker">Current signal</p><h2 id="changes-heading">What changed</h2><p class="section-deck">Recent status transitions recorded in the Building Seattle permit history.</p></div><a class="text-link" href="/permits">Browse permits →</a></div>
-        <div class="changes">${renderChanges(changes)}</div>
+        <div class="bs-changes">${renderChanges(changes)}</div>
       </div>
     </section>
 
@@ -1977,6 +1979,7 @@ function renderAlertResult(title, message, status = 200) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
   <meta charset="UTF-8">
@@ -2108,8 +2111,6 @@ function renderStatusChangeCards(changes) {
   return changes
     .map((change) => {
       const changedAt = change.changed_at ? timeAgo(new Date(change.changed_at)) : "Recently";
-      const previousStatus = escapeHtml(normalizeStoredStatus(change.previous_status));
-      const newStatus = escapeHtml(normalizeStoredStatus(change.new_status));
       const address = escapeHtml(change.address || "Unknown address");
       const neighborhood = escapeHtml(change.neighborhood || "Seattle");
       const permitNumber = escapeHtml(change.permit_number);
@@ -2122,9 +2123,7 @@ function renderStatusChangeCards(changes) {
           <div class="change-meta">Permit ${permitNumber} &bull; ${neighborhood} &bull; ${type} &bull; ${value}</div>
         </div>
         <div class="change-status">
-          <span class="status-pill muted">${previousStatus}</span>
-          <span class="change-arrow">&rarr;</span>
-          <span class="status-pill">${newStatus}</span>
+          ${bsTransition(normalizeStoredStatus(change.previous_status), normalizeStoredStatus(change.new_status), humanize(normalizeStoredStatus(change.previous_status)), humanize(normalizeStoredStatus(change.new_status)))}
           <span class="change-time">${escapeHtml(changedAt)}</span>
         </div>
       </article>`;
@@ -2293,7 +2292,6 @@ async function renderPermitBrowser(request, env) {
       const permitNumber = escapeHtml(permit.permit_number || "Unknown permit");
       const neighborhoodLabel = escapeHtml(permit.neighborhood || "Seattle");
       const typeLabel = escapeHtml(permitTypeLabel(permit.type));
-      const statusLabel = escapeHtml(permit.status || "new");
       const description = escapeHtml(permitSearchDescriptor(permit) || "No project description available yet.");
 
       return `<article class="permit-card">
@@ -2303,13 +2301,13 @@ async function renderPermitBrowser(request, env) {
             ${addressLink}
             <div class="permit-meta">${neighborhoodLabel} &bull; ${typeLabel} &bull; ${issued}</div>
           </div>
-          <span class="status-pill">${statusLabel}</span>
+          ${bsStatusPill(permit.status, humanize(permit.status || "new"))}
         </div>
         <p class="permit-description">${description}</p>
         <div class="permit-footer">
           <div>
             <div class="permit-value">${value}</div>
-            <div class="permit-number">Permit ${permitNumber}</div>
+            <div class="permit-number">Permit <span class="bs-id">${permitNumber}</span></div>
           </div>
           <div class="permit-contractor">${contractor}</div>
         </div>
@@ -2327,6 +2325,7 @@ async function renderPermitBrowser(request, env) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -2379,7 +2378,6 @@ async function renderPermitBrowser(request, env) {
         .change-title a { color: var(--primary); text-decoration: none; font-size: 1rem; font-weight: 800; }
         .change-meta, .change-time { color: var(--text-muted); font-size: 0.85rem; }
         .change-status { display: flex; align-items: center; justify-content: flex-end; gap: 0.45rem; flex-wrap: wrap; min-width: 260px; }
-        .change-arrow { color: var(--text-muted); font-weight: 800; }
         .permits { display: grid; gap: 1rem; padding-bottom: 3rem; }
         .permit-card { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; padding: 1.25rem; box-shadow: 0 8px 30px rgba(11,41,69, 0.04); }
         .permit-card-top, .permit-footer { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
@@ -2387,8 +2385,6 @@ async function renderPermitBrowser(request, env) {
         .permit-meta, .permit-number, .permit-description { color: var(--text-muted); }
         .permit-description { margin: 0.85rem 0 1rem; line-height: 1.6; }
         .permit-value { font-size: 1.35rem; font-weight: 800; color: var(--primary); }
-        .status-pill { background: rgba(37,99,235,0.12); color: var(--accent-hover); border-radius: 999px; padding: 0.35rem 0.7rem; text-transform: capitalize; font-size: 0.8rem; font-weight: 700; }
-        .status-pill.muted { background: rgba(100,116,139,0.12); color: var(--steel); }
         .empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 1rem; padding: 2rem; text-align: center; color: var(--text-muted); }
         @media (max-width: 720px) {
           .permit-card-top, .permit-footer, .results-head, .status-changes-header, .change-card { flex-direction: column; align-items: stretch; }
@@ -2534,16 +2530,23 @@ export function renderPermitTimeline(permit) {
     { label: "Completed", detail: completed, reached: !!completed },
     { label: "Expires", detail: expires, reached: !!expires },
   ];
+  // The current step is the latest reached milestone; "Expires" is a deadline,
+  // not an event, so it is never the current step.
+  let currentIndex = -1;
+  nodes.forEach((n, index) => {
+    if (n.reached && n.label !== "Expires") currentIndex = index;
+  });
   const nodesHtml = nodes
-    .map((n) => {
-      const detail = n.detail
-        ? `<div class="timeline-date">${escapeHtml(n.detail)}</div>`
-        : `<div class="timeline-date muted">&mdash;</div>`;
-      return `<div class="timeline-node${n.reached ? " reached" : ""}"><div class="timeline-dot"></div><div class="timeline-label">${escapeHtml(
+    .map((n, index) => {
+      const state = index === currentIndex ? " is-current" : n.reached && n.label !== "Expires" ? " is-done" : "";
+      const detail = n.detail ? escapeHtml(n.detail) : "&mdash;";
+      return `<div class="bs-step${state}"${index === currentIndex ? ' aria-current="step"' : ""}><span class="bs-step__label">${escapeHtml(
         n.label,
-      )}</div>${detail}</div>`;
+      )}</span><span class="bs-step__date">${detail}</span></div>`;
     })
-    .join('<div class="timeline-bar"></div>');
+    .join("");
+  // Bar runs from the first diamond's centre to the current one's.
+  const progress = currentIndex > 0 ? `calc(${((currentIndex * 100) / nodes.length).toFixed(3)}% + 1px)` : "0px";
 
   // Metrics strip — only cells that actually have data (like enrichmentFields).
   const metrics = [
@@ -2556,7 +2559,7 @@ export function renderPermitTimeline(permit) {
     ? `<div class="timeline-metrics">${metrics
         .map(
           ([label, v]) =>
-            `<div class="timeline-metric"><div class="timeline-metric-value">${v.toLocaleString()}</div><div class="timeline-metric-label">${escapeHtml(
+            `<div class="timeline-metric"><div class="timeline-metric-value bs-num">${v.toLocaleString()}</div><div class="timeline-metric-label">${escapeHtml(
               label,
             )}</div></div>`,
         )
@@ -2575,27 +2578,22 @@ export function renderPermitTimeline(permit) {
     : "";
 
   return `
-                <div class="card card-full timeline-card">
+                <div class="bs-card card-full timeline-card">
                     <style>
-                      .timeline{display:flex;flex-wrap:wrap;align-items:flex-start;gap:0.25rem;margin-top:1rem}
-                      .timeline-node{display:flex;flex-direction:column;align-items:center;text-align:center;flex:1 1 90px;min-width:78px}
-                      .timeline-bar{flex:1 1 18px;min-width:14px;height:2px;background:var(--border);margin-top:7px}
-                      .timeline-dot{width:16px;height:16px;border-radius:50%;background:var(--bg-alt);border:2px solid var(--border)}
-                      .timeline-node.reached .timeline-dot{background:var(--accent);border-color:var(--accent)}
-                      .timeline-label{font-size:0.72rem;font-weight:700;margin-top:0.45rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.03em}
-                      .timeline-node.reached .timeline-label{color:var(--primary)}
-                      .timeline-date{font-size:0.8rem;color:var(--text);margin-top:0.15rem}
-                      .timeline-date.muted{color:var(--text-muted)}
+                      .timeline-scroll{margin-top:1rem;overflow-x:auto;padding-bottom:2px}
+                      .timeline-scroll .bs-timeline{min-width:calc(var(--steps) * 84px)}
+                      .bs-step{padding-right:var(--space-2)}
+                      .bs-step:not(.is-done):not(.is-current)::before{background:var(--line);border-color:var(--line)}
                       .timeline-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-top:1.5rem}
                       .timeline-metric{background:var(--bg-alt);border:1px solid var(--border);border-radius:0.5rem;padding:0.85rem 1rem;text-align:center}
-                      .timeline-metric-value{font-size:1.5rem;font-weight:800;color:var(--accent);line-height:1.1}
+                      .timeline-metric-value{font-size:1.5rem;font-weight:700;color:var(--ink);line-height:1.1}
                       .timeline-metric-label{font-size:0.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;margin-top:0.3rem}
                       .timeline-next{margin-top:1.25rem;font-size:0.9rem;color:var(--text)}
                       .timeline-next-label{display:inline-block;font-weight:700;color:var(--primary);margin-right:0.5rem;text-transform:uppercase;font-size:0.68rem;letter-spacing:0.05em}
                       .timeline-foot{margin-top:1rem;font-size:0.72rem;color:var(--text-muted);line-height:1.5}
                     </style>
                     <div class="card-label">Construction Permit Timeline</div>
-                    <div class="timeline">${nodesHtml}</div>
+                    <div class="timeline-scroll"><div class="bs-timeline" style="--steps:${nodes.length}"><span class="bs-timeline__bar" style="width:${progress}"></span>${nodesHtml}</div></div>
                     ${metricsHtml}
                     ${nextStepHtml}
                     <div class="timeline-foot">Plan-review data from Seattle DCI. &ldquo;City control&rdquo; is total plan-review days minus the days the applicant held the permit for corrections.</div>
@@ -2753,37 +2751,30 @@ async function renderPermitDetail(permitNumber, env, request) {
     ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
     : "N/A";
 
-  const statusColors = {
-    active: "#10b981",
-    pending: "#f59e0b",
-    completed: "#3b82f6",
-    new: "#8b5cf6",
-  };
-  const statusColor = statusColors[permit.status] || "#64748b";
   const officialDetailUrl = safeHttpUrl(permit.permit_detail_url);
   const peopleCards = [
     permit.owner_name
       ? `
-	                <div class="card">
+	                <div class="bs-card">
 	                    <div class="card-label">Property Owner</div>
-	                    <div class="card-value">${escapeHtml(permit.owner_name)}</div>
+	                    <div class="bs-card__title">${escapeHtml(permit.owner_name)}</div>
 	                    ${permit.owner_address ? `<div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.owner_address)}</div>` : ""}
 	                </div>
 	      `
       : "",
     permit.applicant_name
       ? `
-	                <div class="card">
+	                <div class="bs-card">
 	                    <div class="card-label">Applicant</div>
-	                    <div class="card-value">${escapeHtml(permit.applicant_name)}</div>
+	                    <div class="bs-card__title">${escapeHtml(permit.applicant_name)}</div>
 	                </div>
       `
       : "",
     permit.architect_name
       ? `
-	                <div class="card">
+	                <div class="bs-card">
 	                    <div class="card-label">Architect</div>
-	                    <div class="card-value">${escapeHtml(permit.architect_name)}</div>
+	                    <div class="bs-card__title">${escapeHtml(permit.architect_name)}</div>
 	                </div>
       `
       : "",
@@ -2817,7 +2808,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
   const enrichmentCards = enrichmentFields.length
     ? `
-                <div class="card card-full">
+                <div class="bs-card card-full">
                     <div class="card-label">Permit Intelligence</div>
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin-top:0.75rem;">
                         ${enrichmentFields
@@ -2846,7 +2837,6 @@ async function renderPermitDetail(permitNumber, env, request) {
   const safeAddress = escapeHtml(smartTitleCase(addressLabel) || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
-  const safeStatus = escapeHtml(permit.status || "Unknown");
   const safeTitleAddress = escapeHtml(permit.address || "Seattle");
   const safeDescription = escapeHtml(
     permit.detailed_description || permit.description || "No description available for this permit.",
@@ -2985,7 +2975,7 @@ async function renderPermitDetail(permitNumber, env, request) {
       : "",
   ].filter(Boolean);
   const entityLinksCard = entityLinks.length
-    ? `<div class="card card-full">
+    ? `<div class="bs-card card-full">
                     <div class="card-label">Explore This Record</div>
                     <div style="display:flex;flex-wrap:wrap;gap:1.5rem;margin-top:0.5rem;">
                         ${entityLinks.map((l) => `<div>${l}</div>`).join("")}
@@ -3018,6 +3008,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -3047,6 +3038,10 @@ async function renderPermitDetail(permitNumber, env, request) {
         }
         @media (prefers-color-scheme: dark) {
             :root {
+                /* design-system tokens follow this page's dark palette until the dark theme ships (pass 4) */
+                --surface: #0f172a; --surface-alt: #1e293b; --surface-raised: #0f172a; --surface-sunken: #1e293b;
+                --ink: #f8fafc; --ink-secondary: #e2e8f0; --ink-muted: #94a3b8;
+                --line: #334155; --line-subtle: #1e293b; --line-strong: #64748b;
                 --primary: #f8fafc;
                 --bg: #0f172a;
                 --bg-alt: #1e293b;
@@ -3095,23 +3090,6 @@ async function renderPermitDetail(permitNumber, env, request) {
             max-width: 62ch;
             margin: 1rem 0 0;
         }
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.5rem 1rem;
-            border-radius: 9999px;
-            font-size: 0.875rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: currentColor;
-        }
 
         /* Grid Layout */
         .detail-grid {
@@ -3127,17 +3105,6 @@ async function renderPermitDetail(permitNumber, env, request) {
         }
 
         /* Cards */
-        .card {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 0.75rem;
-            padding: 1.5rem;
-            transition: box-shadow 0.2s, border-color 0.2s;
-        }
-        .card:hover {
-            box-shadow: var(--shadow);
-            border-color: var(--accent);
-        }
         .card-full {
             grid-column: 1 / -1;
         }
@@ -3151,15 +3118,6 @@ async function renderPermitDetail(permitNumber, env, request) {
             letter-spacing: 0.05em;
             color: var(--text-muted);
             margin-bottom: 0.5rem;
-        }
-        .card-value {
-            font-size: 1.125rem;
-            font-weight: 600;
-            color: var(--primary);
-        }
-        .card-value.large {
-            font-size: 1.5rem;
-            font-weight: 700;
         }
 
         /* Description Card */
@@ -3200,36 +3158,6 @@ async function renderPermitDetail(permitNumber, env, request) {
             margin-top: 2rem;
             flex-wrap: wrap;
         }
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
-            padding: 0.875rem 1.5rem;
-            border-radius: 0.5rem;
-            font-weight: 600;
-            font-size: 0.875rem;
-            text-decoration: none;
-            transition: background-color 0.2s, color 0.2s;
-            border: none;
-            cursor: pointer;
-        }
-        .btn-primary {
-            background: var(--accent);
-            color: white;
-        }
-        .btn-primary:hover {
-            background: var(--accent-hover);
-            transform: translateY(-1px);
-        }
-        .btn-secondary {
-            background: var(--bg-alt);
-            color: var(--text);
-            border: 1px solid var(--border);
-        }
-        .btn-secondary:hover {
-            background: var(--border);
-        }
 
         /* Footer */
 	        footer {
@@ -3264,12 +3192,9 @@ async function renderPermitDetail(permitNumber, env, request) {
     <main id="main-content">
         <div class="container">
             <div class="permit-header">
-	                <div class="permit-number">PERMIT #${safePermitNumber}</div>
+	                <div class="permit-number">PERMIT #<span class="bs-id">${safePermitNumber}</span></div>
 	                <h1 class="permit-title">${safeAddress}</h1>
-	                <span class="status-badge" style="background: ${statusColor}20; color: var(--primary);">
-	                    <span class="status-dot"></span>
-	                    ${safeStatus}
-                </span>
+	                ${bsStatusPill(permit.status, humanize(permit.status, "Unknown"))}
                 <p class="permit-summary">${permitSummaryHtml}</p>
 	                ${firstScreenLinks ? `<nav aria-label="Related permit records" style="display:flex;flex-wrap:wrap;gap:0.5rem 0.9rem;margin:1rem 0 0;font-size:0.84rem;">${firstScreenLinks}</nav>` : ""}
             </div>
@@ -3278,30 +3203,30 @@ async function renderPermitDetail(permitNumber, env, request) {
                 ${timelineCard}
                 ${entityLinksCard}
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Project Overview</h2>
-                <div class="card">
+                <div class="bs-card">
                     <div class="card-label">Project Details</div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.75rem;">
-                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Value</div><div style="font-size:1.25rem;font-weight:800;color:var(--primary);">${valueFormatted}</div></div>
-	                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Type</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${safePermitType}</div></div>
-	                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Issued</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${issuedDate}</div></div>
-	                        <div><div style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Location</div><div style="font-size:1rem;font-weight:600;color:var(--primary);">${safeNeighborhood}</div></div>
-                    </div>
+                    <dl class="bs-dl" style="margin-top:0.75rem;">
+                        <dt>Value</dt><dd class="bs-num">${valueFormatted}</dd>
+                        <dt>Type</dt><dd>${safePermitType}</dd>
+                        <dt>Issued</dt><dd>${issuedDate}</dd>
+                        <dt>Location</dt><dd>${safeNeighborhood}</dd>
+                    </dl>
                 </div>
 
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Contractor Information</h2>
-                <div class="card">
+                <div class="bs-card">
                     <div class="card-label">Contractor</div>
                     ${
                       permit.contractor_slug
                         ? `
-	                        <a class="card-value" style="display:block;color:var(--accent);margin-top:0.5rem;text-decoration:none;" href="/contractor/${encodeURIComponent(permit.contractor_slug)}">${escapeHtml(permit.contractor_name || "View Contractor")}</a>
+	                        <a class="bs-card__title" style="display:block;color:var(--link);margin-top:0.5rem;text-decoration:none;" href="/contractor/${encodeURIComponent(permit.contractor_slug)}">${escapeHtml(permit.contractor_name || "View Contractor")}</a>
 	                        ${permit.contractor_specialty ? `<div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.contractor_specialty)}</div>` : ""}
 	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
 	                        ${permit.contractor_phone ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.contractor_phone)}</div>` : ""}
 	                        ${permit.contractor_email ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">${escapeHtml(permit.contractor_email)}</div>` : ""}
                     `
                         : `
-	                        <div class="card-value" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
+	                        <div class="bs-card__title" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
 	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
 	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" onclick="openModal()" style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
                     `
@@ -3310,7 +3235,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </div>
 
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Location &amp; Map</h2>
-                <div class="card" style="padding: 0; overflow: hidden;">
+                <div class="bs-card" style="padding: 0; overflow: hidden;">
 	                    <iframe title="Map of ${safeAddress}" width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
                     <div style="padding: 0.75rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: center;">
 	                        <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" style="font-size: 0.8125rem; color: var(--accent); text-decoration: none; font-weight: 500;">Google Maps &rarr;</a>
@@ -3318,7 +3243,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     </div>
                 </div>
 
-                <div class="card card-full description-card">
+                <div class="bs-card card-full description-card">
                     <div class="card-label">Project Description</div>
 	                    <div class="description-text">${safeDescription}</div>
                 </div>
@@ -3327,11 +3252,11 @@ async function renderPermitDetail(permitNumber, env, request) {
             </div>
 
             <div class="actions">
-                <button class="btn btn-primary" onclick="openModal()">${primaryLeadLabel}</button>
+                <button class="bs-btn bs-btn--primary" onclick="openModal()">${primaryLeadLabel}</button>
                 ${
                   permit.contractor_slug
-                    ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="btn btn-secondary">View Contractor</a>`
-                    : `<a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" class="btn btn-secondary">Open Map</a>`
+                    ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="bs-btn bs-btn--secondary">View Contractor</a>`
+                    : `<a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" rel="noopener" class="bs-btn bs-btn--secondary">Open Map</a>`
                 }
             </div>
             </div>
@@ -3349,7 +3274,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                     <input id="lead-email" type="email" name="email" required autocomplete="email" placeholder="you@example.com">
                     <p id="lead-error" class="lead-error hidden"></p>
                 </div>
-                <button type="submit" class="btn btn-primary" style="width:100%;">
+                <button type="submit" class="bs-btn bs-btn--primary" style="width:100%;">
                     <span id="submitText">Email Me Status Changes</span>
                     <span id="submitLoader" class="loader hidden"></span>
                 </button>
@@ -3568,6 +3493,7 @@ async function renderAdminDashboard(request, env) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -3581,7 +3507,6 @@ async function renderAdminDashboard(request, env) {
         h1 { font-size: 1.75rem; margin: 0 0 1.5rem; }
         h2 { font-size: 1.25rem; margin: 2rem 0 1rem; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
-        .card { background: var(--surface); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
         .label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; display: block; letter-spacing: 0.04em; }
         .value { font-size: 1.5rem; font-weight: 800; color: var(--primary); }
         .badge { padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }
@@ -3596,10 +3521,10 @@ async function renderAdminDashboard(request, env) {
       <div class="container">
           <h1>System Health</h1>
           <div class="grid">
-              <div class="card"><span class="label">Last Run</span><div class="value">${stats.last_run?.status || "N/A"}</div></div>
-              <div class="card"><span class="label">24h Growth</span><div class="value">+${stats.growth_24h}</div></div>
-              <div class="card"><span class="label">Total Permits</span><div class="value">${stats.total_counts.permits}</div></div>
-              <div class="card"><span class="label">Success Rate</span><div class="value">${Math.round(stats.performance?.success_rate || 0)}%</div></div>
+              <div class="bs-card"><span class="label">Last Run</span><div class="value">${stats.last_run?.status || "N/A"}</div></div>
+              <div class="bs-card"><span class="label">24h Growth</span><div class="value">+${stats.growth_24h}</div></div>
+              <div class="bs-card"><span class="label">Total Permits</span><div class="value">${stats.total_counts.permits}</div></div>
+              <div class="bs-card"><span class="label">Success Rate</span><div class="value">${Math.round(stats.performance?.success_rate || 0)}%</div></div>
           </div>
 
           <h2>Leads (${leads.results.length})</h2>
@@ -3750,7 +3675,7 @@ async function renderContractorPage(slug, env, request) {
     : null;
   const hasCredentials = Boolean(contractor.license_number || contractor.ubi || insuranceFormatted);
   const credentialsCard = hasCredentials
-    ? `<div class="card">
+    ? `<div class="bs-card">
           <h3 style="margin-top:0">WA L&amp;I Credentials</h3>
           ${
             licenseStatusRaw
@@ -3838,6 +3763,7 @@ async function renderContractorPage(slug, env, request) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -3865,16 +3791,12 @@ async function renderContractorPage(slug, env, request) {
         .container{max-width:var(--container-max);margin:0 auto;padding:0 1.5rem}
         .seo-hero{background:linear-gradient(135deg,var(--primary) 0%,#0B2945 100%);color:white;padding:6rem 0 3rem;margin-top:4rem}
         .grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:3rem}
-        .card{background:var(--surface);border-radius:var(--radius-lg);padding:2rem;box-shadow:var(--shadow-md);margin-bottom:2rem}
-        .metric{text-align:center;padding:1.5rem;background:var(--bg-alt);border-radius:var(--radius-sm);border:1px solid var(--border)}
-        .metric-value{font-size:1.5rem;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums}
-        .metric-label{font-size:0.75rem;color:var(--text-muted)}
+        .bs-card{margin-bottom:2rem}
+        .bs-card .bs-metric__value{font-size:1.5rem;line-height:1.15}
         .entity-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));gap:1.5rem;margin-top:1rem}
         .entity-links a{display:inline-block;padding-block:0.25rem;line-height:1.4;color:var(--accent);text-decoration:none}
         .entity-links a:hover,.permit-row a:hover{text-decoration:underline}
         .permit-row a{color:var(--accent);text-decoration:none}
-        .btn{background:var(--accent);color:white;padding:0.75rem 1.5rem;border-radius:var(--radius-sm);text-decoration:none;display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:0.875rem;transition:background 0.2s}
-        .btn:hover{background:var(--accent-hover)}
         @media(max-width:768px){.grid{grid-template-columns:minmax(0,1fr)}}
     </style>
     <script type="application/ld+json">${contractorJsonLd}</script>
@@ -3912,7 +3834,7 @@ async function renderContractorPage(slug, env, request) {
     <div class="container" style="padding:3rem 1.5rem">
         <div class="grid">
             <div>
-                <div class="card">
+                <div class="bs-card">
                     <h2>About ${safeContractorDisplayName}</h2>
                     <p style="font-size:1rem;line-height:1.6;color:var(--text-muted);margin:0 0 1rem 0;">
                         ${safeContractorDisplayName} is ${escapeHtml(specialtyPhrase)} operating in Seattle, Washington.
@@ -3926,7 +3848,7 @@ async function renderContractorPage(slug, env, request) {
                           : `Contractors listed on Building Seattle are drawn from public SDCI permit data and may include general contractors, subcontractors, and specialty trades.`}
                     </p>
                 </div>
-                <div class="card">
+                <div class="bs-card">
                     <h2>${permitListHeading}</h2>
                     ${permits.results
                       .map(
@@ -3941,7 +3863,7 @@ async function renderContractorPage(slug, env, request) {
                 </div>
                 ${
                   graphAddresses.length || graphProjects.length
-                    ? `<div class="card">
+                    ? `<div class="bs-card">
                     <h3 style="margin-top:0">Addresses &amp; Projects</h3>
                     <div class="entity-links">
                       <div>
@@ -3977,7 +3899,7 @@ async function renderContractorPage(slug, env, request) {
             </div>
             <div>
                 ${credentialsCard}
-                <div class="card">
+                <div class="bs-card">
                     <h3>Market Specialization</h3>
                     <div style="margin-top:1.5rem">
                         <div style="font-size:0.875rem; color:var(--text-muted); margin-bottom:0.75rem">Top Neighborhoods</div>
@@ -4006,32 +3928,32 @@ async function renderContractorPage(slug, env, request) {
                     </div>
                 </div>
 
-                <div class="card" style="position:sticky;top:6rem">
+                <div class="bs-card" style="position:sticky;top:6rem">
                     <h3>Efficiency Metrics</h3>
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin:1.5rem 0">
-                        <div class="metric">
-                            <div class="metric-value">${completionRate}%</div>
-                            <div class="metric-label">Completion Rate</div>
+                        <div class="bs-metric">
+                            <div class="bs-metric__value">${completionRate}%</div>
+                            <div class="bs-metric__label">Completion Rate</div>
                         </div>
-                        <div class="metric">
-                            <div class="metric-value">${activeProjects}</div>
-                            <div class="metric-label">Active Permits</div>
+                        <div class="bs-metric">
+                            <div class="bs-metric__value">${activeProjects}</div>
+                            <div class="bs-metric__label">Active Permits</div>
                         </div>
-                        <div class="metric">
-                            <div class="metric-value">${reviewCycles}</div>
-                            <div class="metric-label">Avg Review Cycles</div>
+                        <div class="bs-metric">
+                            <div class="bs-metric__value">${reviewCycles}</div>
+                            <div class="bs-metric__label">Avg Review Cycles</div>
                         </div>
-                        <div class="metric">
-                            <div class="metric-value">${planReviewDays}</div>
-                            <div class="metric-label">Plan-Review Days</div>
+                        <div class="bs-metric">
+                            <div class="bs-metric__value">${planReviewDays}</div>
+                            <div class="bs-metric__label">Plan-Review Days</div>
                         </div>
-                        <div class="metric">
-                            <div class="metric-value">${correctionsDays}</div>
-                            <div class="metric-label">Days in Corrections</div>
+                        <div class="bs-metric">
+                            <div class="bs-metric__value">${correctionsDays}</div>
+                            <div class="bs-metric__label">Days in Corrections</div>
                         </div>
-                        <div class="metric">
-                            <div class="metric-value" style="color:${netHousingUnits > 0 ? "var(--success)" : netHousingUnits < 0 ? "var(--danger-solid)" : "var(--accent)"}">${netHousingUnits > 0 ? "+" : ""}${netHousingUnits}</div>
-                            <div class="metric-label">Net Housing Units</div>
+                        <div class="bs-metric">
+                            <div class="bs-metric__value" style="color:${netHousingUnits > 0 ? "var(--success)" : netHousingUnits < 0 ? "var(--danger-solid)" : "var(--accent)"}">${netHousingUnits > 0 ? "+" : ""}${netHousingUnits}</div>
+                            <div class="bs-metric__label">Net Housing Units</div>
                         </div>
                     </div>
 
@@ -4676,10 +4598,10 @@ function entStyles() {
     .ent-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:2.5rem;align-items:start}
     @media(max-width:860px){.ent-grid{grid-template-columns:minmax(0,1fr)}}
     .table-scroll{overflow-x:auto;max-width:100%}
-    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.75rem;box-shadow:var(--shadow-sm);margin-bottom:1.75rem}
-    .card h2{font-size:1.25rem;margin:0 0 1rem}
-    .card h3{font-size:1rem;margin:0 0 0.75rem}
-    .metric{text-align:center;padding:1rem;background:var(--bg-alt);border-radius:var(--radius-sm);border:1px solid var(--border)}
+    .bs-card{margin-bottom:1.75rem;box-sizing:border-box}
+    .bs-card h2{font-size:1.25rem;margin:0 0 1rem}
+    .bs-card h3{font-size:1rem;margin:0 0 0.75rem}
+    .stat-row .bs-metric__value{font-size:1.4rem;line-height:1.15}
     .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0.85rem;margin:1rem 0}
     .ent-list{list-style:none;margin:0;padding:0}
     .ent-list li{padding:0.75rem 0;border-bottom:1px solid var(--border)}
@@ -4708,7 +4630,7 @@ function entBreadcrumb(items) {
 }
 
 function entStat(label, value) {
-  return `<div class="metric"><div style="font-size:1.4rem;font-weight:800;color:var(--primary);">${value}</div><div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.25rem;">${escapeHtml(label)}</div></div>`;
+  return `<div class="bs-metric"><span class="bs-metric__value">${value}</span><span class="bs-metric__label">${escapeHtml(label)}</span></div>`;
 }
 
 // Aggregates plan-review metrics across a project's clustered permits into a
@@ -4766,7 +4688,7 @@ export function renderProjectReviewSummary(permits) {
   if (hasCycles) stats.push(entStat("Review cycles", cycles.toLocaleString()));
 
   return `
-        <div class="card">
+        <div class="bs-card">
           <h2>Review timeline</h2>
           <div class="stat-row">${stats.join("")}</div>
           <p style="font-size:0.8rem;color:var(--text-muted);margin:0;">Plan-review metrics aggregated across this project's permits, from Seattle DCI. "City control days" is total plan-review days minus the days applicants held permits for corrections.</p>
@@ -4782,7 +4704,7 @@ function renderBasisResetUnavailable() {
     activeNav: "insights",
     body: `${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Basis Reset Radar" }])}
       <div class="ent-hero"><h1>Basis Reset Radar</h1></div>
-      <div class="card"><h2>Temporarily unavailable</h2><p>The radar's scores aren't loading right now. Try again later, or explore the <a class="ent-link" href="/insights">other Seattle permit insights</a>.</p></div>`,
+      <div class="bs-card"><h2>Temporarily unavailable</h2><p>The radar's scores aren't loading right now. Try again later, or explore the <a class="ent-link" href="/insights">other Seattle permit insights</a>.</p></div>`,
   });
   return new Response(html, {
     status: 503,
@@ -4799,6 +4721,7 @@ function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogTyp
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -4849,7 +4772,7 @@ function entPermitRows(permits) {
         <td><a class="ent-link" href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(p.permit_number)}</a></td>
         <td>${escapeHtml(p.type || "—")}</td>
         <td>${entMoney(p.value)}</td>
-        <td><span class="pill">${escapeHtml(p.status || "—")}</span></td>
+        <td>${p.status ? bsStatusPill(p.status, humanize(p.status)) : "—"}</td>
         <td>${entDate(p.issued_date || p.applied_date)}</td>
       </tr>`,
     )
@@ -5042,7 +4965,7 @@ async function renderEntityHubPage(type, env, request) {
   const cards = items
     .map((item) => {
       const value = Number(item.total_value) > 0 ? entMoney(item.total_value) : "Value not reported";
-      return `<article class="card">
+      return `<article class="bs-card">
         <h2 style="font-size:1.05rem;margin:0 0 0.4rem;"><a class="ent-link" href="${config.pathPrefix}${encodeURIComponent(item.slug)}">${escapeHtml(item.label)}</a></h2>
         <p style="margin:0 0 0.75rem;color:var(--text-muted);font-size:0.875rem;">${escapeHtml(item.detail || "Seattle construction activity")}</p>
         <div style="display:flex;gap:1rem;font-size:0.8rem;font-weight:650;"><span>${Number(item.permit_count || 0).toLocaleString()} permits</span><span>${value}</span></div>
@@ -5062,7 +4985,7 @@ async function renderEntityHubPage(type, env, request) {
     <nav aria-label="Breadcrumb" style="font-size:0.8125rem;margin-bottom:1.25rem;"><a class="ent-link" href="/">Home</a> / ${escapeHtml(config.title)}</nav>
     <header style="max-width:800px;margin-bottom:2rem;"><h1>${escapeHtml(config.title)}</h1><p style="font-size:1.08rem;color:var(--text-muted);line-height:1.7;">${escapeHtml(config.intro)}</p></header>
     ${renderEntityHubFilters(type, state)}
-    ${items.length ? `<p style="color:var(--text-muted);">Page ${state.page}: showing ${items.length} ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>${pagination}` : queryFailed ? `<div class="card"><h2>Listings are temporarily unavailable</h2><p>We couldn't load ${escapeHtml(config.itemLabel)} right now. Try again in a few minutes.</p></div>` : `<div class="card"><h2>No matching ${escapeHtml(config.itemLabel)}</h2><p>No ${escapeHtml(config.itemLabel)} match these filters. <a class="ent-link" href="/${type}">View all ${escapeHtml(config.itemLabel)}</a></p></div>`}
+    ${items.length ? `<p style="color:var(--text-muted);">Page ${state.page}: showing ${items.length} ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>${pagination}` : queryFailed ? `<div class="bs-card"><h2>Listings are temporarily unavailable</h2><p>We couldn't load ${escapeHtml(config.itemLabel)} right now. Try again in a few minutes.</p></div>` : `<div class="bs-card"><h2>No matching ${escapeHtml(config.itemLabel)}</h2><p>No ${escapeHtml(config.itemLabel)} match these filters. <a class="ent-link" href="/${type}">View all ${escapeHtml(config.itemLabel)}</a></p></div>`}
     ${renderDataTrustNote(updatedThrough, "Hub rankings aggregate public permit records; declared value is not verified project cost.")}`;
 
   return new Response(
@@ -5253,8 +5176,8 @@ function insightsStyles() {
       .ins-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
       .ins-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.25rem}
       .ins-feature{display:block;text-decoration:none;color:inherit}
-      .ins-feature .card{height:100%;margin:0;display:flex;flex-direction:column;}.ins-feature .ins-stat{margin-top:auto;padding-top:.25rem}.ins-feature .card{transition:box-shadow .2s ease,transform .2s ease}
-      .ins-feature:hover .card{box-shadow:var(--shadow);transform:translateY(-2px)}
+      .ins-feature .bs-card{height:100%;box-sizing:border-box;margin:0;display:flex;flex-direction:column;}.ins-feature .ins-stat{margin-top:auto;padding-top:.25rem}.ins-feature .bs-card{transition:box-shadow .2s ease,transform .2s ease}
+      .ins-feature:hover .bs-card{box-shadow:var(--shadow-2);border-color:var(--line-strong)}
       .nb-contractor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1rem}
       .nb-contractor-card{border:1px solid var(--border);border-radius:16px;background:var(--bg);padding:1rem}
       .nb-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;border-bottom:1px solid var(--border);padding-bottom:0.75rem;margin-bottom:0.75rem}
@@ -5352,7 +5275,7 @@ async function renderPlanReviewPage(env) {
   }).replace(/</g, "\\u003c");
 
   const emptyState = `
-    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+    <div class="bs-card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No plan-review data yet</h2>
       <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Plan-review timing is populated as permits are enriched from the Seattle SDCI feed. Check back once enrichment has run.</p>
     </div>`;
@@ -5404,7 +5327,7 @@ async function renderPlanReviewPage(env) {
     ${
       hasData
         ? `
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Permits analyzed", s.count.toLocaleString())}
         ${entStat("Median review", `${s.median} days`)}
@@ -5414,20 +5337,20 @@ async function renderPlanReviewPage(env) {
       </div>
       <p class="pr-note">Half of permits clear review in ${s.median} days or less, but the slowest 10% take ${s.p90}+ days — the gap is where projects stall.</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>How to read these numbers</h2>
       <p class="pr-note">Plan around the median, budget around the 90th percentile. The average runs higher than the median because a long tail of complex projects — structural changes, new uses, landmark review — pulls it up. And each round of city review comments resets the clock while corrections are prepared, so the review-cycles figure matters as much as raw days.</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Distribution of plan-review time</h2>
       ${prBarChart(histogramRows)}
     </div>
     <div class="ent-grid">
-      <div class="card">
+      <div class="bs-card">
         <h2>Average review time by permit type</h2>
         ${prBarChart(typeRows)}
       </div>
-      <div class="card">
+      <div class="bs-card">
         <h2>Review cycles per permit</h2>
         ${prBarChart(cycleRows, "var(--success)")}
         <p class="pr-note">Each correction cycle adds a round-trip with reviewers. ${
@@ -5437,12 +5360,12 @@ async function renderPlanReviewPage(env) {
         }</p>
       </div>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Slowest neighborhoods by average review time</h2>
       <p style="color:var(--text-muted);margin-top:0;font-size:0.85rem;">Neighborhoods with at least 3 reviewed permits, ranked by longest average review.</p>
       ${prBarChart(neighborhoodRows, "var(--amber)")}
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Average review time by review level</h2>
       ${prBarChart(reviewLevelRows)}
     </div>
@@ -5693,7 +5616,7 @@ async function renderPipelinePage(env) {
   }));
 
   const emptyState = `
-    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+    <div class="bs-card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No pipeline data yet</h2>
       <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Pipeline timing comes from permit application, issue, and completion dates. Check back once permits have been ingested.</p>
     </div>`;
@@ -5709,14 +5632,14 @@ async function renderPipelinePage(env) {
     </div>
     ${
       hasData
-        ? `<div class="card">
+        ? `<div class="bs-card">
       <h2>What the funnel says</h2>
       <p>Of ${st.applied.toLocaleString()} Seattle permits with an application date in the dataset, ${st.issued.toLocaleString()} have been issued — an issue rate of ${data.issue_rate}%. Permits that do issue take a median of ${data.applied_to_issued.median} days from application (average ${data.applied_to_issued.mean} days; the slowest decile takes ${data.applied_to_issued.p90} days or more).</p>
       <p>After issuance, ${data.completion_rate}% of permits are marked complete, with a median of ${data.issued_to_completed.median} days of construction time. Permits that never issue don't disappear from this funnel — they keep the applied count honest, which is why the issue rate is the number to watch.</p>
     </div>`
         : ""
     }
-    <div class="card">
+    <div class="bs-card">
       <h2>Looking for ADU timelines?</h2>
       <p>Accessory dwelling unit permits have their own tracker with median application-to-issuance times, step-by-step duration breakdowns, and activity by year and neighborhood.</p>
       <p><a class="ent-link" href="/insights/adu-dadu">See the ADU &amp; DADU permit timeline and tracker &rarr;</a></p>
@@ -5724,7 +5647,7 @@ async function renderPipelinePage(env) {
     ${
       hasData
         ? `
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Applied", st.applied.toLocaleString())}
         ${entStat("Issued", st.issued.toLocaleString())}
@@ -5733,7 +5656,7 @@ async function renderPipelinePage(env) {
         ${entStat("Median to issue", `${data.applied_to_issued.median} days`)}
       </div>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Pipeline funnel (all permits)</h2>
       ${prBarChart(funnelRows)}
       <p class="pr-note">${data.issue_rate}% of applied permits reach issuance${
@@ -5741,7 +5664,7 @@ async function renderPipelinePage(env) {
       }.</p>
     </div>
     <div class="ent-grid">
-      <div class="card">
+      <div class="bs-card">
         <h2>Time in each stage</h2>
         ${prBarChart(
           [
@@ -5762,7 +5685,7 @@ async function renderPipelinePage(env) {
         )}
         <p class="pr-note">Median durations across ${data.applied_to_issued.count.toLocaleString()} issued and ${data.issued_to_completed.count.toLocaleString()} completed permits.</p>
       </div>
-      <div class="card">
+      <div class="bs-card">
         <h2>Median apply → issue by permit type</h2>
         ${prBarChart(typeRows)}
       </div>
@@ -5887,7 +5810,7 @@ async function renderHousingPage(env) {
   }));
 
   const emptyState = `
-    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+    <div class="bs-card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No housing data yet</h2>
       <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Housing-unit counts come from permit records as they are ingested. Check back once permits with housing data have loaded.</p>
     </div>`;
@@ -5904,7 +5827,7 @@ async function renderHousingPage(env) {
     ${
       hasData
         ? `
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Net units", (t.net >= 0 ? "+" : "") + t.net.toLocaleString())}
         ${entStat("Units added", t.added.toLocaleString())}
@@ -5913,16 +5836,16 @@ async function renderHousingPage(env) {
       </div>
       <p class="pr-note">Across all permits on record, Seattle has permitted a net ${(t.net >= 0 ? "+" : "") + t.net.toLocaleString()} dwelling units (${t.added.toLocaleString()} added, ${t.removed.toLocaleString()} removed).</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>How to read these numbers</h2>
       <p class="pr-note">Net units are what count for housing supply: gross additions minus demolitions and conversions that remove homes. A single permit can do both — a teardown replaced by a duplex removes one unit and adds two. Watch the neighborhood rankings too: citywide totals can mask how concentrated new construction is in a handful of areas.</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Net new units by year</h2>
       ${prBarChart(yearRows, "var(--success)")}
       <p class="pr-note">Bucketed by issue date (falling back to application date). Sub-labels show units added vs. removed.</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Neighborhoods adding the most homes</h2>
       ${prBarChart(neighborhoodRows, "var(--accent)")}
     </div>
@@ -6085,7 +6008,7 @@ async function renderAduDaduPage(env) {
         <div class="ent-kicker">Seattle housing intelligence</div>
         <h1>Seattle ADU &amp; DADU permit tracker</h1>
       </div>
-      <div class="card">
+      <div class="bs-card">
         <h2>Tracker temporarily unavailable</h2>
         <p>Seattle permit data could not be loaded for this request. Try again shortly.</p>
       </div>`;
@@ -6254,7 +6177,7 @@ async function renderAduDaduPage(env) {
     .join("");
   const aduTimelineSection = aduTlHasData
     ? `
-    <div class="card">
+    <div class="bs-card">
       <h2>How long does an ADU permit take in Seattle?</h2>
       <div class="stat-row">
         ${entStat("ADU median to issue", `${aduTl.ADU.applied_to_issued.median} days`)}
@@ -6265,7 +6188,7 @@ async function renderAduDaduPage(env) {
       ${prBarChart(aduTimelineRows, "var(--success)")}
       <p>Detached units take longer: the median DADU runs ${aduTl.DADU.applied_to_issued.median} days from application to issuance against ${aduTl.ADU.applied_to_issued.median} days for an attached ADU. Averages run higher than medians — ${aduTl.ADU.applied_to_issued.mean} days (ADU) and ${aduTl.DADU.applied_to_issued.mean} days (DADU) — because a small number of long reviews pull the average up.</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>How long each step takes</h2>
       <ol style="margin:0;padding-left:1.25rem;line-height:1.8;">
         <li><strong>Application</strong> — the permit is filed with the Seattle Department of Construction and Inspections. ${aduTl.ADU.applied.toLocaleString()} ADU and ${aduTl.DADU.applied.toLocaleString()} DADU permits in this dataset have an application date.</li>
@@ -6274,7 +6197,7 @@ async function renderAduDaduPage(env) {
         <li><strong>Completion</strong> — construction finishes and the permit is marked complete. ${aduTl.ADU.completion_rate}% of issued ADU permits and ${aduTl.DADU.completion_rate}% of issued DADU permits are marked complete, with a median of ${aduTl.ADU.issued_to_completed.median} days (ADU) and ${aduTl.DADU.issued_to_completed.median} days (DADU) from issuance.</li>
       </ol>
     </div>
-    ${aduTimelineYearRows ? `<div class="card">
+    ${aduTimelineYearRows ? `<div class="bs-card">
       <h2>Average application → issuance time by year</h2>
       <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
         <table class="ent">
@@ -6325,7 +6248,7 @@ async function renderAduDaduPage(env) {
     ${
       hasData
         ? `
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Matching permits", totals.total.toLocaleString())}
         ${entStat("ADU records", totals.adu_count.toLocaleString())}
@@ -6338,16 +6261,16 @@ async function renderAduDaduPage(env) {
       ${totals.data_updated_through ? `<p class="pr-note">Source data updated through ${escapeHtml(entDate(totals.data_updated_through))}.</p>` : ""}
     </div>
     ${aduTimelineSection}
-    <div class="card">
+    <div class="bs-card">
       <h2>ADU and DADU permits by year</h2>
       ${prBarChart(yearRows, "var(--success)")}
       <p class="pr-note">Grouped by issue date when available, otherwise application date.</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Seattle neighborhoods with the most ADU activity</h2>
       ${prBarChart(neighborhoodRows, "var(--accent)")}
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Recent Seattle ADU and DADU permits</h2>
       <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
         <table class="ent">
@@ -6357,21 +6280,21 @@ async function renderAduDaduPage(env) {
       </div>
     </div>
     `
-        : `<div class="card"><h2>ADU data is being classified</h2><p>The tracker will become indexable after matching Seattle permit records are available.</p></div>`
+        : `<div class="bs-card"><h2>ADU data is being classified</h2><p>The tracker will become indexable after matching Seattle permit records are available.</p></div>`
     }
     <div class="ent-grid" style="margin-top:1rem;">
-      <section class="card">
+      <section class="bs-card">
         <h2>ADU vs. DADU</h2>
         <p><strong>ADU</strong> is the broader term for an accessory dwelling unit associated with a primary home. It can be inside, attached to, or converted from part of an existing structure.</p>
         <p><strong>DADU</strong> means detached accessory dwelling unit. In Seattle records it may also appear as a detached ADU or backyard cottage.</p>
       </section>
-      <section class="card">
+      <section class="bs-card">
         <h2>How the tracker works</h2>
         <p>Building Seattle searches public permit descriptions for explicit ADU terminology, classifies detached projects separately, and aggregates results by year and neighborhood. A permit mentioning both attached and detached units is classified as DADU.</p>
         <p>Declared permit values and housing-unit fields are presented as reported and may be incomplete or revised during review.</p>
       </section>
     </div>
-    <section class="card">
+    <section class="bs-card">
       <h2>Using ADU permit activity</h2>
       <p>Homeowners can see the kinds of projects moving through Seattle review. Contractors and designers can identify neighborhoods with sustained accessory-dwelling demand. Researchers can track how small-scale infill contributes to Seattle's housing pipeline.</p>
       <p class="pr-note">Raw tracker data is available at <a class="ent-link" href="/api/adu-dadu">/api/adu-dadu</a>. Source records come from Seattle Department of Construction and Inspections permit data.</p>
@@ -6463,7 +6386,7 @@ function renderDataTrustNote(updatedThrough, extra = "") {
   const freshness = updatedThrough
     ? `Source records updated through ${escapeHtml(entDate(updatedThrough))}.`
     : "Freshness is shown when the source record provides a usable update date.";
-  return `<aside class="card" aria-label="Data source and methodology" style="font-size:.82rem;color:var(--text-muted);">
+  return `<aside class="bs-card" aria-label="Data source and methodology" style="font-size:.82rem;color:var(--text-muted);">
       <strong style="color:var(--text);">Source and methodology.</strong>
       ${freshness} ${extra}
       <a class="ent-link" href="/methodology">Read the full methodology and limitations.</a>
@@ -6597,20 +6520,20 @@ async function renderMarketSegmentPage(env, segment) {
     </div>
     ${
       hasData
-        ? `<div class="card"><div class="stat-row">
+        ? `<div class="bs-card"><div class="stat-row">
             ${entStat("Matching permits", data.totals.total.toLocaleString())}
             ${entStat("Issued", data.totals.issued.toLocaleString())}
             ${entStat("Active / in review", data.totals.active.toLocaleString())}
             ${entStat("Declared value", compactMoney(data.totals.total_value))}
           </div></div>
-          <div class="card"><h2>How to read these numbers</h2><p class="pr-note">Active and in-review permits are the forward pipeline — work likely to start or continue in the coming months. Declared value is the cost stated on the application, so it understates true project cost but stays comparable across permits. The neighborhood ranking shows where this segment is actually clustering, usually a better demand signal than the citywide total.</p></div>
-          <div class="card"><h2>Permit activity by year</h2>${prBarChart(yearRows, "var(--success)")}</div>
-          <div class="card"><h2>Leading Seattle neighborhoods</h2>${prBarChart(neighborhoodRows)}</div>
-          <div class="card"><h2>Recent matching permits</h2><div class="table-scroll" role="region" aria-label="Recent matching permits" tabindex="0"><table class="ent">
+          <div class="bs-card"><h2>How to read these numbers</h2><p class="pr-note">Active and in-review permits are the forward pipeline — work likely to start or continue in the coming months. Declared value is the cost stated on the application, so it understates true project cost but stays comparable across permits. The neighborhood ranking shows where this segment is actually clustering, usually a better demand signal than the citywide total.</p></div>
+          <div class="bs-card"><h2>Permit activity by year</h2>${prBarChart(yearRows, "var(--success)")}</div>
+          <div class="bs-card"><h2>Leading Seattle neighborhoods</h2>${prBarChart(neighborhoodRows)}</div>
+          <div class="bs-card"><h2>Recent matching permits</h2><div class="table-scroll" role="region" aria-label="Recent matching permits" tabindex="0"><table class="ent">
             <thead><tr><th>Permit</th><th>Address</th><th>Neighborhood</th><th>Status</th><th>Type</th><th>Value</th><th>Date</th></tr></thead>
             <tbody>${recentRows}</tbody>
           </table></div></div>`
-        : `<div class="card"><h2>Supporting data is unavailable</h2><p>This page will become indexable when matching permit records are available.</p></div>`
+        : `<div class="bs-card"><h2>Supporting data is unavailable</h2><p>This page will become indexable when matching permit records are available.</p></div>`
     }
     ${renderDataTrustNote(data.totals.updated_through, `${escapeHtml(config.methodology)} Declared value is not verified project cost.`)}
   `;
@@ -6762,7 +6685,7 @@ async function renderMapPage(env) {
   }));
 
   const emptyState = `
-    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+    <div class="bs-card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No mapped permits yet</h2>
       <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">The map plots permit activity by neighborhood. Check back once permits with neighborhoods have been ingested.</p>
     </div>`;
@@ -6779,7 +6702,7 @@ async function renderMapPage(env) {
     ${
       hasData
         ? `
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Neighborhoods", data.mapped_count.toLocaleString())}
         ${entStat("Permits mapped", data.total_permits.toLocaleString())}
@@ -6788,12 +6711,12 @@ async function renderMapPage(env) {
       <p class="pr-note">Larger, darker bubbles mean more permitted work and higher declared value — the clearest signal of where construction capital is flowing. Only permits with a mappable address appear here, so citywide or multi-site permits are excluded.</p>
     </div>
     <div class="ent-grid">
-      <div class="card">
+      <div class="bs-card">
         <h2>Construction activity map</h2>
         ${svgBubbleMap(mapped)}
         <p class="pr-note">Bubble size = permit count · color depth = total value. Hover a bubble for details.${data.unmapped_count ? ` ${data.unmapped_count} neighborhood${data.unmapped_count === 1 ? "" : "s"} without a known centroid are listed but not plotted.` : ""}</p>
       </div>
-      <div class="card">
+      <div class="bs-card">
         <h2>Most active neighborhoods</h2>
         ${prBarChart(rankRows)}
       </div>
@@ -6921,7 +6844,7 @@ async function renderContractorsPage(env) {
     .join("");
 
   const emptyState = `
-    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+    <div class="bs-card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No contractor data yet</h2>
       <p style="color:var(--text-muted);max-width:42ch;margin:0 auto;">Scorecards rank contractors by their attributed permits. Check back once permits have been linked to contractors.</p>
     </div>`;
@@ -6938,7 +6861,7 @@ async function renderContractorsPage(env) {
     ${
       hasData
         ? `
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Contractors", data.totals.contractors.toLocaleString())}
         ${entStat("With permits", data.totals.active_contractors.toLocaleString())}
@@ -6947,16 +6870,16 @@ async function renderContractorsPage(env) {
       <p class="pr-note">Attribution comes from the contractor field on each permit, so owner-builder and unspecified permits are not counted here. Value reflects declared permit value, not final construction cost. Median review speed is a rough proxy for process experience — repeat filers tend to clear Seattle review faster.</p>
     </div>
     <div class="ent-grid">
-      <div class="card">
+      <div class="bs-card">
         <h2>Most permits pulled</h2>
         ${prBarChart(permitRows)}
       </div>
-      <div class="card">
+      <div class="bs-card">
         <h2>Highest construction value</h2>
         ${prBarChart(valueRows, "var(--success)")}
       </div>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Contractor scorecards</h2>
       <div class="table-scroll" role="region" aria-label="Permit table" tabindex="0">
         <table class="ent">
@@ -7192,7 +7115,7 @@ async function renderNetworkPage(env) {
     .join("");
 
   const emptyState = `
-    <div class="card" style="text-align:center;padding:3rem 1.75rem;">
+    <div class="bs-card" style="text-align:center;padding:3rem 1.75rem;">
       <h2 style="margin-top:0;">No network data yet</h2>
       <p style="color:var(--text-muted);max-width:46ch;margin:0 auto;">This network links contractors to the neighborhoods they build in. It needs permits attributed to contractors with neighborhoods — check back once that data is ingested.</p>
     </div>`;
@@ -7210,16 +7133,16 @@ async function renderNetworkPage(env) {
     ${
       hasData
         ? `
-    <div class="card">
+    <div class="bs-card">
       <h2>Contractor &amp; neighborhood network</h2>
       ${svgBipartiteNetwork(data.contractors, data.neighborhoods, data.edges)}
       <p class="pr-note">Blue = contractors (sized by total permits) · green = neighborhoods (sized by permits from these contractors). Click a contractor to open their page. Each contractor is linked to its top 4 neighborhoods.</p>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Top neighborhoods by contractor</h2>
       <ul class="ent-list">${adjacency}</ul>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <h2>Top contractors by neighborhood</h2>
       <p class="pr-note">Includes every neighborhood with permit activity. Contractor rankings are recalculated across all attributed permits for that neighborhood.</p>
       <div class="nb-contractor-grid">${neighborhoodContractorCards}</div>
@@ -7314,7 +7237,7 @@ async function renderInsightsIndex(env) {
 
   const feature = (href, kicker, h, teaser, stat) => `
     <a class="ins-feature" href="${href}">
-      <div class="card">
+      <div class="bs-card">
         <div class="ent-kicker">${escapeHtml(kicker)}</div>
         <h2 style="margin:0.2rem 0 0.5rem;">${escapeHtml(h)}</h2>
         <p style="color:var(--text-muted);margin:0 0 1rem;font-size:0.9rem;">${escapeHtml(teaser)}</p>
@@ -7664,7 +7587,7 @@ async function renderAddressPage(slug, env, request) {
       ${neighborhood ? `<a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
     </div>
     <div style="max-width:var(--container-max);margin:0 auto 2.5rem;padding:0 1.5rem;">
-      <div class="card" style="margin-bottom:0;">
+      <div class="bs-card" style="margin-bottom:0;">
         <div style="font-size:1.05rem;line-height:1.85;color:var(--text-muted);">
           <p style="margin:0 0 1rem;">${escapeHtml(display)} is a property in Seattle${neighborhood ? `'s <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a> neighborhood` : ""} with <strong style="color:var(--text);">${permitCount} construction permit${permitCount !== 1 ? "s" : ""}</strong> on record with the Seattle Department of Construction and Inspections${activePermits.length > 0 ? `, <strong style="color:var(--text);">${activePermits.length} of which ${activePermits.length === 1 ? "is" : "are"} currently active</strong>` : ""}.${totalValue > 0 ? ` The combined estimated project value across all permits is <strong style="color:var(--text);">$${parseInt(totalValue).toLocaleString()}</strong>.` : ""}</p>
           <p style="margin:0 0 1rem;">Permit activity at this address spans from ${firstDate ? new Date(firstDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the earliest record"} to ${lastDate ? new Date(lastDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the present"}${featuredPermit?.permit_number ? `, with the featured record filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">${escapeHtml(featuredPermit.permit_number)}</a>` : ""}.${latestContractor && permits[0]?.contractor_slug ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(permits[0].contractor_slug)}">${escapeHtml(latestContractor)}</a>.` : ""}</p>
@@ -7674,7 +7597,7 @@ async function renderAddressPage(slug, env, request) {
     </div>
     <div class="ent-grid">
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h2>Summary</h2>
           <div class="stat-row">
             ${entStat("Permits", permitCount)}
@@ -7684,21 +7607,21 @@ async function renderAddressPage(slug, env, request) {
           </div>
           <div style="font-size:0.85rem;color:var(--text-muted);">First permit ${entDate(firstDate)} · Latest permit ${entDate(lastDate)}</div>
         </div>
-        <div class="card">
+        <div class="bs-card">
           <h2>Permit records (${permitCount})</h2>
           ${entPermitRows(permits)}
         </div>
       </div>
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h3>Inferred projects</h3>
           ${projectsHtml}
         </div>
-        <div class="card">
+        <div class="bs-card">
           <h3>Contractors &amp; participants</h3>
           ${participantsHtml}
         </div>
-        ${relatedHtml ? `<div class="card"><h3>Nearby &amp; related addresses</h3>${relatedHtml}</div>` : ""}
+        ${relatedHtml ? `<div class="bs-card"><h3>Nearby &amp; related addresses</h3>${relatedHtml}</div>` : ""}
       </div>
     </div>`;
 
@@ -7808,7 +7731,7 @@ async function renderProjectPage(slug, env, request) {
     </div>
     <div class="ent-grid">
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h2>Summary</h2>
           <div class="stat-row">
             ${entStat("Permits", permits.length)}
@@ -7819,17 +7742,17 @@ async function renderProjectPage(slug, env, request) {
           ${project.description_summary ? `<p style="margin-top:0.5rem;">${escapeHtml(project.description_summary)}</p>` : ""}
         </div>
         ${renderProjectReviewSummary(permits)}
-        <div class="card">
+        <div class="bs-card">
           <h2>Permit records (${permits.length})</h2>
           ${entPermitRows(permits)}
         </div>
       </div>
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h3>Participants</h3>
           ${participantsHtml}
         </div>
-        <div class="card">
+        <div class="bs-card">
           <h3>About this project</h3>
           <p style="font-size:0.85rem;color:var(--text-muted);margin:0;">This project was inferred by grouping related permits at the same address. Confidence score ${project.confidence_score}/100 reflects how strongly the permits appear to belong to a single effort.</p>
         </div>
@@ -7952,7 +7875,7 @@ async function renderNeighborhoodPage(slug, env, request) {
       <div class="ent-kicker">Neighborhood</div>
       <h1>${escapeHtml(nb.name)}</h1>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Permits", permitCount)}
         ${entStat("Total value", entMoney(totalValue))}
@@ -7962,11 +7885,11 @@ async function renderNeighborhoodPage(slug, env, request) {
     </div>
     <div class="ent-grid">
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h2>Recent permits</h2>
           ${entPermitRows(recentPermits)}
         </div>
-        <div class="card">
+        <div class="bs-card">
           <h2>Active projects</h2>
           ${listOrEmpty(
             projects,
@@ -7977,7 +7900,7 @@ async function renderNeighborhoodPage(slug, env, request) {
         </div>
       </div>
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h3>Top contractors</h3>
           ${listOrEmpty(
             topContractors,
@@ -7985,7 +7908,7 @@ async function renderNeighborhoodPage(slug, env, request) {
             "No contractors on record.",
           )}
         </div>
-        <div class="card">
+        <div class="bs-card">
           <h3>Most active addresses</h3>
           ${listOrEmpty(
             topAddresses,
@@ -8099,7 +8022,7 @@ async function renderOrgContractorPage(slug, env, request) {
       <div class="ent-kicker">${escapeHtml(isOrg ? "Organization" : "Person")} · ${escapeHtml(roleLabels)}</div>
       <h1>${escapeHtml(org.name)}</h1>
     </div>
-    <div class="card">
+    <div class="bs-card">
       <div class="stat-row">
         ${entStat("Permits", permits.length)}
         ${entStat("Active / recent", activeCount)}
@@ -8109,11 +8032,11 @@ async function renderOrgContractorPage(slug, env, request) {
     </div>
     <div class="ent-grid">
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h2>Recent activity</h2>
           ${entPermitRows(permits.slice(0, 20))}
         </div>
-        <div class="card">
+        <div class="bs-card">
           <h2>Inferred projects</h2>
           ${listOrEmpty(
             projects,
@@ -8123,7 +8046,7 @@ async function renderOrgContractorPage(slug, env, request) {
         </div>
       </div>
       <div>
-        <div class="card">
+        <div class="bs-card">
           <h3>Addresses worked on</h3>
           ${listOrEmpty(
             addresses,
@@ -8131,7 +8054,7 @@ async function renderOrgContractorPage(slug, env, request) {
             "No addresses on record.",
           )}
         </div>
-        <div class="card">
+        <div class="bs-card">
           <h3>Most common neighborhoods</h3>
           ${listOrEmpty(
             neighborhoods,
@@ -9427,6 +9350,7 @@ function renderApiDocs() {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -10615,36 +10539,36 @@ async function renderMethodologyPage(env) {
       <h1>Methodology, sources, and limitations</h1>
       <p style="color:var(--text-muted);max-width:72ch;margin:0;">How raw Seattle permit records become the searchable permits, properties, contractors, projects, neighborhoods, and analytical reports published on Building Seattle.</p>
     </div>
-    <div class="card"><div class="stat-row">
+    <div class="bs-card"><div class="stat-row">
       ${entStat("Permit records", permitCount ? permitCount.toLocaleString() : "Refreshing")}
       ${entStat("Updated through", updatedThrough ? entDate(updatedThrough) : "Unavailable")}
       ${entStat("Scheduled base ingest", "Daily")}
     </div></div>
-    <section class="card">
+    <section class="bs-card">
       <h2>Primary source</h2>
       <p>The base feed is the Seattle Department of Construction and Inspections public building-permit dataset published through Seattle Open Data. Building Seattle reads the official machine-readable feed at <a class="ent-link" href="https://data.seattle.gov/resource/k44w-2dcq.json" rel="external">data.seattle.gov</a>.</p>
       <p>Where SDCI publishes a record-level detail URL, the corresponding permit page links directly to that official record.</p>
     </section>
-    <section class="card">
+    <section class="bs-card">
       <h2>Ingest and enrichment</h2>
       <p>A scheduled daily ingest upserts base permit fields. A separate enrichment job retrieves detail-page fields that are not consistently available in the open-data feed, including parcel number, review level, review milestones, contractor license details, housing-unit changes, and fuller descriptions.</p>
       <p>Dates and statuses may change as SDCI reviewers update a record. Page-level “updated through” labels report the newest source-record timestamp included in that result, not the time a reader opened the page.</p>
     </section>
-    <section class="card">
+    <section class="bs-card">
       <h2>Derived entities and matching confidence</h2>
       <p>Permits are the evidence records. Address pages come from normalized street addresses. Projects group permits that share an address and have related timing and work signals. Contractor and participant pages use names and license information published on permits.</p>
       <p>Entity grouping is deterministic but inferred. Similar names, shared addresses, incomplete licenses, or changed project descriptions can split one real-world entity into several pages or combine records that later need correction.</p>
     </section>
-    <section class="card">
+    <section class="bs-card">
       <h2>Values, units, and completion</h2>
       <p><strong>Declared permit value is not verified project cost.</strong> It can omit land, design, financing, owner-provided work, later changes, or portions filed under related permits.</p>
       <p><strong>A permit record is not a completed project or dwelling.</strong> One property can have several related permits, and applied, issued, active, expired, and completed records represent different stages. Housing-unit fields are presented as reported and can be incomplete or revised.</p>
     </section>
-    <section class="card">
+    <section class="bs-card">
       <h2>Analytical classifications</h2>
       <p>Insight pages use documented, reproducible rules over public permit fields. ADU/DADU classifications look for explicit accessory-dwelling language. Commercial and tenant-improvement reports use the inclusion rules printed on each page. These are research views, not official SDCI classifications.</p>
     </section>
-    <section class="card">
+    <section class="bs-card">
       <h2>Corrections and reuse</h2>
       <p>Use the official SDCI detail link when a decision depends on a single permit. For bulk research, the <a class="ent-link" href="/data">dataset page</a> and <a class="ent-link" href="/api-docs">public API documentation</a> describe reusable access paths.</p>
     </section>`;
@@ -10700,6 +10624,7 @@ function renderAboutPage() {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -10881,6 +10806,7 @@ async function renderDataPage(env) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -10921,6 +10847,9 @@ async function renderDataPage(env) {
         .content strong { color: var(--text); }
         .content a { color: var(--accent); font-weight: 600; text-decoration: none; }
         .content a:hover { text-decoration: underline; }
+        .content a.bs-btn { font-weight: 600; text-decoration: none; }
+        .content a.bs-btn--primary { color: var(--on-accent); }
+        .content a.bs-btn--secondary { color: var(--ink); }
         .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
         .stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; text-align: center; }
         .stat-card .num { font-size: 2rem; font-weight: 800; color: var(--accent); }
@@ -10931,9 +10860,7 @@ async function renderDataPage(env) {
         .tier-card h3 { font-size: 1.25rem; font-weight: 700; color: var(--primary); }
         .tier-card .price { font-size: 2.25rem; font-weight: 800; color: var(--text); margin: 0.5rem 0 1rem; }
         .tier-card ul { margin-left: 1.25rem; }
-        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.85rem 1.75rem; border-radius: 0.5rem; font-weight: 600; text-decoration: none; font-size: 1rem; }
-        .btn-primary { background: var(--accent); color: white !important; }
-        .btn-secondary { background: var(--bg); color: var(--text) !important; border: 1px solid var(--border); }
+        a.bs-btn { text-decoration: none; }
     </style>
 </head>
 <body>
@@ -10970,7 +10897,7 @@ async function renderDataPage(env) {
                             <li>Complete data dictionary</li>
                             <li>Free monthly updates via Gumroad</li>
                         </ul>
-                        <p style="margin-top:1.5rem;"><a class="btn btn-secondary" href="${buyUrl}&utm_content=foundation" rel="noopener">Get Foundation</a></p>
+                        <p style="margin-top:1.5rem;"><a class="bs-btn bs-btn--secondary bs-btn--lg" href="${buyUrl}&utm_content=foundation" rel="noopener">Get Foundation</a></p>
                     </div>
                     <div class="tier-card featured">
                         <h3>Pro</h3>
@@ -10981,7 +10908,7 @@ async function renderDataPage(env) {
                             <li>Contractor CSV — licenses, specialties, permit counts, total values</li>
                             <li>Free monthly updates via Gumroad</li>
                         </ul>
-                        <p style="margin-top:1.5rem;"><a class="btn btn-primary" href="${buyUrl}&utm_content=pro" rel="noopener">Get Pro</a></p>
+                        <p style="margin-top:1.5rem;"><a class="bs-btn bs-btn--primary bs-btn--lg" href="${buyUrl}&utm_content=pro" rel="noopener">Get Pro</a></p>
                     </div>
                 </div>
 
@@ -10997,8 +10924,8 @@ async function renderDataPage(env) {
                 <p>The raw records are public — the work isn't. The city publishes permits piecemeal through a clunky portal, without contractor licenses, parcel numbers, review levels, or detailed descriptions. Our pipeline scrapes, cleans, deduplicates, and enriches every record so you don't spend a weekend doing it yourself.</p>
 
                 <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
-                    <a href="${buyUrl}" class="btn btn-primary" rel="noopener">Get the Dataset</a>
-                    <a href="/permits" class="btn btn-secondary">Browse the Data Live</a>
+                    <a href="${buyUrl}" class="bs-btn bs-btn--primary bs-btn--lg" rel="noopener">Get the Dataset</a>
+                    <a href="/permits" class="bs-btn bs-btn--secondary bs-btn--lg">Browse the Data Live</a>
                 </div>
             </div>
         </section>
@@ -11025,6 +10952,7 @@ function render404(options) {
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
+  <link rel="stylesheet" href="/brand/bundle.css">
   <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
     <meta charset="UTF-8">
@@ -11046,11 +10974,8 @@ function render404(options) {
         .error-section h1 { font-size: 6rem; font-weight: 800; color: var(--accent); margin-bottom: 1rem; line-height: 1; }
         .error-section h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; color: var(--primary); }
         .error-section p { color: var(--text-muted); margin-bottom: 2rem; max-width: 500px; margin-left: auto; margin-right: auto; }
-        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1.5rem; border-radius: var(--radius-sm); font-weight: 600; text-decoration: none; transition: background-color 0.2s, color 0.2s; border: none; cursor: pointer; font-size: 0.875rem; }
-        .btn-primary { background: var(--accent); color: white; }
-        .btn-primary:hover { background: var(--accent-hover); }
-        .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); margin-left: 0.5rem; }
-        .btn-secondary:hover { background: var(--border); }
+        a.bs-btn { text-decoration: none; }
+        .bs-btn + .bs-btn { margin-left: 0.5rem; }
     </style>
 </head>
 <body>
@@ -11063,8 +10988,8 @@ function render404(options) {
               <h2>${escapeHtml(heading)}</h2>
               <p>${escapeHtml(message)}</p>
               <div>
-                  <a href="/" class="btn btn-primary">Return Home</a>
-                  <a href="/permits" class="btn btn-secondary">Browse Permits</a>
+                  <a href="/" class="bs-btn bs-btn--primary bs-btn--lg">Return Home</a>
+                  <a href="/permits" class="bs-btn bs-btn--secondary bs-btn--lg">Browse Permits</a>
               </div>
           </div>
       </section>

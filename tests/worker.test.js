@@ -2290,7 +2290,7 @@ test("GET /permits/:permit_number builds a specific title, meta description, and
   // to the verified address and contractor entity pages.
   const h1Matches = html.match(/<h1[^>]*>/g) || [];
   assert.equal(h1Matches.length, 1);
-  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>\s*<span class="status-badge"[^>]*>[\s\S]*?<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>\s*<span class="bs-status"[^>]*>[^<]*<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
   const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
   assert.ok(summaryMatch);
   const summaryHtml = summaryMatch[1];
@@ -3045,7 +3045,7 @@ test("GET /permits shows the status feed only on the unfiltered first page, abov
   assert.match(html, />Apply filters</);
   assert.match(html, />Clear filters</);
   assert.doesNotMatch(html, /<label>&nbsp;<\/label>/);
-  assert.match(html, /\.status-pill \{[^}]*color: var\(--accent-hover\)/);
+  assert.match(html, /<span class="bs-status" data-status="[a-z]+">/);
 });
 
 test("GET /permits empty search names the query and offers a way out", async () => {
