@@ -1,4 +1,4 @@
-/* buildingseattle design tokens — generated from the design system tokens.json. Light values on :root; dark values only under [data-theme="dark"] (not yet enabled on the site). */
+/* buildingseattle design tokens — generated from the design system tokens.json. Light values on :root; dark values under [data-theme="dark"], which the page head script sets from the visitor's choice or OS setting. */
 :root, [data-theme="light"] {
   --brand-navy: #0B2945;
   --brand-blue: #0D78D9;

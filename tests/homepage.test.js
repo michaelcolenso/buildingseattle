@@ -72,6 +72,9 @@ test("homepage is task-first and uses mechanically correct data labels", async (
   assert.match(html, /Built from Seattle public records/);
   assert.match(html, /What does “permit value” mean\?/);
   assert.match(html, /Get the changes that matter/);
+  assert.match(html, /<head>\s*<script>\(function\(\)\{var d=document\.documentElement,k="bs-theme"/);
+  assert.match(html, /class="theme-toggle"/);
+  assert.doesNotMatch(html, /prefers-color-scheme:dark\)\{:root/);
 
   assert.doesNotMatch(html, /updated hourly/i);
   assert.doesNotMatch(html, /real-time market intelligence/i);
