@@ -29,3 +29,20 @@ test("bsIcon is decorative by default, labelled on request, empty for unknown na
   assert.match(bsIcon("search", 20, "Search"), /role="img" aria-label="Search"/);
   assert.equal(bsIcon("nope"), "");
 });
+
+test("theme boot script sets data-theme from storage or the OS and handles toggle clicks", async () => {
+  const { themeBootScript, themeToggleButton, themedLockup, themeToggleStyles } = await import("../brand_ui.js");
+  const script = themeBootScript();
+  assert.match(script, /^<script>\(function\(\)\{/);
+  assert.match(script, /localStorage\.getItem\(k\)/);
+  assert.match(script, /prefers-color-scheme: dark/);
+  assert.match(script, /setAttribute\("data-theme"/);
+  assert.match(script, /closest\("\.theme-toggle"\)/);
+  // Pages are checked for leaked null/undefined/NaN, and the homepage forbids inline handlers.
+  assert.doesNotMatch(script + themeToggleButton(), /null|undefined|NaN|onclick=/);
+  assert.match(themeToggleButton(), /<button type="button" class="theme-toggle" aria-label="Dark theme" aria-pressed="false"/);
+  assert.match(themedLockup("Home"), /src="\/brand\/lockup\.svg" alt="Home".*src="\/brand\/lockup-dark\.svg" alt="Home"/);
+  // Hidden until the boot script has stamped data-theme, so no dead button without JS.
+  assert.match(themeToggleStyles(), /\.theme-toggle\{display:none;/);
+  assert.match(themeToggleStyles(), /\[data-theme\] \.theme-toggle\{display:inline-grid\}/);
+});

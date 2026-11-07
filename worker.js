@@ -15,7 +15,7 @@ import {
   classifyAduPermit,
 } from "./adu.js";
 import { ENTITY_HUBS } from "./entity_hubs.js";
-import { bsIcon, bsStatusPill, bsTransition } from "./brand_ui.js";
+import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadar } from "./basis_reset_routes.js";
 
@@ -56,7 +56,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v8";
+const HTML_CACHE_VERSION = "v9";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
@@ -1026,47 +1026,48 @@ async function requireIngestAuth(request, env) {
 function renderDesignTokens() {
   return `<style>
       :root {
-        --primary: #0B2945;
-        --accent: #0D6EC9;
-        --accent-hover: #0B66BA;
-        --bg: #ffffff;
-        --bg-alt: #F5F7FA;
-        --surface: #ffffff;
-        --text: #0B2945;
-        --text-muted: #5B6B7F;
-        --text-subtle: #5B6B7F;
-        --border: #E5E9EF;
-        --success: #0E6B5C;
-        --warn: #8A5A00;
-        --danger: #ef4444;
-        --danger-solid: #B42318;
-        --steel: #3B4D63;
+        /* Legacy page variables, aliased to the design-system tokens in
+           /brand/tokens.css so every template follows [data-theme]. */
+        --primary: var(--ink);
+        --bg: var(--surface);
+        --bg-alt: var(--surface-alt);
+        --text: var(--ink);
+        --text-muted: var(--ink-muted);
+        --text-subtle: var(--ink-muted);
+        --border: var(--line-subtle);
+        --warn: var(--warning);
+        --danger-solid: var(--danger);
+        --steel: var(--ink-secondary);
         --radius-sm: 0.5rem;
         --radius-md: 0.75rem;
         --radius-lg: 1rem;
-        --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+        --shadow-sm: var(--shadow-1);
         --shadow-md: 0 14px 45px rgba(11,41,69,0.06);
-        --shadow-lg: 0 22px 60px rgba(11,41,69,0.14);
-        --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        --shadow-lg: var(--shadow-2);
+        --shadow: var(--shadow-1);
         --container-max: 1200px;
+        color-scheme: light;
       }
+      [data-theme="dark"] { color-scheme: dark; --shadow-md: var(--shadow-2); }
       html { scroll-padding-block-start: 5rem; }
       .global-nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 50; }
+      [data-theme="dark"] .global-nav { background: rgba(8,24,42,0.9); }
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       .global-nav-row { height: 4rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-      .global-nav { color-scheme: light; }
-      .global-nav .logo { font-weight: 800; font-size: 1.25rem; color: #0B2945; text-decoration: none; display: flex; align-items: center; gap: 0.5rem; }
+      .global-nav .logo { font-weight: 800; font-size: 1.25rem; color: var(--ink); text-decoration: none; display: flex; align-items: center; gap: 0.5rem; }
       .global-nav .logo img { display: block; height: 24px; width: auto; }
       .global-nav-links { display: none; gap: 1.75rem; align-items: center; }
-      .global-nav-links a { color: #5B6B7F; text-decoration: none; font-weight: 500; font-size: 0.875rem; }
-      .global-nav-links a:hover, .global-nav-links a.active { color: var(--accent); }
-      .global-nav-hamburger { display: block; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #0B2945; padding: 0.25rem; }
+      .global-nav-links a { color: var(--ink-muted); text-decoration: none; font-weight: 500; font-size: 0.875rem; }
+      .global-nav-links a:hover, .global-nav-links a.active { color: var(--link); }
+      .global-nav-end { display: flex; align-items: center; gap: 0.75rem; }
+      .global-nav-hamburger { display: block; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--ink); padding: 0.25rem; }
+      ${themeToggleStyles()}
       @media (min-width: 768px) {
         .global-nav-links { display: flex; }
         .global-nav-hamburger { display: none; }
       }
       @media (max-width: 767px) {
-        .global-nav-links.open { display: flex; position: absolute; top: 4rem; right: 1rem; background: rgba(255,255,255,0.95); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.5rem 1rem; flex-direction: column; min-width: 180px; box-shadow: var(--shadow-sm); backdrop-filter: blur(12px); }
+        .global-nav-links.open { display: flex; position: absolute; top: 4rem; right: 1rem; background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.5rem 1rem; flex-direction: column; min-width: 180px; box-shadow: var(--shadow-sm); backdrop-filter: blur(12px); }
       }
       .global-nav-spacer { height: 4rem; }
       .global-footer { background: var(--bg-alt); border-top: 1px solid var(--border); padding: 3rem 0; color: var(--text-muted); font-size: 0.875rem; margin-top: 4rem; }
@@ -1074,7 +1075,7 @@ function renderDesignTokens() {
       @media (min-width: 768px) { .global-footer-row { flex-direction: row; justify-content: space-between; text-align: left; } }
       .global-footer a { color: var(--text-muted); text-decoration: none; }
       .global-footer a:hover { color: var(--accent); }
-      .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; background: var(--primary); color: #fff; padding: 0.65rem 1rem; border-radius: 0 0 var(--radius-sm) 0; font-weight: 700; text-decoration: none; }
+      .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; background: var(--brand-navy); color: #fff; padding: 0.65rem 1rem; border-radius: 0 0 var(--radius-sm) 0; font-weight: 700; text-decoration: none; }
       .skip-link:focus { left: 0; color: #fff; }
     </style>`;
 }
@@ -1094,10 +1095,13 @@ function renderNav(activePage) {
     `<a href="${href}"${keys.includes(activePage) ? ' class="active"' : ""}>${label}</a>`;
   return `<nav class="global-nav" id="global-nav" onkeydown="if(event.key==='Escape'){var l=document.getElementById('global-nav-links');if(l.classList.contains('open')){l.classList.remove('open');var b=this.querySelector('.global-nav-hamburger');b.setAttribute('aria-expanded','false');b.focus();}}">
       <div class="container global-nav-row">
-        <a href="/" class="logo"><img src="/brand/lockup.svg" alt="Building Seattle" width="209" height="24"></a>
-        <button class="global-nav-hamburger" onclick="this.setAttribute('aria-expanded',String(document.getElementById('global-nav-links').classList.toggle('open')))" aria-label="Menu" aria-expanded="false" aria-controls="global-nav-links">&#9776;</button>
-        <div class="global-nav-links" id="global-nav-links">
+        <a href="/" class="logo">${themedLockup("Building Seattle")}</a>
+        <div class="global-nav-end">
+          <div class="global-nav-links" id="global-nav-links">
           ${items.map(link).join("\n          ")}
+          </div>
+          ${themeToggleButton()}
+          <button class="global-nav-hamburger" onclick="this.setAttribute('aria-expanded',String(document.getElementById('global-nav-links').classList.toggle('open')))" aria-label="Menu" aria-expanded="false" aria-controls="global-nav-links">&#9776;</button>
         </div>
       </div>
     </nav>`;
@@ -1396,6 +1400,7 @@ export function renderHomepage(snapshot) {
   return `<!doctype html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -1426,29 +1431,35 @@ export function renderHomepage(snapshot) {
   <meta name="twitter:image:alt" content="Building Seattle — Seattle construction permit data">
   <script type="application/ld+json">${structuredData}</script>
   <style>
-    .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:#0B2945;color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:800;text-decoration:none}.skip-link:focus{left:0}
-    :root{color-scheme:light;--primary:#0B2945;--accent:#0D6EC9;--accent-hover:#0A5BA8;--success:#0E6B5C;--warning:#8A5A00;--bg:#fff;--bg-alt:#F5F7FA;--panel:#fff;--text:#0B2945;--muted:#5B6B7F;--border:#CBD3DD;--soft:#E5E9EF;--focus:#0B66BA;--max:1200px}
-    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:#0B2945}.brand img{display:block;height:24px;width:auto}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:#0B2945;background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(11,41,69,.14);z-index:40}.mobile-nav a{text-decoration:none;color:#0B2945;font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:#3B4D63}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:#0B66BA;font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:#3B4D63}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .bs-metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .bs-metric:first-child{border-top-width:3px;border-top-color:#0B2945}.hero-aside .bs-metric__value{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.bs-metric:hover .bs-metric__value{color:var(--accent)}.bs-metric__value{font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05}.freshness{max-width:820px;margin:18px 0 0;flex-wrap:nowrap;align-items:flex-start}.freshness>span{flex:1;min-width:0}.freshness>.bs-icon{margin-top:1px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:#3B4D63}.text-link{font-weight:800;color:#0B66BA;text-underline-offset:4px;white-space:nowrap}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:#0B2945;font-size:16px}.market-card p{margin:5px 0 0;color:#3B4D63;font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:#5B6B7F;font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#0B2945;font-size:13px}.rank-copy small,.rank-value small{display:block;color:#5B6B7F;font-size:11px;font-weight:600}.rank-value{text-align:right;color:#0B2945;font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:#0B2945;font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:#3B4D63;font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid #0B2945;padding:4px 0 4px 18px;color:#3B4D63}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#5B6B7F}.trust-meta dd{margin:4px 0 0;font-weight:750;color:#0B2945}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:#0B2945}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:#3B4D63}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:#3B4D63}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:#0B2945;color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:#0B2945;font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:#0B2945}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:#3B4D63;text-underline-offset:3px}
+    .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:var(--brand-navy);color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:800;text-decoration:none}.skip-link:focus{left:0}
+    :root{--primary:var(--ink);--bg:var(--surface);--bg-alt:var(--surface-alt);--panel:var(--surface-raised);--text:var(--ink);--muted:var(--ink-muted);--border:var(--line);--soft:var(--line-subtle);--max:1200px;color-scheme:light}[data-theme="dark"]{color-scheme:dark}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:var(--header-bg,rgba(255,255,255,.96));border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:var(--ink)}.brand img{display:block;height:24px;width:auto}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:var(--ink);background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(11,41,69,.14);z-index:40}.mobile-nav a{text-decoration:none;color:var(--ink);font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:var(--ink-secondary)}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:var(--link);font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:var(--ink-secondary)}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .bs-metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .bs-metric:first-child{border-top-width:3px;border-top-color:var(--ink)}.hero-aside .bs-metric__value{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.bs-metric:hover .bs-metric__value{color:var(--accent)}.bs-metric__value{font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05}.freshness{max-width:820px;margin:18px 0 0;flex-wrap:nowrap;align-items:flex-start}.freshness>span{flex:1;min-width:0}.freshness>.bs-icon{margin-top:1px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:var(--ink-secondary)}.text-link{font-weight:800;color:var(--link);text-underline-offset:4px;white-space:nowrap}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:var(--ink);font-size:16px}.market-card p{margin:5px 0 0;color:var(--ink-secondary);font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:var(--ink-muted);font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:13px}.rank-copy small,.rank-value small{display:block;color:var(--ink-muted);font-size:11px;font-weight:600}.rank-value{text-align:right;color:var(--ink);font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:var(--ink);font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:var(--ink-secondary);font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid var(--ink);padding:4px 0 4px 18px;color:var(--ink-secondary)}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}.trust-meta dd{margin:4px 0 0;font-weight:750;color:var(--ink)}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:var(--ink)}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:var(--ink-secondary)}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:var(--ink-secondary)}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:var(--brand-navy);color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:var(--brand-navy);font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:var(--ink)}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:var(--ink-secondary);text-underline-offset:3px}
     @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form .bs-btn{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
     @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.bs-metric__value{font-size:1.16rem}.bs-metric__label{font-size:11px}.hero h1{font-size:2.05rem}}
-    @media(prefers-color-scheme:dark){:root{color-scheme:dark;--surface:#0f172a;--surface-alt:#111c30;--surface-raised:#172033;--surface-sunken:#1e293b;--ink:#f8fafc;--ink-secondary:#e2e8f0;--ink-muted:#94a3b8;--line:#475569;--line-subtle:#334155;--line-strong:#64748b;--primary:#f8fafc;--bg:#0f172a;--bg-alt:#111c30;--panel:#172033;--text:#e2e8f0;--muted:#94a3b8;--border:#475569;--soft:#334155;--focus:#93c5fd}.site-header{background:rgba(15,23,42,.96)}.brand,.nav a,.hero h1,.section h2,.market-card h3,.rank-copy strong,.rank-value,.task strong,.trust-meta dd,summary,.footer-brand{color:#f8fafc}.brand-mark{background:#f8fafc;color:#0f172a}.hero-copy,.freshness,.section-deck,.market-card p,.rank-index,.rank-copy small,.rank-value small,.task p,.trust-note,.answer,.footer-nav a{color:#cbd5e1}.bs-metric{border-top-color:#f8fafc}.trust-note{border-left-color:#f8fafc}.alert-panel{background:#020617}.alert-button{background:#f8fafc;color:#0f172a}.nav-toggle>summary{color:#f8fafc;background:#172033;border-color:#475569}.mobile-nav{background:#172033;border-color:#475569}.mobile-nav a{color:#f8fafc}.mobile-nav a:hover{background:#111c30}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    [data-theme="dark"] .site-header{--header-bg:rgba(8,24,42,.96)}
+    [data-theme="dark"] .alert-panel{box-shadow:inset 0 0 0 1px var(--line)}
+    .header-end{display:flex;align-items:center;gap:12px}
+    ${themeToggleStyles()}
   </style>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
   <header class="site-header">
     <div class="container header-inner">
-      <a class="brand" href="/" aria-label="Building Seattle home"><picture><source srcset="/brand/lockup-dark.svg" media="(prefers-color-scheme: dark)"><img src="/brand/lockup.svg" alt="" width="209" height="24"></picture></a>
+      <a class="brand" href="/" aria-label="Building Seattle home">${themedLockup("")}</a>
+      <div class="header-end">
       <nav class="nav" aria-label="Primary navigation">
         <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a>
       </nav>
+      ${themeToggleButton()}
       <details class="nav-toggle">
         <summary aria-label="Open navigation menu">&#9776;</summary>
         <nav class="mobile-nav" aria-label="Mobile navigation">
           <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a><a href="/api-docs">API</a>
         </nav>
       </details>
+      </div>
     </div>
   </header>
   <main id="main-content">
@@ -1528,9 +1539,9 @@ export function renderHomepage(snapshot) {
       </div></div>
     </section>
 
-    <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:#93c5fd">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Building Seattle already supports free per-permit alerts with confirmation and one-click unsubscribe.</p></div><a class="alert-button" href="/permits">Find a permit to watch</a></div></div></section>
+    <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:var(--brand-sky)">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Building Seattle already supports free per-permit alerts with confirmation and one-click unsubscribe.</p></div><a class="alert-button" href="/permits">Find a permit to watch</a></div></div></section>
   </main>
-  <footer class="site-footer"><div class="container footer-inner"><div><div class="footer-brand">Building Seattle</div><div style="margin-top:4px;color:#64748b;font-size:12px">Seattle construction intelligence</div></div><nav class="footer-nav" aria-label="Footer navigation"><a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/projects">Projects</a><a href="/addresses">Addresses</a><a href="/insights">Insights</a><a href="/data">Dataset</a><a href="/methodology">Methodology</a><a href="/about">About</a><a href="/api-docs">API</a><a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav></div></footer>
+  <footer class="site-footer"><div class="container footer-inner"><div><div class="footer-brand">Building Seattle</div><div style="margin-top:4px;color:var(--ink-muted);font-size:12px">Seattle construction intelligence</div></div><nav class="footer-nav" aria-label="Footer navigation"><a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/projects">Projects</a><a href="/addresses">Addresses</a><a href="/insights">Insights</a><a href="/data">Dataset</a><a href="/methodology">Methodology</a><a href="/about">About</a><a href="/api-docs">API</a><a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav></div></footer>
 </body>
 </html>`;
 }
@@ -1976,6 +1987,7 @@ function renderAlertResult(title, message, status = 200) {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -2322,6 +2334,7 @@ async function renderPermitBrowser(request, env) {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -3005,6 +3018,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -3032,24 +3046,6 @@ async function renderPermitDetail(permitNumber, env, request) {
 	    <link rel="manifest" href="/site.webmanifest">
     ${renderDesignTokens()}
     <style>
-        :root {
-            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-            --shadow-lg: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
-        }
-        @media (prefers-color-scheme: dark) {
-            :root {
-                /* design-system tokens follow this page's dark palette until the dark theme ships (pass 4) */
-                --surface: #0f172a; --surface-alt: #1e293b; --surface-raised: #0f172a; --surface-sunken: #1e293b;
-                --ink: #f8fafc; --ink-secondary: #e2e8f0; --ink-muted: #94a3b8;
-                --line: #334155; --line-subtle: #1e293b; --line-strong: #64748b;
-                --primary: #f8fafc;
-                --bg: #0f172a;
-                --bg-alt: #1e293b;
-                --text: #e2e8f0;
-                --text-muted: #94a3b8;
-                --border: #334155;
-            }
-        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
@@ -3490,6 +3486,7 @@ async function renderAdminDashboard(request, env) {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -3679,7 +3676,7 @@ async function renderContractorPage(slug, env, request) {
           <h3 style="margin-top:0">WA L&amp;I Credentials</h3>
           ${
             licenseStatusRaw
-              ? `<div style="display:inline-block;padding:0.25rem 0.75rem;border-radius:999px;background:${licenseBadgeColor};color:#fff;font-size:0.75rem;font-weight:700;letter-spacing:0.05em;margin-bottom:1rem">${escapeHtml(licenseStatusUpper)}</div>`
+              ? `<div style="display:inline-block;padding:0.25rem 0.75rem;border-radius:999px;background:${licenseBadgeColor};color:var(--surface);font-size:0.75rem;font-weight:700;letter-spacing:0.05em;margin-bottom:1rem">${escapeHtml(licenseStatusUpper)}</div>`
               : ""
           }
           ${contractor.license_number ? `<p style="margin:0.5rem 0;font-size:0.9375rem"><span style="color:var(--text-muted)">License</span> <span style="font-weight:600;font-family:monospace">${escapeHtml(contractor.license_number)}</span></p>` : ""}
@@ -3760,6 +3757,7 @@ async function renderContractorPage(slug, env, request) {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -3789,7 +3787,7 @@ async function renderContractorPage(slug, env, request) {
     <style>
         body{font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);margin:0;background:var(--bg-alt);color:var(--text)}
         .container{max-width:var(--container-max);margin:0 auto;padding:0 1.5rem}
-        .seo-hero{background:linear-gradient(135deg,var(--primary) 0%,#0B2945 100%);color:white;padding:6rem 0 3rem;margin-top:4rem}
+        .seo-hero{background:var(--brand-navy);color:white;padding:6rem 0 3rem;margin-top:4rem}
         .grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:3rem}
         .bs-card{margin-bottom:2rem}
         .bs-card .bs-metric__value{font-size:1.5rem;line-height:1.15}
@@ -3920,7 +3918,7 @@ async function renderContractorPage(slug, env, request) {
                             ${projectTypes.results
                               .map(
                                 (t) => `
-                                <span style="background:#eff6ff; color:var(--accent); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
+                                <span style="background:var(--accent-soft); color:var(--link); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
                             `,
                               )
                               .join("")}
@@ -4611,7 +4609,7 @@ function entStyles() {
     table.ent{width:100%;border-collapse:collapse;font-size:0.875rem}
     table.ent th{text-align:left;color:var(--text-muted);font-weight:600;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;padding:0.5rem 0.75rem;border-bottom:1px solid var(--border)}
     table.ent td{padding:0.6rem 0.75rem;border-bottom:1px solid var(--border);vertical-align:top}
-    .pill{display:inline-block;padding:0.15rem 0.6rem;border-radius:999px;font-size:0.7rem;font-weight:700;background:#E6F1FC;color:var(--accent-hover);text-transform:capitalize}
+    .pill{display:inline-block;padding:0.15rem 0.6rem;border-radius:999px;font-size:0.7rem;font-weight:700;background:var(--accent-soft);color:var(--link);text-transform:capitalize}
     .ent-hero{margin-bottom:1.5rem}
     .ent-hero h1{font-size:2rem;font-weight:800;margin:0 0 0.5rem;color:var(--primary)}
     .ent-kicker{color:var(--text-muted);font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:0.4rem}
@@ -4718,6 +4716,7 @@ function renderEntityDoc({ title, description, canonical, jsonLd, noindex, ogTyp
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -4980,7 +4979,7 @@ async function renderEntityHubPage(type, env, request) {
       .hub-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.8rem;align-items:end;background:var(--surface);border:1px solid var(--border);border-radius:1rem;padding:1rem;margin:1.25rem 0}
       .hub-filters label{display:grid;gap:0.35rem;font-size:0.72rem;font-weight:750;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
       .hub-filters select,.hub-filters input,.hub-filters button{width:100%;min-width:0;box-sizing:border-box;height:2.75rem;border:1px solid var(--steel);border-radius:.65rem;padding:0 .75rem;background:var(--bg);color:var(--text);font:inherit;font-size:1rem;text-transform:none;letter-spacing:normal}
-      .hub-filters input::placeholder{color:var(--text-muted);font-weight:400}.hub-filters input:not(:placeholder-shown),.hub-filters select{font-weight:500}.hub-filters .ent-link{display:inline-flex;align-items:center;height:2.75rem}.hub-filters button{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:750;cursor:pointer}
+      .hub-filters input::placeholder{color:var(--text-muted);font-weight:400}.hub-filters input:not(:placeholder-shown),.hub-filters select{font-weight:500}.hub-filters .ent-link{display:inline-flex;align-items:center;height:2.75rem}.hub-filters button{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:750;cursor:pointer}
     </style>
     <nav aria-label="Breadcrumb" style="font-size:0.8125rem;margin-bottom:1.25rem;"><a class="ent-link" href="/">Home</a> / ${escapeHtml(config.title)}</nav>
     <header style="max-width:800px;margin-bottom:2rem;"><h1>${escapeHtml(config.title)}</h1><p style="font-size:1.08rem;color:var(--text-muted);line-height:1.7;">${escapeHtml(config.intro)}</p></header>
@@ -5173,7 +5172,7 @@ function insightsStyles() {
       @media(max-width:600px){.pr-row{grid-template-columns:minmax(72px,120px) minmax(0,1fr) auto}.pr-sub{display:block;white-space:normal}}
       .ins-tabs{display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.5rem}
       .ins-tab{padding:0.4rem 0.9rem;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--text);text-decoration:none;font-size:0.82rem;font-weight:600}
-      .ins-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+      .ins-tab.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
       .ins-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.25rem}
       .ins-feature{display:block;text-decoration:none;color:inherit}
       .ins-feature .bs-card{height:100%;box-sizing:border-box;margin:0;display:flex;flex-direction:column;}.ins-feature .ins-stat{margin-top:auto;padding-top:.25rem}.ins-feature .bs-card{transition:box-shadow .2s ease,transform .2s ease}
@@ -5185,7 +5184,7 @@ function insightsStyles() {
       .nb-card-head span{color:var(--text-muted);font-size:0.78rem;font-weight:700;white-space:nowrap}
       .nb-contractor-card ol{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.55rem}
       .nb-contractor-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:0.6rem;font-size:0.84rem}
-      .nb-rank{display:inline-flex;align-items:center;justify-content:center;width:1.45rem;height:1.45rem;border-radius:999px;background:rgba(59,130,246,0.12);color:var(--accent);font-weight:800;font-size:0.72rem}
+      .nb-rank{display:inline-flex;align-items:center;justify-content:center;width:1.45rem;height:1.45rem;border-radius:999px;background:var(--accent-soft);color:var(--link);font-weight:800;font-size:0.72rem}
       .nb-count{color:var(--text-muted);font-size:0.76rem;font-weight:700;white-space:nowrap}
       .nb-empty{color:var(--text-muted);font-size:0.84rem}
       @media(max-width:560px){.pr-row{grid-template-columns:minmax(72px,110px) 1fr auto;gap:0.5rem}.nb-contractor-grid{grid-template-columns:1fr}.nb-contractor-row{grid-template-columns:auto 1fr}.nb-count{grid-column:2;white-space:normal}}
@@ -6640,7 +6639,7 @@ function svgBubbleMap(mapped) {
       const [x, y] = projectSeattle(n.lat, n.lng, W, H, pad);
       const r = 5 + 30 * Math.sqrt(n.permits / maxPermits);
       const op = (0.25 + 0.6 * (n.total_value / maxValue)).toFixed(2);
-      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="#3b82f6" fill-opacity="${op}" stroke="#3b82f6" stroke-opacity="0.9" stroke-width="1"><title>${escapeHtml(n.name)}: ${n.permits.toLocaleString()} permits · ${compactMoney(n.total_value)}</title></circle>`;
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" style="fill:var(--data-2);stroke:var(--data-2)" fill-opacity="${op}" stroke-opacity="0.9" stroke-width="1"><title>${escapeHtml(n.name)}: ${n.permits.toLocaleString()} permits · ${compactMoney(n.total_value)}</title></circle>`;
     })
     .join("");
 
@@ -7030,7 +7029,7 @@ function svgBipartiteNetwork(contractors, neighborhoods, edges) {
       const y = cPos.get(c.slug);
       const r = (5 + 9 * Math.sqrt(c.permits / maxPermits)).toFixed(1);
       return `<a href="/contractor/${encodeURIComponent(c.slug)}">
-        <circle cx="${colL}" cy="${y}" r="${r}" fill="#3b82f6"><title>${escapeHtml(c.name)}: ${c.permits} permits</title></circle>
+        <circle cx="${colL}" cy="${y}" r="${r}" style="fill:var(--data-2)"><title>${escapeHtml(c.name)}: ${c.permits} permits</title></circle>
         <text x="${colL - 14}" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="11" fill="currentColor">${escapeHtml(c.name)}</text>
       </a>`;
     })
@@ -7042,7 +7041,7 @@ function svgBipartiteNetwork(contractors, neighborhoods, edges) {
       const y = nPos.get(n.name);
       const r = (5 + 9 * Math.sqrt(n.weight / maxWeight)).toFixed(1);
       return `<g>
-        <circle cx="${colR}" cy="${y}" r="${r}" fill="#10b981"><title>${escapeHtml(n.name)}: ${n.weight} permits across these contractors</title></circle>
+        <circle cx="${colR}" cy="${y}" r="${r}" style="fill:var(--success)"><title>${escapeHtml(n.name)}: ${n.weight} permits across these contractors</title></circle>
         <text x="${colR + 14}" y="${y}" text-anchor="start" dominant-baseline="middle" font-size="11" fill="currentColor">${escapeHtml(n.name)}</text>
       </g>`;
     })
@@ -9347,6 +9346,7 @@ function renderApiDocs() {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -9385,7 +9385,7 @@ function renderApiDocs() {
         .lede { color: var(--text-muted); margin-bottom: 2rem; max-width: 640px; }
         .endpoint { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
         .endpoint h3 { font-size: 1.05rem; margin-bottom: 0.5rem; color: var(--primary); }
-        .method { display: inline-block; background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 0.35rem; vertical-align: middle; }
+        .method { display: inline-block; background: var(--accent); color: var(--on-accent); font-size: 0.7rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 0.35rem; vertical-align: middle; }
         code { font-family:var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 0.875rem; }
         table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.875rem; }
         th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -10621,6 +10621,7 @@ function renderAboutPage() {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -10654,7 +10655,7 @@ function renderAboutPage() {
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif); background: var(--bg-alt); color: var(--text); line-height: 1.7; }
         .container { box-sizing: content-box; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
-        .hero { background: linear-gradient(135deg, var(--primary) 0%, #0B2945 100%); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
+        .hero { background: var(--brand-navy); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
         .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1rem; }
         .hero p { font-size: 1.15rem; opacity: 0.85; max-width: 680px; }
         .content { max-width: 780px; margin: 0 auto; padding-bottom: 4rem; }
@@ -10715,7 +10716,7 @@ function renderAboutPage() {
                 <p>Building Seattle is an independent project. For questions, corrections, or data inquiries, reach out via the site or file an issue on the project repository.</p>
 
                 <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
-                    <a href="/permits" class="btn" style="display:inline-flex;align-items:center;justify-content:center;padding:0.75rem 1.5rem;border-radius:0.5rem;font-weight:600;text-decoration:none;background:var(--accent);color:white;">Browse Live Permits</a>
+                    <a href="/permits" class="btn" style="display:inline-flex;align-items:center;justify-content:center;padding:0.75rem 1.5rem;border-radius:0.5rem;font-weight:600;text-decoration:none;background:var(--accent);color:var(--on-accent);">Browse Live Permits</a>
                     <a href="/insights" class="btn" style="display:inline-flex;align-items:center;justify-content:center;padding:0.75rem 1.5rem;border-radius:0.5rem;font-weight:600;text-decoration:none;background:var(--bg);color:var(--text);border:1px solid var(--border);">View Insights</a>
                 </div>
             </div>
@@ -10803,6 +10804,7 @@ async function renderDataPage(env) {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">
@@ -10836,7 +10838,7 @@ async function renderDataPage(env) {
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif); background: var(--bg-alt); color: var(--text); line-height: 1.7; }
         .container { box-sizing: content-box; max-width: var(--container-max); margin: 0 auto; padding: 0 1.5rem; }
-        .hero { background: linear-gradient(135deg, var(--primary) 0%, #0B2945 100%); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
+        .hero { background: var(--brand-navy); color: white; padding: 5rem 0 3rem; margin-bottom: 3rem; }
         .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 1rem; }
         .hero p { font-size: 1.15rem; opacity: 0.85; max-width: 680px; }
         .content { max-width: 780px; margin: 0 auto; padding-bottom: 4rem; }
@@ -10949,6 +10951,7 @@ function render404(options) {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${themeBootScript()}
   <link rel="preload" href="/brand/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/brand/fonts/IBMPlexSans-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/brand/tokens.css">

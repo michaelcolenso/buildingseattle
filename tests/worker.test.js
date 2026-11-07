@@ -3018,7 +3018,7 @@ test("GET /contractor/:slug reports the true permit total, not the capped list l
   assert.match(html, /About Abbott Construction LLC/);
   assert.doesNotMatch(html, /#3b82f6/);
   assert.match(html, /color:var\(--text-muted\)">Verified via WA Labor/);
-  assert.match(html, /background:var\(--success\);color:#fff/);
+  assert.match(html, /background:var\(--success\);color:var\(--surface\)/);
 });
 
 test("global nav hamburger exposes and toggles its expanded state", async () => {
