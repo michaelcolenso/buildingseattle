@@ -18,7 +18,7 @@ import { ENTITY_HUBS } from "./entity_hubs.js";
 import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
-import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadar } from "./basis_reset_routes.js";
+import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadarBody } from "./basis_reset_routes.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -57,7 +57,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v9";
+const HTML_CACHE_VERSION = "v10";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
@@ -308,7 +308,7 @@ export default {
       if (path === "/insights/basis-reset") {
         ctx.waitUntil(logPageView(request, env, "/insights/basis-reset"));
         try {
-          return secure(await renderBasisResetRadar(env));
+          return secure(await renderBasisResetPage(env));
         } catch (error) {
           console.error("basis-reset render failed:", error);
           return secure(renderBasisResetUnavailable());
@@ -4696,6 +4696,31 @@ export function renderProjectReviewSummary(permits) {
         </div>`;
 }
 
+function renderBasisResetPage(env) {
+  return getBasisResetRadar(new Request("https://buildingseattle.com/api/basis-reset?limit=50"), env)
+    .then(async (response) => {
+      const payload = await response.json();
+      const rows = payload.results || [];
+      const html = renderEntityDoc({
+        title: "Basis Reset Radar | Building Seattle",
+        description: "Seattle properties where a lower basis and existing development work may change redevelopment economics.",
+        canonical: `${BASE_URL}/insights/basis-reset`,
+        activeNav: "insights",
+        body: `${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Basis Reset Radar" }])}
+      <div class="ent-hero">
+        <div class="ent-kicker">Insights</div>
+        <h1>Basis Reset Radar</h1>
+        <p style="color:var(--text-muted);max-width:65ch;margin:0">Properties where capital-basis changes intersect with real permit and project activity. Scores prioritize evidence; they are not appraisals or forecasts.</p>
+      </div>
+      ${renderBasisResetRadarBody(rows)}
+      <p style="color:var(--text-muted);margin-top:1.5rem">Method: 45% observed basis reset, 35% redevelopment readiness, 20% signal strength and recency.</p>`,
+      });
+      return new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" },
+      });
+    });
+}
+
 function renderBasisResetUnavailable() {
   const html = renderEntityDoc({
     title: "Basis Reset Radar | Building Seattle",
@@ -8020,7 +8045,22 @@ async function renderOrgContractorPage(slug, env, request) {
     [org.id],
   );
   const totalValue = valueRow ? Number(valueRow.total) || 0 : 0;
-  const activeCount = permits.filter((p) => ["active", "pending", "new"].includes(p.status)).length;
+  const countRow = await safeFirst(
+    env,
+    `SELECT COUNT(DISTINCT p.id) AS permit_count,
+            COUNT(DISTINCT CASE WHEN lower(COALESCE(p.status,'')) IN ('active','pending','new') THEN p.id END) AS active_count
+     FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+     WHERE pp.people_org_id = ?`,
+    [org.id],
+  );
+  const shownPermits = permits.length;
+  const totalPermits = countRow ? Math.max(Number(countRow.permit_count) || 0, shownPermits) : shownPermits;
+  const activeCount = countRow
+    ? Number(countRow.active_count) || 0
+    : permits.filter((p) => ["active", "pending", "new"].includes(p.status)).length;
+  const permitListHeading = totalPermits > shownPermits
+    ? `Recent permits (${shownPermits} of ${totalPermits.toLocaleString("en-US")})`
+    : `Permits (${shownPermits})`;
   const roleLabels = roles.map((r) => r.role).join(", ") || "participant";
   const noindex = permits.length === 0;
   const isOrg = org.type_guess === "organization";
@@ -8061,7 +8101,7 @@ async function renderOrgContractorPage(slug, env, request) {
     </div>
     <div class="bs-card">
       <div class="stat-row">
-        ${entStat("Permits", permits.length)}
+        ${entStat("Permits", totalPermits.toLocaleString("en-US"))}
         ${entStat("Active / recent", activeCount)}
         ${entStat("Total value", entMoney(totalValue))}
         ${entStat("Addresses", addresses.length)}
@@ -8070,8 +8110,8 @@ async function renderOrgContractorPage(slug, env, request) {
     <div class="ent-grid">
       <div>
         <div class="bs-card">
-          <h2>Recent activity</h2>
-          ${entPermitRows(permits.slice(0, 20))}
+          <h2>${escapeHtml(permitListHeading)}</h2>
+          ${entPermitRows(permits)}
         </div>
         <div class="bs-card">
           <h2>Inferred projects</h2>
