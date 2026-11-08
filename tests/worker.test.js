@@ -3109,6 +3109,48 @@ test("GET /insights/basis-reset degrades to a 503 page when its tables are missi
   assert.doesNotMatch(html, /D1_ERROR/);
 });
 
+test("GET /insights/basis-reset uses the site shell when scores load", async () => {
+  const env = {
+    DB: {
+      prepare() {
+        const statement = {
+          bind: () => statement,
+          all: async () => ({
+            results: [{
+              event_type: "sale",
+              event_date: "2026-09-17",
+              display_address: "600 STEWART ST, SEATTLE, WA",
+              address_slug: "600-stewart-st-seattle-wa",
+              opportunity_score: 57,
+              reset_pct: null,
+              prior_basis: null,
+              current_basis: 12500000,
+              reset_score: 20,
+              readiness_score: 88,
+              signal_score: 85,
+              source_url: "https://portal.djc.com/re/re-sales.php?id=4395589",
+              source_name: "DJC",
+            }],
+          }),
+          first: async () => null,
+          run: async () => ({}),
+        };
+        return statement;
+      },
+    },
+  };
+  const response = await worker.fetch(new Request("http://example.com/insights/basis-reset"), env, createCtx());
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(html, /class="skip-link"/);
+  assert.match(html, /<main /);
+  assert.match(html, /href="\/brand\/tokens.css"/);
+  assert.match(html, /class="global-nav"/);
+  assert.match(html, /600 STEWART ST/);
+  assert.match(html, /class="bs-card"/);
+  assert.doesNotMatch(html, /font-family:Arial/);
+});
+
 test("global header and permit timeline reflow at 320px instead of widening the page", async () => {
   const response = await worker.fetch(new Request("http://example.com/permits/PERM123"), createEnv(), createCtx());
   const html = await response.text();
@@ -3224,4 +3266,22 @@ test("org contractor pages total value with the counted-value rule across all th
   assert.match(totalQuery, /CASE WHEN p\.permit_number LIKE '%-DM'/);
   assert.doesNotMatch(totalQuery, /LIMIT/);
   assert.doesNotMatch(html, /1,548,000,000|\$1\.5B|\$1\.55B/);
+});
+
+test("org contractor pages count every permit, not the 50-row list", async () => {
+  const listed = Array.from({ length: 50 }, (_, i) => ({
+    id: i + 1, permit_number: `8000${i}-CN`, status: "active", issued_date: "2026-01-01",
+  }));
+  const env = countedValueEnv({
+    first: (q) => (/FROM contractors WHERE slug/.test(q) ? null
+      : /FROM people_orgs WHERE slug/.test(q) ? { id: 9, slug: "big-org", name: "BIG ORG", type_guess: "organization" }
+      : /COUNT\(DISTINCT p\.id\) AS permit_count/.test(q) ? { permit_count: 118, active_count: 40 }
+      : /SUM\(counted\)/.test(q) ? { total: 1000 } : null),
+    all: (q) => (/LEFT JOIN addresses/.test(q) ? listed : []),
+  });
+  const html = await (await worker.fetch(new Request("http://example.com/contractor/big-org"), env, createCtx())).text();
+  assert.ok(env.seen.some((q) => /COUNT\(DISTINCT p\.id\) AS permit_count/.test(q)));
+  assert.match(html, />118<\/span><span class="bs-metric__label">Permits/);
+  assert.match(html, /Recent permits \(50 of 118\)/);
+  assert.doesNotMatch(html, />50<\/span><span class="bs-metric__label">Permits/);
 });
