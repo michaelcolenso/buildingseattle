@@ -65,19 +65,19 @@ This is an additive schema release from 32 to 38 columns. Consumers with a fixed
 
 | Status | Description | Count |
 |--------|-------------|-------|
-| `active` | Under active review or construction | 6,806 |
-| `completed` | Work completed, permit closed | 5,809 |
-| `new` | Application submitted, not yet in review | 2,200 |
-| `pending` | Application pending processing | 468 |
+| `active` | Under active review or construction | 6,825 |
+| `completed` | Work completed, permit closed | 5,811 |
+| `new` | Application submitted, not yet in review | 2,192 |
+| `pending` | Application pending processing | 485 |
 | `expired` | Permit expired before completion | 268 |
 
 ## Permit Types
 
 | Type | Description | Count |
 |------|-------------|-------|
-| `residential` | Single-family, multifamily, ADU/DADU | 11,945 |
-| `commercial` | Office, retail, industrial, institutional | 3,345 |
-| `industrial` | Manufacturing, warehouse | 213 |
+| `residential` | Single-family, multifamily, ADU/DADU | 11,966 |
+| `commercial` | Office, retail, industrial, institutional | 3,353 |
+| `industrial` | Manufacturing, warehouse | 214 |
 | `land` | Vacant land, land use only | 48 |
 <!-- END GENERATED:STATS -->
 
@@ -95,7 +95,7 @@ Enrichment coverage: 84% of records have parcel numbers, review levels, primary 
 
 - Version: 2026-11
 - Export date: November 8, 2026
-- Records: 15,551
-- Columns: 32
-- Total construction value: $11.25 billion (declared $14.59 billion; a valuation SDCI repeats across a project's demolition permits is counted once)
+- Records: 15,581
+- Columns: 38
+- Total construction value: $11.25 billion (declared $14.60 billion; a valuation SDCI repeats across a project's demolition permits is counted once)
 <!-- END GENERATED:VERSION -->

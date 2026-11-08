@@ -2,7 +2,7 @@
 
 ## What You Get
 
-**15,551 building permits** — every construction project in Seattle, scraped from the city's SDCI portal and enriched with parcel numbers, review levels, detailed descriptions, and contractor license data.
+**15,581 building permits** — every construction project in Seattle, scraped from the city's SDCI portal and enriched with parcel numbers, review levels, detailed descriptions, and contractor license data.
 
 This is the dataset powering [buildingseattle.com](https://buildingseattle.com), exported as a ready-to-use CSV.
 
@@ -10,7 +10,7 @@ This is the dataset powering [buildingseattle.com](https://buildingseattle.com),
 
 ## Product Tier: Foundation ($49)
 
-A single CSV file with **15,551 records** and **38 columns** covering:
+A single CSV file with **15,581 records** and **38 columns** covering:
 
 | Category | Fields |
 |----------|--------|
@@ -32,7 +32,7 @@ A full data dictionary (`data-dictionary.md`) is included with every column docu
 Everything in Foundation, plus:
 
 - **Python refresh script** (`refresh.py`) — pull fresh data from the source whenever you need it
-- **Contractor-only CSV** — 2,364 contractors with license numbers, specialties, permit counts, and total project values
+- **Contractor-only CSV** — 2,367 contractors with license numbers, specialties, permit counts, and total project values
 - **30-day data refresh guarantee** — email us within 30 days and we'll send you the latest pull for free
 
 ---
@@ -76,17 +76,17 @@ Updated from the Seattle SDCI portal as of **November 8, 2026**. The included Py
 
 | Metric | Count |
 |--------|-------|
-| Total permits | 15,551 |
-| Active permits | 6,806 |
-| Completed permits | 5,809 |
-| Residential | 11,945 |
-| Commercial | 3,345 |
-| Industrial | 213 |
+| Total permits | 15,581 |
+| Active permits | 6,825 |
+| Completed permits | 5,811 |
+| Residential | 11,966 |
+| Commercial | 3,353 |
+| Industrial | 214 |
 | Neighborhoods | 53 |
-| Contractors | 2,364 |
+| Contractors | 2,367 |
 | Total construction value | **$11.25 billion** |
 
-Total value counts a valuation SDCI repeats across a project's demolition permits once (the raw sum of declared values is $14.59 billion). Each CSV row keeps the value SDCI declared.
+Total value counts a valuation SDCI repeats across a project's demolition permits once (the raw sum of declared values is $14.60 billion). Each CSV row keeps the value SDCI declared.
 
 ---
 
@@ -118,6 +118,6 @@ A: Yes — a 100-record sample is available for free. Same 38 columns, real enri
 
 ## Development-site enrichment release
 
-The next release appends six development-site fields to the original 32 columns. Existing July 2026 artifacts remain the 32-column release until regenerated after backfill. Site area, status, and source/fetch dates describe current SDCI development sites. The `parcel_number` column holds SDCI property references, usually `DV…` site IDs, rather than King County tax PINs. Geometry URLs are live references and may change or return 404 after a refresh.
+The November 8, 2026 release appends six development-site fields to the original 32 columns. The regenerated 15,581-permit export includes matched development-site context for 15,249 permits (97.9%). Site area, status, and source/fetch dates describe current SDCI development sites. The `parcel_number` column holds SDCI property references, usually `DV…` site IDs, rather than King County tax PINs. Geometry URLs are live references and may change or return 404 after a refresh.
 
 Consumers that require exactly 32 columns must update for the 38-column schema. The original column names, order, and meanings are preserved except for correcting the property-reference description.

@@ -20,7 +20,7 @@ PRICING DECISION (2026-07-19)
 
 ### What's actually being built in your backyard — before your competitors find out
 
-BuildingSeattle tracks every single construction permit filed with the City of Seattle. That's **15,551 permits**, **$11.25 billion** in construction value, across **53 neighborhoods** and **2,364 contractors** — delivered as a single CSV file you can open in Excel, Google Sheets, or drop straight into your analysis stack.
+BuildingSeattle tracks every single construction permit filed with the City of Seattle. That's **15,581 permits**, **$11.25 billion** in construction value, across **53 neighborhoods** and **2,367 contractors** — delivered as a single CSV file you can open in Excel, Google Sheets, or drop straight into your analysis stack.
 
 The City publishes this data piecemeal through a clunky government portal. We scraped it, cleaned it, deduplicated it, and enriched every record with data from the SDCI detail pages — parcel numbers, review levels, full descriptions, and contractor license information. You get the structured result — no scraping, no cleaning, no wasted weekends.
 
@@ -82,14 +82,14 @@ That's 38 columns on every record. A full data dictionary is included with the d
 ### Two Options
 
 #### Foundation — $49
-- 15,551 records, 38 columns, cleaned CSV
+- 15,581 records, 38 columns, cleaned CSV
 - Data dictionary
 - 100-record sample (free)
 
 #### Pro — $89
 - Everything in Foundation
 - **Python refresh script** — pull fresh data whenever you want
-- **Contractor-only CSV** — 2,364 contractors with license numbers, specialties, permit counts, and total project values
+- **Contractor-only CSV** — 2,367 contractors with license numbers, specialties, permit counts, and total project values
 - **30-day refresh guarantee** — email us for an updated pull, free
 
 **Every buyer gets free monthly updates.** We refresh the dataset on the first business day of each month (~500 new permits/month) and push the new files to your Gumroad library — you'll get an email each time.
@@ -116,9 +116,9 @@ The risk is entirely ours. You literally cannot lose.
 
 | | |
 |---|---|
-| Records | 15,551 |
-| Columns | 32 |
-| File size | ~8.9 MB |
+| Records | 15,581 |
+| Columns | 38 |
+| File size | ~11.1 MB |
 | Format | CSV (UTF-8) |
 | Last updated | November 8, 2026 |
 | Source | Seattle SDCI (services.seattle.gov/portal) |
