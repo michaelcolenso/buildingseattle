@@ -1261,7 +1261,8 @@ test("entity hubs paginate deterministically and noindex bounded filter states",
   assert.match(seenSql, /p\.neighborhood = \?/);
   assert.match(seenSql, /p\.type = \?/);
   assert.match(seenSql, /lower\(COALESCE\(p\.status/);
-  assert.match(seenSql, /HAVING COALESCE\(SUM\(p\.value\), 0\) >= \?/);
+  // Minimum-value filters use the counted value (repeated demolition valuations once).
+  assert.match(seenSql, /HAVING COALESCE\(SUM\(\(CASE WHEN p\.permit_number LIKE '%-DM'[\s\S]*?END\)\), 0\) >= \?/);
   assert.match(seenSql, /ORDER BY total_value DESC, permit_count DESC, o.slug ASC/);
   assert.match(seenSql, /LIMIT 49 OFFSET 96/);
   assert.deepEqual(seenBinds, ["Ballard", "Construction", 1000000]);
@@ -1341,7 +1342,7 @@ test("address hub filters by bounded latest activity, neighborhood, permit count
   assert.match(html, /<option value="recent90" selected>Past 90 days<\/option>/);
   assert.match(seenSql, /p\.neighborhood = \?/);
   assert.match(seenSql, /date\('now', '-90 days'\)/);
-  assert.match(seenSql, /HAVING COALESCE\(SUM\(p\.value\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
+  assert.match(seenSql, /HAVING COALESCE\(SUM\(\(CASE WHEN p\.permit_number LIKE '%-DM'[\s\S]*?END\)\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
   assert.deepEqual(seenBinds, ["Ballard", 1000000, 5]);
 });
 
@@ -3120,4 +3121,107 @@ test("global header and permit timeline reflow at 320px instead of widening the 
 
   const browser = await worker.fetch(new Request("http://example.com/permits"), createEnv(), createCtx());
   assert.match(await browser.text(), /button \{ background: var\(--accent\); color: var\(--on-accent\)/);
+});
+
+test("GET /project/:slug counts a valuation SDCI repeats on demolition permits once", async () => {
+  const permits = Array.from({ length: 12 }, (_, i) => ({
+    id: i + 1, permit_number: `70093${20 + i}-DM`, address_id: 1, value: 129000000,
+    type: "commercial", status: "active", issued_date: "2025-10-06",
+  }));
+  const env = {
+    DB: {
+      prepare(query) {
+        const statement = {
+          bind: () => statement,
+          first: async () => (/FROM projects pr/.test(query)
+            ? { id: 1, slug: "demolition-at-4747-30th-ave-ne", name: "Demolition at 4747 30TH AVE NE", address_id: 1,
+                display_address: "4747 30TH AVE NE, SEATTLE, WA", address_slug: "a", total_estimated_value: 1548000000,
+                confidence_score: 90, first_seen_date: "2025-10-06", latest_activity_date: "2025-10-06" }
+            : null),
+          all: async () => ({ results: /project_permits jp/.test(query) ? permits : [] }),
+          run: async () => ({}),
+        };
+        return statement;
+      },
+    },
+  };
+  const response = await worker.fetch(new Request("http://example.com/project/demolition-at-4747-30th-ave-ne"), env, createCtx());
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(html, /\$129,000,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.doesNotMatch(html, /\$1,548,000,000/);
+  assert.match(html, /SDCI repeats \$129,000,000 on 12 permits; it is counted once\./);
+});
+
+test("GET /methodology explains how repeated demolition valuations are counted", async () => {
+  const response = await worker.fetch(new Request("http://example.com/methodology"), createEnv(), createCtx());
+  assert.match(await response.text(), /Repeated demolition valuations are counted once in totals/);
+});
+
+function countedValueEnv({ first = () => null, all = () => [] } = {}) {
+  const seen = [];
+  return {
+    seen,
+    DB: {
+      prepare(query) {
+        seen.push(query);
+        const statement = {
+          bind: () => statement,
+          first: async () => first(query),
+          all: async () => ({ results: all(query) }),
+          run: async () => ({}),
+        };
+        return statement;
+      },
+    },
+  };
+}
+
+const blakeleyDemolitions = Array.from({ length: 12 }, (_, i) => ({
+  id: i + 1, permit_number: `70093${20 + i}-DM`, address_id: 7, value: 129000000,
+  type: "commercial", status: "active", issued_date: "2025-10-06", address: "4747 30TH AVE NE, SEATTLE, WA",
+}));
+
+test("GET /address/:slug totals a repeated demolition valuation once", async () => {
+  const env = countedValueEnv({
+    first: (q) => (/FROM addresses WHERE slug/.test(q)
+      ? { id: 7, slug: "4747-30th-ave-ne-seattle-wa", display_address: "4747 30TH AVE NE, SEATTLE, WA", street: "4747 30TH AVE NE" }
+      : null),
+    all: (q) => (/FROM permits p LEFT JOIN contractors c ON c\.id = p\.contractor_id\s+WHERE p\.address_id = \?/.test(q) ? blakeleyDemolitions : []),
+  });
+  const html = await (await worker.fetch(new Request("http://example.com/address/4747-30th-ave-ne-seattle-wa"), env, createCtx())).text();
+  assert.doesNotMatch(html, /1,548,000,000|\$1\.5B|\$1\.55B/);
+  assert.match(html, /\$129,000,000|\$129M/);
+});
+
+test("GET /project/:slug judges repeats against every permit at the address", async () => {
+  // The $13M construction permit sits in a different project at the same address.
+  const projectPermits = [{ id: 2, permit_number: "7100002-DM", address_id: 9, value: 13000000, type: "demolition", status: "completed", issued_date: "2025-01-02" },
+    { id: 3, permit_number: "7100003-DM", address_id: 9, value: 40000, type: "demolition", status: "completed", issued_date: "2025-01-03" }];
+  const addressPermits = [{ id: 1, permit_number: "7100001-CN", address_id: 9, value: 13000000 }, ...projectPermits];
+  const env = countedValueEnv({
+    first: (q) => (/FROM projects pr/.test(q)
+      ? { id: 5, slug: "demolition-at-10-elm-st", name: "Demolition at 10 ELM ST", address_id: 9, display_address: "10 ELM ST, SEATTLE, WA",
+          address_slug: "10-elm-st", total_estimated_value: 40000, confidence_score: 80, first_seen_date: "2025-01-02", latest_activity_date: "2025-01-03" }
+      : null),
+    all: (q) => (/project_permits jp/.test(q) ? projectPermits : /SELECT id, permit_number, address_id, value FROM permits WHERE address_id = \?/.test(q) ? addressPermits : []),
+  });
+  const html = await (await worker.fetch(new Request("http://example.com/project/demolition-at-10-elm-st"), env, createCtx())).text();
+  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /SDCI repeats \$13,000,000 on 2 permits; it is counted once\./);
+});
+
+test("org contractor pages total value with the counted-value rule across all their permits", async () => {
+  const env = countedValueEnv({
+    first: (q) => (/FROM contractors WHERE slug/.test(q) ? null
+      : /FROM people_orgs WHERE slug/.test(q) ? { id: 3, slug: "uw", name: "UNIVERSITY OF WASHINGTON", type_guess: "organization" }
+      : /SUM\(counted\)/.test(q) ? { total: 129000000 } : null),
+    all: (q) => (/FROM permit_participants pp JOIN permits p ON p\.id = pp\.permit_id\s+LEFT JOIN addresses/.test(q) ? blakeleyDemolitions : []),
+  });
+  const html = await (await worker.fetch(new Request("http://example.com/contractor/uw"), env, createCtx())).text();
+  const totalQuery = env.seen.find((q) => /SUM\(counted\)/.test(q));
+  assert.ok(totalQuery, "org total comes from SQL");
+  assert.match(totalQuery, /CASE WHEN p\.permit_number LIKE '%-DM'/);
+  assert.doesNotMatch(totalQuery, /LIMIT/);
+  assert.doesNotMatch(html, /1,548,000,000|\$1\.5B|\$1\.55B/);
 });

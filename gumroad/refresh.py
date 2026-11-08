@@ -43,6 +43,39 @@ PERMIT_COLUMNS = [
 ]
 
 
+def _address_key(record):
+    return " ".join(str(record.get("address") or "").upper().split())
+
+
+def counted_values(records):
+    """Inline copy of build_dataset.counted_values (refresh.py ships standalone).
+
+    A demolition ("-DM") permit's value is not counted when another permit at
+    the same address already carries that exact value; SDCI repeats a
+    redevelopment's valuation on each demolition permit.
+    """
+    groups = {}
+    for index, r in enumerate(records):
+        key, value = _address_key(r), r.get("value") or 0
+        if key and value > 0:
+            groups.setdefault((key, value), []).append(index)
+    out = []
+    for index, r in enumerate(records):
+        key, value = _address_key(r), r.get("value") or 0
+        is_dm = str(r.get("permit_number") or "").upper().endswith("-DM")
+        skip = False
+        if is_dm and key and value > 0:
+            for other in groups.get((key, value), []):
+                if other == index:
+                    continue
+                other_dm = str(records[other].get("permit_number") or "").upper().endswith("-DM")
+                if not other_dm or other < index:
+                    skip = True
+                    break
+        out.append(0 if skip else value)
+    return out
+
+
 def fetch_json(url):
     """Fetch a URL, retrying transient network and rate-limit errors."""
     last_error = None
@@ -154,13 +187,15 @@ def main():
         writer.writeheader()
         writer.writerows(records)
 
-    total_value = sum(r.get("value", 0) or 0 for r in records)
+    total_value = sum(counted_values(records))
+    declared_value = sum(r.get("value", 0) or 0 for r in records)
     neighborhoods = len(
         set(r.get("neighborhood", "") for r in records if r.get("neighborhood")))
 
     print()
     print(f"✅ Done. {len(records):,} records written to {args.output}")
-    print(f"   Total construction value: ${total_value:,.0f}")
+    print(f"   Total construction value: ${total_value:,.0f} "
+          f"(declared ${declared_value:,.0f}; repeated demolition valuations counted once)")
     print(f"   Neighborhoods: {neighborhoods}")
     print(f"   Pages fetched: {page}")
     print(f"   Errors encountered: {errors}")
