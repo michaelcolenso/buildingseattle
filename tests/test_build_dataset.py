@@ -63,6 +63,7 @@ def test_development_site_export_query_and_refresh_preserve_grain(tmp_path, monk
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript((REPO_ROOT / "schema.sql").read_text())
+    db.executescript((REPO_ROOT / "migration_entity_graph.sql").read_text())
     db.execute("DELETE FROM permits")
     for i, ref in enumerate([" dv0025961 ", "DV0025961", None]):
         db.execute("INSERT INTO permits (permit_number, address, parcel_number, value) VALUES (?, ?, ?, ?)",
