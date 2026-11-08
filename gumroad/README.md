@@ -2,7 +2,7 @@
 
 ## What You Get
 
-**13,623 building permits** — every construction project in Seattle, scraped from the city's SDCI portal and enriched with parcel numbers, review levels, detailed descriptions, and contractor license data.
+**15,551 building permits** — every construction project in Seattle, scraped from the city's SDCI portal and enriched with parcel numbers, review levels, detailed descriptions, and contractor license data.
 
 This is the dataset powering [buildingseattle.com](https://buildingseattle.com), exported as a ready-to-use CSV.
 
@@ -10,7 +10,7 @@ This is the dataset powering [buildingseattle.com](https://buildingseattle.com),
 
 ## Product Tier: Foundation ($49)
 
-A single CSV file with **13,623 records** and **32 columns** covering:
+A single CSV file with **15,551 records** and **32 columns** covering:
 
 | Category | Fields |
 |----------|--------|
@@ -32,7 +32,7 @@ A full data dictionary (`data-dictionary.md`) is included with every column docu
 Everything in Foundation, plus:
 
 - **Python refresh script** (`refresh.py`) — pull fresh data from the source whenever you need it
-- **Contractor-only CSV** — 2,077 contractors with license numbers, specialties, permit counts, and total project values
+- **Contractor-only CSV** — 2,364 contractors with license numbers, specialties, permit counts, and total project values
 - **30-day data refresh guarantee** — email us within 30 days and we'll send you the latest pull for free
 
 ---
@@ -47,7 +47,7 @@ Everything in Foundation, plus:
 
 **Insurance underwriters** — Contractor license numbers, project values, and permit statuses in one place.
 
-**Data journalists** — $12.03 billion in construction activity with a full paper trail to the source.
+**Data journalists** — $11.25 billion in construction activity with a full paper trail to the source.
 
 **Researchers** — Housing unit trends, permit processing times, and contractor performance metrics.
 
@@ -55,7 +55,7 @@ Everything in Foundation, plus:
 
 ## Data Freshness & Update Policy
 
-Updated from the Seattle SDCI portal as of **July 19, 2026**. The included Python refresh script (Pro) pulls fresh data on demand.
+Updated from the Seattle SDCI portal as of **November 8, 2026**. The included Python refresh script (Pro) pulls fresh data on demand.
 
 **Monthly updates, free for every buyer:**
 
@@ -76,15 +76,17 @@ Updated from the Seattle SDCI portal as of **July 19, 2026**. The included Pytho
 
 | Metric | Count |
 |--------|-------|
-| Total permits | 13,623 |
-| Active permits | 5,632 |
-| Completed permits | 5,156 |
-| Residential | 10,314 |
-| Commercial | 2,848 |
-| Industrial | 172 |
+| Total permits | 15,551 |
+| Active permits | 6,806 |
+| Completed permits | 5,809 |
+| Residential | 11,945 |
+| Commercial | 3,345 |
+| Industrial | 213 |
 | Neighborhoods | 53 |
-| Contractors | 2,077 |
-| Total construction value | **$12.03 billion** |
+| Contractors | 2,364 |
+| Total construction value | **$11.25 billion** |
+
+Total value counts a valuation SDCI repeats across a project's demolition permits once (the raw sum of declared values is $14.59 billion). Each CSV row keeps the value SDCI declared.
 
 ---
 
@@ -100,7 +102,7 @@ Updated from the Seattle SDCI portal as of **July 19, 2026**. The included Pytho
 A: The Seattle SDCI (Seattle Department of Construction & Inspections) public portal at services.seattle.gov/portal. We scrape and structure it. The original source is public — we do the cleaning, deduplication, and enrichment.
 
 **Q: Is this the same data as buildingseattle.com?**
-A: Yes. This is a direct export of the same database powering that site. The site shows the latest data; this CSV is an export as of July 19, 2026.
+A: Yes. This is a direct export of the same database powering that site. The site shows the latest data; this CSV is an export as of November 8, 2026.
 
 **Q: How is this different from the Seattle Open Data Portal?**
 A: The open data portal doesn't include contractor license details, parcel numbers, detailed descriptions, review levels, or permit status changes. Our enrichment pipeline adds all of that.

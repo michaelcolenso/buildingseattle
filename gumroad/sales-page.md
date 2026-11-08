@@ -20,7 +20,7 @@ PRICING DECISION (2026-07-19)
 
 ### What's actually being built in your backyard — before your competitors find out
 
-BuildingSeattle tracks every single construction permit filed with the City of Seattle. That's **13,623 projects**, **$12.03 billion** in construction value, across **53 neighborhoods** and **2,077 contractors** — delivered as a single CSV file you can open in Excel, Google Sheets, or drop straight into your analysis stack.
+BuildingSeattle tracks every single construction permit filed with the City of Seattle. That's **15,551 permits**, **$11.25 billion** in construction value, across **53 neighborhoods** and **2,364 contractors** — delivered as a single CSV file you can open in Excel, Google Sheets, or drop straight into your analysis stack.
 
 The City publishes this data piecemeal through a clunky government portal. We scraped it, cleaned it, deduplicated it, and enriched every record with data from the SDCI detail pages — parcel numbers, review levels, full descriptions, and contractor license information. You get the structured result — no scraping, no cleaning, no wasted weekends.
 
@@ -61,7 +61,7 @@ That's 32 columns on every record. A full data dictionary is included with the d
 | **General contractors** | See who's winning bids. Find subs. Track competitor activity. |
 | **Real estate developers** | Size the construction pipeline by neighborhood. Find infill opportunities. |
 | **Insurance underwriters** | License status, project values, and contractor info — all in one CSV |
-| **Data journalists** | $12.03B in construction activity with verifiable source links |
+| **Data journalists** | $11.25B in construction activity with verifiable source links |
 | **Market researchers** | Permit processing times by neighborhood. Housing unit trends. Contractor performance. |
 
 ---
@@ -82,14 +82,14 @@ That's 32 columns on every record. A full data dictionary is included with the d
 ### Two Options
 
 #### Foundation — $49
-- 13,623 records, 32 columns, cleaned CSV
+- 15,551 records, 32 columns, cleaned CSV
 - Data dictionary
 - 100-record sample (free)
 
 #### Pro — $89
 - Everything in Foundation
 - **Python refresh script** — pull fresh data whenever you want
-- **Contractor-only CSV** — 2,077 contractors with license numbers, specialties, permit counts, and total project values
+- **Contractor-only CSV** — 2,364 contractors with license numbers, specialties, permit counts, and total project values
 - **30-day refresh guarantee** — email us for an updated pull, free
 
 **Every buyer gets free monthly updates.** We refresh the dataset on the first business day of each month (~500 new permits/month) and push the new files to your Gumroad library — you'll get an email each time.
@@ -116,21 +116,21 @@ The risk is entirely ours. You literally cannot lose.
 
 | | |
 |---|---|
-| Records | 13,623 |
+| Records | 15,551 |
 | Columns | 32 |
-| File size | ~7.6 MB |
+| File size | ~8.9 MB |
 | Format | CSV (UTF-8) |
-| Last updated | July 19, 2026 |
+| Last updated | November 8, 2026 |
 | Source | Seattle SDCI (services.seattle.gov/portal) |
 | Neighborhoods | 53 |
-| Total value | $12.03 billion |
+| Total value | $11.25 billion (repeated demolition valuations counted once) |
 
 ---
 
 ### FAQ
 
 **Is this the same data as buildingseattle.com?**
-Yes. Same database, exported on July 19th. The site shows live data — this is a snapshot for offline analysis.
+Yes. Same database, exported on November 8th. The site shows live data — this is a snapshot for offline analysis.
 
 **Can I resell or redistribute this?**
 The data is from public government sources. The cleaning and enrichment is our work. You can use it for analysis, commercial purposes, or internal use. Redistributing the raw dataset as a competing product is not permitted.

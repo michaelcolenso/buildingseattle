@@ -44,7 +44,16 @@ PERMIT_COLUMNS = [
 
 
 def _address_key(record):
-    return " ".join(str(record.get("address") or "").upper().split())
+    # Prefer the database's address id (what the site's SQL groups by); fall
+    # back to normalized address text for rows without one.
+    if record.get("address_id") is not None:
+        return f"id:{record['address_id']}"
+    text = " ".join(str(record.get("address") or "").upper().split())
+    return f"text:{text}" if text else ""
+
+
+def _order_key(record, index):
+    return (record["id"], index) if isinstance(record.get("id"), int) else (index, index)
 
 
 def counted_values(records):
@@ -69,7 +78,7 @@ def counted_values(records):
                 if other == index:
                     continue
                 other_dm = str(records[other].get("permit_number") or "").upper().endswith("-DM")
-                if not other_dm or other < index:
+                if not other_dm or _order_key(records[other], other) < _order_key(r, index):
                     skip = True
                     break
         out.append(0 if skip else value)

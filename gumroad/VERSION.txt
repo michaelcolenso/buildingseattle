@@ -1,13 +1,14 @@
 BuildingSeattle Permit Intelligence Dataset
-Version: 2026-07
-Records: 13,623
+Version: 2026-11
+Records: 15,551
 Columns: 32
-Total value: $12,030,940,171
+Total value: $11,245,353,426 (repeated demolition valuations counted once)
+Declared value (raw sum): $14,594,349,177
 Neighborhoods: 53
 Source: Seattle SDCI (services.seattle.gov/portal)
-Export date: July 19, 2026
+Export date: November 8, 2026
 
 SHA256:
-  buildingseattle_permits.csv  d7a2abbb0d69fbda5b7a8cc302a31d2d63ee433755d2466f1427551fca2480f5
-  buildingseattle_sample.csv  e0cf7f99f9864d0fe6fe683744992de982da32872b3763eb580b0a3a194196ea
-  contractors.csv  dc27ab170344cb0ad7c8e3c17a482678cf7934896c6251abc649946896751861
+  buildingseattle_permits.csv  9eafe4dc1260883f48806bed4f0d975cca018be3a5c0d28fa3660f30e79a6044
+  buildingseattle_sample.csv  2a3925b8471bcc9f99f1f34b7accc66d74bf67f18e66b5df7f11eb6eaa38a855
+  contractors.csv  1c7d8b1c56b7cc87841cce706569b92c8f1c288f12e66889f50613b1ae34d28e
