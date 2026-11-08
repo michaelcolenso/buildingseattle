@@ -3,7 +3,7 @@
 BuildingSeattle Data Refresh Script (Pro Tier)
 ================================================
 Pulls fresh building permit data from buildingseattle.com API
-and exports it as a CSV with the same 32 columns as the product.
+and exports it as a CSV with the same 38 columns as the product.
 
 Usage:   python3 refresh.py [--output FILE] [--max-pages N]
 Output:  buildingseattle_fresh.csv (default)
@@ -26,7 +26,7 @@ RETRY_DELAY = 2  # seconds, doubled per attempt
 CONSECUTIVE_EMPTY_LIMIT = 3  # stop after this many empty pages in a row
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
 
-# Same 32 columns as the shipped product (see data-dictionary.md)
+# Same 38 columns as the shipped product (see data-dictionary.md)
 PERMIT_COLUMNS = [
     "permit_number", "address", "neighborhood", "type", "value", "status",
     "description", "detailed_description",
@@ -40,6 +40,9 @@ PERMIT_COLUMNS = [
     "number_review_cycles", "total_days_plan_review", "days_out_corrections",
     "has_required_inspections", "has_completed_inspections",
     "permit_detail_url", "record_status_detail",
+    "development_site_id", "development_site_sqft", "development_site_status",
+    "development_site_source_updated_at", "development_site_fetched_at",
+    "development_site_geometry_url",
 ]
 
 
@@ -180,6 +183,10 @@ def main():
 
     if not records:
         print("\n❌ No records fetched. Check your internet connection and try again.")
+        return 1
+
+    if any("development_site_fetched_at" not in row for row in records):
+        sys.stderr.write("Development-site fields are unavailable; the 38-column rollout is not enabled. No CSV was written.\n")
         return 1
 
     with open(args.output, "w", newline="", encoding="utf-8") as f:

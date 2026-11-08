@@ -317,3 +317,14 @@ ON basis_reset_scores(project_id) WHERE project_id IS NOT NULL;
 -- Discovery hardening: prevent duplicate evidence events from repeated scans.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_basis_reset_events_source_unique
 ON basis_reset_events(source_url, event_type, event_date);
+
+
+-- Current SDCI development-site context; IDs are not King County tax PINs.
+CREATE TABLE IF NOT EXISTS development_sites (
+    site_id TEXT PRIMARY KEY NOT NULL CHECK (site_id = UPPER(TRIM(site_id)) AND length(site_id) BETWEEN 1 AND 20),
+    status TEXT,
+    lot_sqft INTEGER CHECK (lot_sqft IS NULL OR lot_sqft > 0),
+    boundary_geojson TEXT CHECK (boundary_geojson IS NULL OR json_valid(boundary_geojson)),
+    source_updated_at TEXT,
+    fetched_at TEXT NOT NULL
+);

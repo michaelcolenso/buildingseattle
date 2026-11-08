@@ -6,7 +6,7 @@ stdlib-only/single-file) keeps its own inline copy of PERMIT_COLUMNS;
 `tests/test_build_dataset.py` asserts the two lists never drift.
 """
 
-# The 32-column permit contract, in shipped order.
+# The 38-column permit contract, in shipped order.
 PERMIT_COLUMNS = [
     "permit_number", "address", "neighborhood", "type", "value", "status",
     "description", "detailed_description",
@@ -20,6 +20,9 @@ PERMIT_COLUMNS = [
     "number_review_cycles", "total_days_plan_review", "days_out_corrections",
     "has_required_inspections", "has_completed_inspections",
     "permit_detail_url", "record_status_detail",
+    "development_site_id", "development_site_sqft", "development_site_status",
+    "development_site_source_updated_at", "development_site_fetched_at",
+    "development_site_geometry_url",
 ]
 
 # Contractor CSV contract. The upstream L&I source (ciwg-agsx) has no

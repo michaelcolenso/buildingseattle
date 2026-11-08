@@ -4,6 +4,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import worker, { buildEntityHubQuery, buildEntityHubState } from "../worker.js";
+import { developmentSiteColumns, developmentSiteJoin } from "../development_sites.js";
 
 // A cluster of one permit is not a project: it repeats the record the address
 // page already publishes. These tests pin the two halves of that rule — the
@@ -30,7 +31,9 @@ function queriesEmbeddingPredicate() {
     const open = before.lastIndexOf("`");
     const close = after.indexOf("`");
     assert.ok(open !== -1 && close !== -1, `query ${index} is a template literal`);
-    queries.push(before.slice(open + 1) + multiPermitPredicate() + after.slice(0, close));
+    queries.push((before.slice(open + 1) + multiPermitPredicate() + after.slice(0, close))
+      .replaceAll("${developmentSiteColumns()}", developmentSiteColumns())
+      .replaceAll("${developmentSiteJoin()}", developmentSiteJoin()));
   }
   return queries;
 }

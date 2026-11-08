@@ -30,7 +30,7 @@ Every column, its type, what it means, and a real example from the dataset.
 | 22 | `review_level` | string | 84% | SDCI review level (enriched) | `Full +`, `Full C`, `Full`, `Field` |
 | 23 | `primary_property_use` | string | 84% | Property use classification (enriched) | `Single Family/Duplex`, `Multifamily` |
 | 24 | `work_performed_by` | string | 80% | Who performs work | `Licensed Contractor`, `Owner/Lessee` |
-| 25 | `parcel_number` | string | 84% | King County parcel number (enriched) | `DV1137945` |
+| 25 | `parcel_number` | string | 84% | SDCI property reference, usually a development-site ID; not a King County tax PIN | `DV1137945` |
 | 26 | `number_review_cycles` | integer | 42% | Times through plan review | `4` |
 | 27 | `total_days_plan_review` | integer | 18% | Total days in plan review | `57` |
 | 28 | `days_out_corrections` | integer | 42% | Days out for corrections | `1` |
@@ -38,6 +38,27 @@ Every column, its type, what it means, and a real example from the dataset.
 | 30 | `has_completed_inspections` | boolean | 100% | Inspections completed? | `1` (yes) / `0` (no) |
 | 31 | `permit_detail_url` | url | 84% | Direct link to SDCI detail page | `https://services.seattle.gov/portal/...altId=7142260-CN` |
 | 32 | `record_status_detail` | string | 84% | SDCI status detail text | `Reviews In Process` |
+
+## Development-site fields (next 38-column release)
+
+The original 32 columns retain their order. The next release appends:
+
+| # | Column | Type | Meaning |
+|---|--------|------|---------|
+| 33 | `development_site_id` | string | Matched normalized SDCI site ID; blank without a match. |
+| 34 | `development_site_sqft` | integer | Source LOTSZ site area in square feet; blank when unavailable or invalid. |
+| 35 | `development_site_status` | string | Site status from PRCLSTAT, separate from permit status. |
+| 36 | `development_site_source_updated_at` | timestamp | Source LAST_UPDATED_DT in UTC ISO 8601; may be blank. |
+| 37 | `development_site_fetched_at` | timestamp | Successful source fetch time in UTC ISO 8601. |
+| 38 | `development_site_geometry_url` | URL | Absolute link to the current boundary; blank without usable geometry. |
+
+These fields describe current SDCI development-site context, not property conditions at permit issuance. The source layer includes ACTIVE, PRESUMED, and UPDATE sites; retired sites may not match. Missing source dates remain unknown and are never replaced with fetch dates.
+
+Geometry URLs resolve live GeoJSON Features with source attribution and their own timestamps. A boundary can change or the URL can return 404 after refresh; a CSV does not freeze the geometry to its export date. Keep a retrieved Feature separately if an analysis requires reproducible geometry.
+
+Multiple permits can share a site. Deduplicate by site ID before summing site areas, and do not interpret the sum as a surveyed, non-overlapping land footprint. Site IDs are not King County tax parcel IDs.
+
+This is an additive schema release from 32 to 38 columns. Consumers with a fixed column-count requirement must update. Historical release entries and checksums remain unchanged; the generated version below describes the currently shipped artifact until the builder regenerates it.
 
 <!-- BEGIN GENERATED:STATS -->
 ## Status Values
@@ -64,6 +85,8 @@ Every column, its type, what it means, and a real example from the dataset.
 
 1. **Base data**: Seattle Open Data Portal (data.seattle.gov) — permit numbers, addresses, dates, values, contractor names
 2. **Enrichment**: SDCI detail page scraping (services.seattle.gov/portal) — detailed descriptions, parcel numbers, review levels, property use, work performer, record status
+
+3. **Development sites**: Seattle GIS Development Sites layer — exact reference-ID matching, site area, status, current boundaries and source dates.
 
 Enrichment coverage: 84% of records have parcel numbers, review levels, primary property use, and detailed descriptions. Contractor license data covers 55-59% of records (contractors without WA LNI registration are blank). Timeline and housing breakdown fields are present for records where the city published them.
 
