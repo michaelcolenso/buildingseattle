@@ -4,7 +4,7 @@
 Rebuilds every shipped artifact from a fresh snapshot of the production
 database:
 
-  gumroad/buildingseattle_permits.csv   full export, 32 columns
+  gumroad/buildingseattle_permits.csv   full export, 38 columns
   gumroad/buildingseattle_sample.csv    100 rows (top-25 by value + 75 random, seed-pinned)
   gumroad/contractors.csv               contractor aggregate (no empty columns)
   gumroad/data-dictionary.md            stats/version sections regenerated in place
@@ -70,8 +70,15 @@ PERMIT_SELECT = (
     "p.review_level, p.primary_property_use, p.work_performed_by, p.parcel_number, "
     "p.number_review_cycles, p.total_days_plan_review, p.days_out_corrections, "
     "p.has_required_inspections, p.has_completed_inspections, p.permit_detail_url, "
-    "p.record_status_detail "
+    "p.record_status_detail, ds.site_id AS development_site_id, "
+    "ds.lot_sqft AS development_site_sqft, ds.status AS development_site_status, "
+    "ds.source_updated_at AS development_site_source_updated_at, "
+    "ds.fetched_at AS development_site_fetched_at, "
+    "CASE WHEN ds.boundary_geojson IS NOT NULL THEN "
+    "'https://buildingseattle.com/api/development-sites/' || ds.site_id || '/geometry' "
+    "ELSE NULL END AS development_site_geometry_url "
     "FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id "
+    "LEFT JOIN development_sites ds ON ds.site_id = UPPER(TRIM(p.parcel_number)) "
     "WHERE p.permit_number IS NOT NULL"
 )
 
@@ -157,7 +164,7 @@ def fetch_d1_permit_count(account_id, token, db_id):
 # ------------------------------------------------------------ derivations
 
 def normalize_permit(record):
-    """Project a raw row (D1 or API) onto the 32-column contract."""
+    """Project a raw row (D1 or API) onto the 38-column contract."""
     return {col: record.get(col) for col in PERMIT_COLUMNS}
 
 
@@ -454,6 +461,8 @@ def main():
     else:
         raw = fetch_permits_api()
 
+    if any("development_site_fetched_at" not in row for row in raw):
+        raise SystemExit("Development-site API fields are unavailable. Complete the rollout before building the 38-column release.")
     records = [normalize_permit(r) for r in raw]
     records.sort(key=lambda r: r["permit_number"])
     if expected is not None and len(records) != expected:

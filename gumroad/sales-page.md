@@ -49,7 +49,7 @@ The City publishes this data piecemeal through a clunky government portal. We sc
 | **Housing** | housing_units | `1` |
 | | housing_units_added | `1` |
 
-That's 32 columns on every record. A full data dictionary is included with the download.
+That's 38 columns on every record. A full data dictionary is included with the download.
 
 ---
 
@@ -82,7 +82,7 @@ That's 32 columns on every record. A full data dictionary is included with the d
 ### Two Options
 
 #### Foundation — $49
-- 15,551 records, 32 columns, cleaned CSV
+- 15,551 records, 38 columns, cleaned CSV
 - Data dictionary
 - 100-record sample (free)
 

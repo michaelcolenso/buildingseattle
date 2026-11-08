@@ -1,0 +1,47 @@
+name: Development Site Enrichment
+
+on:
+  schedule:
+    - cron: '0 15 * * *' # 7 AM PST / 8 AM PDT, after the permit enrichment window
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate and report coverage without publishing'
+        type: boolean
+        default: true
+      limit_sites:
+        description: 'Maximum sites for a pilot (0 = all)'
+        default: '0'
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: development-site-enrichment
+  cancel-in-progress: false
+
+jobs:
+  enrich:
+    # Enable this repository variable only after migration, pilot, and backfill.
+    if: github.event_name == 'workflow_dispatch' || vars.DEVELOPMENT_SITES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - name: Refresh development sites
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          INGEST_API_TOKEN: ${{ secrets.INGEST_API_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          LIMIT_SITES: ${{ inputs.limit_sites || '0' }}
+        run: |
+          args=(--limit-sites "$LIMIT_SITES")
+          if [[ "$DRY_RUN" == "true" ]]; then args+=(--dry-run); fi
+          uv run python scripts/enrich_development_sites.py "${args[@]}"

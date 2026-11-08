@@ -2,6 +2,10 @@ name = "buildingseattle"
 main = "worker.js"
 compatibility_date = "2026-03-14"
 
+[vars]
+# Enable after the migration and verified backfill; cache keys change with this flag.
+DEVELOPMENT_SITES_PUBLIC = "false"
+
 # Static brand assets (design tokens, IBM Plex fonts, SVG favicon) served from ./public.
 # Matching paths are served before the Worker runs; everything else falls through to worker.js.
 [assets]

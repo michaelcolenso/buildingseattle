@@ -19,6 +19,10 @@ import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadarBody } from "./basis_reset_routes.js";
+import {
+  developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
+  ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, developmentSitesArePublic,
+} from "./development_sites.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -98,7 +102,7 @@ async function withHtmlEdgeCache(request, env, ctx, render) {
   const key = cache
     ? (() => {
         const keyUrl = new URL(url.toString());
-        keyUrl.searchParams.set("__bsv", HTML_CACHE_VERSION);
+        keyUrl.searchParams.set("__bsv", HTML_CACHE_VERSION + (developmentSitesArePublic(env) ? "" : "-sites-off"));
         return new Request(keyUrl.toString(), { method: "GET" });
       })()
     : null;
@@ -187,6 +191,14 @@ export default {
 
       if (path === "/api/permits") {
         return secure(await getPermits(request, env));
+      }
+
+      const siteGeometryMatch = path.match(/^\/api\/development-sites\/([^/]+)\/geometry$/);
+      if (siteGeometryMatch && request.method === "GET") {
+        if (!developmentSitesArePublic(env)) return secure(new Response(JSON.stringify({ error: "Boundary unavailable" }), {
+          status: 404, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+        }));
+        return secure(await getDevelopmentSiteGeometry(decodeURIComponent(siteGeometryMatch[1]), env));
       }
 
       if (path === "/mcp") {
@@ -451,6 +463,12 @@ export default {
           return secure(authError);
         }
         return secure(await ingestPermitEnrichmentBatch(request, env));
+      }
+
+      if (path === "/ingest/development-sites/batch" && request.method === "POST") {
+        const authError = await requireIngestAuth(request, env);
+        if (authError) return secure(authError);
+        return secure(await ingestDevelopmentSites(request, env));
       }
 
       if (path === "/ingest/basis-reset" && request.method === "POST") {
@@ -1210,7 +1228,7 @@ export async function getCanonicalStats(env) {
       env,
       `/* homepage:last-ingest */
        SELECT end_time FROM ingest_logs
-       WHERE status = 'success' AND run_type != 'entity_graph'
+       WHERE status = 'success' AND run_type NOT IN ('entity_graph', 'development_sites')
        ORDER BY end_time DESC LIMIT 1`,
     ),
   ]);
@@ -2021,6 +2039,7 @@ function renderAlertResult(title, message, status = 200) {
 }
 
 async function getPermits(request, env) {
+  const siteContext = developmentSitesArePublic(env);
   const url = new URL(request.url);
   const permitNumber = url.searchParams.get("permit");
   const neighborhood = url.searchParams.get("neighborhood");
@@ -2059,7 +2078,7 @@ async function getPermits(request, env) {
     params.push(like, like, like, like, like);
   }
 
-  const listQuery = `SELECT p.*, c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty, c.phone as contractor_phone, c.email as contractor_email FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
+  const listQuery = `SELECT p.*, ${siteContext ? developmentSiteColumns() + "," : ""} c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty, c.phone as contractor_phone, c.email as contractor_email FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${siteContext ? developmentSiteJoin() : ""} ${where} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
   const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where}`;
 
   const [{ results }, { total }] = await Promise.all([
@@ -2071,7 +2090,7 @@ async function getPermits(request, env) {
       .first(),
   ]);
 
-  return new Response(JSON.stringify({ total, page, per_page: perPage, results: (results || []).slice(0, perPage) }), {
+  return new Response(JSON.stringify({ total, page, per_page: perPage, results: (results || []).slice(0, perPage).map(row => siteContext ? withDevelopmentSiteFields(row) : row) }), {
     headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=60" },
   });
 }
@@ -2222,7 +2241,7 @@ async function renderPermitBrowser(request, env) {
       `SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`,
     ).all(),
     env.DB.prepare(
-      `SELECT end_time FROM ingest_logs WHERE status = 'success' AND run_type != 'entity_graph' ORDER BY end_time DESC LIMIT 1`,
+      `SELECT end_time FROM ingest_logs WHERE status = 'success' AND run_type NOT IN ('entity_graph', 'development_sites') ORDER BY end_time DESC LIMIT 1`,
     ).first(),
     getRecentStatusChanges(env, 8),
   ]);
@@ -2624,7 +2643,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   try {
     ({ results } = await env.DB.prepare(
       `
-    SELECT p.*,
+    SELECT p.*, ${developmentSiteColumns()}, ds.boundary_geojson AS development_site_boundary,
            c.name as contractor_name,
            c.slug as contractor_slug,
            c.specialty as contractor_specialty,
@@ -2638,6 +2657,7 @@ async function renderPermitDetail(permitNumber, env, request) {
            pr.name as project_name
     FROM permits p
     LEFT JOIN contractors c ON p.contractor_id = c.id
+    ${developmentSiteJoin()}
     LEFT JOIN addresses a ON a.id = p.address_id
     LEFT JOIN projects pr ON pr.id = p.project_id AND ${MULTI_PERMIT_PROJECT_SQL}
     WHERE p.permit_number = ?
@@ -2648,7 +2668,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   } catch {
     ({ results } = await env.DB.prepare(
       `
-    SELECT p.*,
+    SELECT p.*, ${developmentSiteColumns()}, ds.boundary_geojson AS development_site_boundary,
            c.name as contractor_name,
            c.slug as contractor_slug,
            c.specialty as contractor_specialty,
@@ -2658,6 +2678,7 @@ async function renderPermitDetail(permitNumber, env, request) {
            c.address as contractor_address
     FROM permits p
     LEFT JOIN contractors c ON p.contractor_id = c.id
+    ${developmentSiteJoin()}
     WHERE p.permit_number = ?
   `,
     )
@@ -2805,7 +2826,7 @@ async function renderPermitDetail(permitNumber, env, request) {
     ["Dwelling type", permit.dwelling_unit_type],
     ["Review level", permit.review_level],
     ["Primary use", permit.primary_property_use],
-    ["Parcel", permit.parcel_number],
+    ["Property reference", permit.parcel_number],
     ["Parent permit", permit.parent_permit_number],
     ["Related land-use permit", permit.related_mup],
     ["Review cycles", permit.number_review_cycles],
@@ -3234,6 +3255,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                 </div>
 
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Location &amp; Map</h2>
+                ${developmentSitesArePublic(env) ? renderDevelopmentSiteCard(permit) : ""}
                 <div class="bs-card" style="padding: 0; overflow: hidden;">
 	                    <iframe title="Map of ${safeAddress}" width="100%" height="300" style="border: 0; display: block;" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://maps.google.com/maps?q=${mapsQuery}&t=&z=17&ie=UTF8&iwloc=&output=embed"></iframe>
                     <div style="padding: 0.75rem 1rem; background: var(--bg-alt); border-top: 1px solid var(--border); display: flex; gap: 1rem; justify-content: center;">
@@ -3402,9 +3424,9 @@ async function getAdminStats(env) {
   // entity_graph rows (rebuild outcomes) are listed in the dashboard log but are not
   // permit ingests: counting them would inflate growth and shift "last run".
   const [lastRun, growth24h, neighborhoods, performance, counts] = await Promise.all([
-    env.DB.prepare("SELECT * FROM ingest_logs WHERE run_type != 'entity_graph' ORDER BY start_time DESC LIMIT 1").first(),
+    env.DB.prepare("SELECT * FROM ingest_logs WHERE run_type NOT IN ('entity_graph', 'development_sites') ORDER BY start_time DESC LIMIT 1").first(),
     env.DB.prepare(
-      "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day') AND run_type != 'entity_graph'",
+      "SELECT SUM(records_added) as added FROM ingest_logs WHERE start_time > datetime('now', '-1 day') AND run_type NOT IN ('entity_graph', 'development_sites')",
     ).first(),
     env.DB.prepare(
       `
@@ -3421,7 +3443,7 @@ async function getAdminStats(env) {
         AVG(strftime('%s', end_time) - strftime('%s', start_time)) as avg_duration,
         COUNT(CASE WHEN status = 'success' THEN 1 END) * 100.0 / COUNT(*) as success_rate
       FROM ingest_logs
-      WHERE run_type != 'entity_graph'
+      WHERE run_type NOT IN ('entity_graph', 'development_sites')
     `,
     ).first(),
     env.DB.prepare(
@@ -9328,12 +9350,24 @@ function renderApiSpecObject() {
                       total: { type: "integer" },
                       page: { type: "integer" },
                       per_page: { type: "integer" },
-                      results: { type: "array", items: { type: "object" } },
+                      results: { type: "array", items: { type: "object", properties: DEVELOPMENT_SITE_SCHEMA } },
                     },
                   },
                 },
               },
             },
+          },
+        },
+      },
+      "/api/development-sites/{id}/geometry": {
+        get: {
+          operationId: "getDevelopmentSiteGeometry",
+          summary: "Current SDCI development-site boundary as a GeoJSON Feature.",
+          description: "This live boundary can change or disappear after refresh. Its timestamps describe the retrieved geometry, not a historical CSV snapshot.",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            200: { description: "Current boundary with source attribution and UTC source/fetch timestamps.", content: { "application/geo+json": { schema: { type: "object", required: ["type", "geometry", "properties"], properties: { type: { const: "Feature" }, geometry: { type: "object" }, properties: { type: "object", properties: DEVELOPMENT_SITE_SCHEMA } } } } } },
+            404: { description: "No usable boundary is available." },
           },
         },
       },
@@ -9481,6 +9515,8 @@ function renderApiDocs() {
         <p class="lede">Read-only JSON access to aggregated Seattle construction permit and contractor data. No authentication required. Base URL <code>${BASE_URL}</code>.</p>
         <h2>Endpoints</h2>
         ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1)."), param("per_page", "Results per page (1-100, default 50).")].join(""))}
+        <p>Permit results include six nullable development-site fields: <code>development_site_id</code>, <code>development_site_sqft</code>, <code>development_site_status</code>, <code>development_site_source_updated_at</code>, <code>development_site_fetched_at</code>, and <code>development_site_geometry_url</code>. Source dates may be unknown. The existing <code>parcel_number</code> is an SDCI property reference, usually a development-site ID.</p>
+        ${endpoint("GET", "/api/development-sites/{id}/geometry", "Current boundary as a GeoJSON Feature with source attribution and UTC timestamps. Returns 404 without a usable boundary. Geometry links are live: they may change or disappear after refresh and do not freeze the boundary to a CSV export date.", param("id", "SDCI development-site ID, such as DV0025961."))}
         ${endpoint("GET", "/api/contractors", "List the top 20 contractors ranked by active project count. Each record includes an active_projects count.", "")}
         ${endpoint("GET", "/api/stats", "Aggregate counts and permit value totals for the dashboard.", "")}
         <h2>Machine-readable resources</h2>
@@ -10814,6 +10850,7 @@ const GUMROAD_PRODUCT_URL = "https://buildingseattle.gumroad.com/l/seattle-permi
 const GUMROAD_UTM = "utm_source=buildingseattle&utm_medium=site&utm_campaign=data_page";
 
 async function renderDataPage(env) {
+  const datasetColumnCount = developmentSitesArePublic(env) ? 38 : 32;
   const canonical = `${BASE_URL}/data`;
   const title = "Seattle Permit Dataset — CSV Download | Building Seattle";
   const description =
@@ -10960,21 +10997,21 @@ async function renderDataPage(env) {
                     <div class="stat-card"><div class="num">${permitCount}</div><div class="label">Permits</div></div>
                     <div class="stat-card"><div class="num">${billions}</div><div class="label">Construction value</div></div>
                     <div class="stat-card"><div class="num">${contractorCount}</div><div class="label">Contractors</div></div>
-                    <div class="stat-card"><div class="num">32</div><div class="label">Columns per record</div></div>
+                    <div class="stat-card"><div class="num">${datasetColumnCount}</div><div class="label">Columns per record</div></div>
                 </div>
 
                 <h2>What's in it</h2>
                 <p>Every construction permit filed with Seattle SDCI, cleaned and deduplicated, then enriched with data the open data portal doesn't have: <strong>parcel numbers, review levels, full detail-page descriptions, contractor license numbers, review-cycle counts, and housing unit breakdowns</strong>. One UTF-8 CSV that opens in Excel, Google Sheets, pandas, or R — plus a full data dictionary.</p>
 
                 <h2>Try before you buy</h2>
-                <p>A <strong>free 100-row sample</strong> with the same 32 columns and real enriched data is available on the product page. If it doesn't have what you need, don't buy the full version. If you do buy and it isn't useful, there's a 14-day no-questions refund.</p>
+                <p>A <strong>free 100-row sample</strong> with the same ${datasetColumnCount} columns and real enriched data is available on the product page. If it doesn't have what you need, don't buy the full version. If you do buy and it isn't useful, there's a 14-day no-questions refund.</p>
 
                 <div class="tier-grid">
                     <div class="tier-card">
                         <h3>Foundation</h3>
                         <div class="price">$49</div>
                         <ul>
-                            <li>Full CSV — every permit, 32 columns</li>
+                            <li>Full CSV — every permit, ${datasetColumnCount} columns</li>
                             <li>Complete data dictionary</li>
                             <li>Free monthly updates via Gumroad</li>
                         </ul>

@@ -46,14 +46,51 @@ def records():
     return [make_record(i) for i in range(300)]
 
 
-def test_column_contract_is_32_columns():
-    assert len(columns.PERMIT_COLUMNS) == 32
-    assert len(set(columns.PERMIT_COLUMNS)) == 32
+def test_column_contract_is_38_columns():
+    assert len(columns.PERMIT_COLUMNS) == 38
+    assert len(set(columns.PERMIT_COLUMNS)) == 38
 
 
 def test_refresh_columns_match_shared_contract():
     # refresh.py ships standalone in the Pro ZIP with its own copy — never drift
     assert refresh.PERMIT_COLUMNS == columns.PERMIT_COLUMNS
+
+
+def test_development_site_export_query_and_refresh_preserve_grain(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript((REPO_ROOT / "schema.sql").read_text())
+    db.executescript((REPO_ROOT / "migration_entity_graph.sql").read_text())
+    db.execute("DELETE FROM permits")
+    for i, ref in enumerate([" dv0025961 ", "DV0025961", None]):
+        db.execute("INSERT INTO permits (permit_number, address, parcel_number, value) VALUES (?, ?, ?, ?)",
+                   (f"P-{i}", f"{i} MAIN ST", ref, (i + 1) * 10000))
+    geometry = json.dumps({"type": "Polygon", "coordinates": [[[-122.3, 47.6], [-122.2, 47.6], [-122.2, 47.7], [-122.3, 47.6]]]})
+    db.execute("INSERT INTO development_sites VALUES (?, ?, ?, ?, ?, ?)",
+               ("DV0025961", "ACTIVE", 5000, geometry, None, "2026-11-01T00:00:00.000Z"))
+    rows = [dict(row) for row in db.execute(build.PERMIT_SELECT + " ORDER BY p.permit_number")]
+    db.close()
+    assert len(rows) == 3
+    assert sum(row["value"] for row in rows) == 60000
+    assert [row["development_site_sqft"] for row in rows] == [5000, 5000, None]
+    assert rows[0]["parcel_number"] == " dv0025961 "
+    assert rows[0]["development_site_geometry_url"] == "https://buildingseattle.com/api/development-sites/DV0025961/geometry"
+
+    # Exercise the API builder path and the shipped standalone refresh, not just headers.
+    monkeypatch.setattr(build, "http_json", lambda *args, **kwargs: {"results": rows})
+    api_records = [build.normalize_permit(row) for row in build.fetch_permits_api()]
+    assert api_records == [build.normalize_permit(row) for row in rows]
+    d1_path = tmp_path / "d1.csv"
+    build.write_csv(d1_path, api_records, columns.PERMIT_COLUMNS)
+    refreshed_path = tmp_path / "refresh.csv"
+    monkeypatch.setattr(refresh, "fetch_json", lambda url: {"permits": 3})
+    monkeypatch.setattr(refresh, "fetch_page", lambda page: {"results": rows})
+    monkeypatch.setattr(sys, "argv", ["refresh.py", "--output", str(refreshed_path)])
+    assert refresh.main() == 0
+    assert refreshed_path.read_text() == d1_path.read_text()
 
 
 def test_normalize_permit_projects_onto_contract():
@@ -101,7 +138,7 @@ def test_derive_contractors_skips_blank_names(records):
 def test_compute_stats(records):
     stats = build.compute_stats(records)
     assert stats["records"] == 300
-    assert stats["columns"] == 32
+    assert stats["columns"] == 38
     assert stats["total_value"] == sum(r["value"] for r in records)
     assert stats["neighborhoods"] == 3
     assert sum(stats["statuses"].values()) == 300

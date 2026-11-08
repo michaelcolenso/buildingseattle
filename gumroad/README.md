@@ -10,7 +10,7 @@ This is the dataset powering [buildingseattle.com](https://buildingseattle.com),
 
 ## Product Tier: Foundation ($49)
 
-A single CSV file with **15,551 records** and **32 columns** covering:
+A single CSV file with **15,551 records** and **38 columns** covering:
 
 | Category | Fields |
 |----------|--------|
@@ -114,4 +114,10 @@ A: Yes — the Pro tier includes a Python refresh script and a 30-day free refre
 A: Standard UTF-8 CSV. Opens in Excel, Google Sheets, Python (pandas), R, or any CSV reader.
 
 **Q: Is there a sample?**
-A: Yes — a 100-record sample is available for free. Same 32 columns, real enriched data.
+A: Yes — a 100-record sample is available for free. Same 38 columns, real enriched data.
+
+## Development-site enrichment release
+
+The next release appends six development-site fields to the original 32 columns. Existing July 2026 artifacts remain the 32-column release until regenerated after backfill. Site area, status, and source/fetch dates describe current SDCI development sites. The `parcel_number` column holds SDCI property references, usually `DV…` site IDs, rather than King County tax PINs. Geometry URLs are live references and may change or return 404 after a refresh.
+
+Consumers that require exactly 32 columns must update for the 38-column schema. The original column names, order, and meanings are preserved except for correcting the property-reference description.
