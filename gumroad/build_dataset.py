@@ -62,7 +62,7 @@ MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 
 PERMIT_SELECT = (
-    "SELECT p.permit_number, p.address, p.neighborhood, p.type, p.value, p.status, "
+    "SELECT p.id, p.address_id, p.permit_number, p.address, p.neighborhood, p.type, p.value, p.status, "
     "p.description, p.detailed_description, p.applied_date, p.issued_date, "
     "p.completed_date, p.expires_date, p.plan_review_complete_date, p.ready_to_issue_date, "
     "c.name AS contractor_name, c.specialty AS contractor_specialty, p.contractor_license, "
@@ -180,8 +180,12 @@ def build_sample(records):
     return top + sorted(draw, key=lambda r: r["permit_number"])
 
 
-def derive_contractors(records):
+def derive_contractors(records, counted_by_permit=None):
     """Aggregate contractor rows from the permit snapshot (count + total value).
+
+    `counted_by_permit` maps permit_number -> counted value (see
+    counted_values); a valuation repeated across demolition permits is
+    counted once. Without it, declared values are summed.
 
     Grouped by contractor name; license/specialty take the most common
     non-empty value seen across that contractor's permits.
@@ -194,7 +198,10 @@ def derive_contractors(records):
         g = groups.setdefault(name, {"licenses": Counter(), "specialties": Counter(),
                                      "count": 0, "value": 0})
         g["count"] += 1
-        g["value"] += r.get("value") or 0
+        if counted_by_permit is not None and r.get("permit_number") in counted_by_permit:
+            g["value"] += counted_by_permit[r["permit_number"]]
+        else:
+            g["value"] += r.get("value") or 0
         if r.get("contractor_license"):
             g["licenses"][r["contractor_license"]] += 1
         if r.get("contractor_specialty"):
@@ -213,7 +220,16 @@ def derive_contractors(records):
 
 
 def _address_key(record):
-    return " ".join(str(record.get("address") or "").upper().split())
+    # Prefer the database's address id (what the site's SQL groups by); fall
+    # back to normalized address text for rows without one.
+    if record.get("address_id") is not None:
+        return f"id:{record['address_id']}"
+    text = " ".join(str(record.get("address") or "").upper().split())
+    return f"text:{text}" if text else ""
+
+
+def _order_key(record, index):
+    return (record["id"], index) if isinstance(record.get("id"), int) else (index, index)
 
 
 def counted_values(records):
@@ -241,14 +257,14 @@ def counted_values(records):
                 if other == index:
                     continue
                 other_dm = str(records[other].get("permit_number") or "").upper().endswith("-DM")
-                if not other_dm or other < index:
+                if not other_dm or _order_key(records[other], other) < _order_key(r, index):
                     skip = True
                     break
         out.append(0 if skip else value)
     return out
 
 
-def compute_stats(records):
+def compute_stats(records, value_rows=None):
     statuses = Counter((r.get("status") or "unknown") for r in records)
     types = Counter((r.get("type") or "unknown") for r in records)
     coverage = {
@@ -258,7 +274,7 @@ def compute_stats(records):
     return {
         "records": len(records),
         "columns": len(PERMIT_COLUMNS),
-        "total_value": sum(counted_values(records)),
+        "total_value": sum(counted_values(value_rows if value_rows is not None else records)),
         "declared_value": sum(r.get("value") or 0 for r in records),
         "neighborhoods": len({r["neighborhood"] for r in records if r.get("neighborhood")}),
         "statuses": dict(statuses.most_common()),
@@ -371,10 +387,18 @@ def render_changelog_entry(stats, version, export_date, previous_records=None):
     ])
 
 
-def prepend_changelog(path, entry):
+def drop_version_entries(text, version):
+    """Remove existing CHANGELOG entries for `version`, so a re-run replaces its entry."""
+    parts = re.split(r"(?m)^(?=## )", text)
+    return "".join(part for part in parts if not part.startswith(f"## {version} "))
+
+
+def prepend_changelog(path, entry, version=None):
     header = "# Changelog\n\nAll shipped dataset versions, newest first. Buyers receive every refresh free via Gumroad file updates.\n\n"
     if path.exists():
         text = path.read_text(encoding="utf-8")
+        if version:
+            text = drop_version_entries(text, version)
         if text.startswith("# Changelog"):
             head, _, rest = text.partition("\n## ")
             rest = ("## " + rest) if rest else ""
@@ -385,10 +409,14 @@ def prepend_changelog(path, entry):
     path.write_text(header + entry, encoding="utf-8")
 
 
-def previous_record_count(changelog_path):
+def previous_record_count(changelog_path, version=None):
+    """Record count of the newest entry for a different version than `version`."""
     if not changelog_path.exists():
         return None
-    m = re.search(r"- ([\d,]+) permits", changelog_path.read_text(encoding="utf-8"))
+    text = changelog_path.read_text(encoding="utf-8")
+    if version:
+        text = drop_version_entries(text, version)
+    m = re.search(r"- ([\d,]+) permits", text)
     return int(m.group(1).replace(",", "")) if m else None
 
 
@@ -440,9 +468,10 @@ def main():
     if expected is not None and len(records) != expected:
         raise SystemExit(f"row drift: D1 counts {expected} permits but export has {len(records)}")
 
-    stats = compute_stats(records)
+    stats = compute_stats(records, value_rows=raw)
     sample = build_sample(records)
-    contractors = derive_contractors(records)
+    counted_by_permit = dict(zip((r.get("permit_number") for r in raw), counted_values(raw)))
+    contractors = derive_contractors(records, counted_by_permit)
 
     permits_csv = out_dir / "buildingseattle_permits.csv"
     sample_csv = out_dir / "buildingseattle_sample.csv"
@@ -463,8 +492,8 @@ def main():
         render_version_txt(stats, version, export_date, checksums), encoding="utf-8")
 
     changelog = out_dir / "CHANGELOG.md"
-    prev = previous_record_count(changelog)
-    prepend_changelog(changelog, render_changelog_entry(stats, version, export_date, prev))
+    prev = previous_record_count(changelog, version)
+    prepend_changelog(changelog, render_changelog_entry(stats, version, export_date, prev), version)
 
     foundation_zip = dist_dir / f"buildingseattle-permits-{version}_foundation.zip"
     pro_zip = dist_dir / f"buildingseattle-permits-{version}_pro.zip"

@@ -207,3 +207,47 @@ def test_refresh_counted_values_never_drifts_from_build(records):
         make_record(902, permit_number="7100002-DM", address="1 EXAMPLE ST, SEATTLE, WA", value=1000),
     ]
     assert refresh.counted_values(rows) == build.counted_values(rows)
+
+
+def test_counted_values_prefer_address_id_over_address_text():
+    # Same address id, differently spelled address text: still one valuation.
+    rows = [
+        {"id": 20, "address_id": 7, "permit_number": "7009657-DM", "address": "4747 30th Ave NE", "value": 129_000_000},
+        {"id": 10, "address_id": 7, "permit_number": "7009320-DM", "address": "4747 30TH AVE NE, SEATTLE, WA", "value": 129_000_000},
+        {"id": 30, "address_id": 8, "permit_number": "7300001-DM", "address": "4747 30TH AVE NE, SEATTLE, WA", "value": 129_000_000},
+    ]
+    # Lowest id counts (matches value_counting.js); a different address id is unrelated.
+    assert build.counted_values(rows) == [0, 129_000_000, 129_000_000]
+    assert refresh.counted_values(rows) == build.counted_values(rows)
+    stats = build.compute_stats([build.normalize_permit(r) for r in rows], value_rows=rows)
+    assert stats["total_value"] == 258_000_000
+
+
+def test_rebuilding_a_version_replaces_its_changelog_entry(tmp_path):
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\nIntro.\n\n## 2026-07 — July 19, 2026\n\n- 13,623 permits, 32 columns\n",
+        encoding="utf-8",
+    )
+    stats = {"records": 15_551, "columns": 32, "total_value": 1, "declared_value": 2,
+             "neighborhoods": 53, "statuses": {"active": 1}}
+    from datetime import date
+    for _ in range(2):  # two builds of the same version
+        prev = build.previous_record_count(changelog, "2026-11")
+        build.prepend_changelog(changelog, build.render_changelog_entry(stats, "2026-11", date(2026, 11, 8), prev), "2026-11")
+    text = changelog.read_text(encoding="utf-8")
+    assert text.count("## 2026-11") == 1
+    assert "(+1,928 vs previous)" in text
+    assert text.count("## 2026-07") == 1
+
+
+def test_contractor_totals_count_repeated_demolition_valuations_once():
+    rows = [
+        make_record(i, permit_number=f"700932{i}-DM", address="4747 30TH AVE NE, SEATTLE, WA",
+                    value=129_000_000, contractor_name="EXXEL PACIFIC INC")
+        for i in range(3)
+    ]
+    counted = dict(zip((r["permit_number"] for r in rows), build.counted_values(rows)))
+    [row] = build.derive_contractors(rows, counted)
+    assert row["permit_count"] == 3
+    assert row["total_project_value"] == 129_000_000
