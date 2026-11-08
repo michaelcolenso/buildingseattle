@@ -85,7 +85,7 @@ Seattle Open Data Portal (data.seattle.gov)
 
 ### worker.js Structure
 
-The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split into sibling modules: `entity_graph.js` (see Entity Graph), `adu.js` (ADU/DADU classification), `entity_hubs.js` (hub-page SEO config), `brand_ui.js` (server-rendered design-system pieces: status pills, icons; styles in `public/brand/bundle.css`), `basis_reset.js` + `basis_reset_routes.js` (Basis Reset Radar, see `docs/basis-reset-radar.md`), and `mcp.js` (MCP server at `/mcp`, tests in `tests/mcp.test.js`). `worker.js` contains:
+The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split into sibling modules: `entity_graph.js` (see Entity Graph), `adu.js` (ADU/DADU classification), `entity_hubs.js` (hub-page SEO config), `value_counting.js` (how permit values are summed: a valuation SDCI repeats across a project's demolition permits counts once; use `countedValueSql()` in any `SUM` of value), `brand_ui.js` (server-rendered design-system pieces: status pills, icons; styles in `public/brand/bundle.css`), `basis_reset.js` + `basis_reset_routes.js` (Basis Reset Radar, see `docs/basis-reset-radar.md`), and `mcp.js` (MCP server at `/mcp`, tests in `tests/mcp.test.js`). `worker.js` contains:
 
 - Path-based route dispatch at the top of `fetch()`
 - **All HTML pages are inlined as template literals** — there is no separate templating engine or frontend build step

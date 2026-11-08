@@ -6,6 +6,8 @@
 // ExportedHandler -- exporting it from worker.js broke `wrangler dev` at
 // startup.
 
+import { countedValueSql } from "./value_counting.js";
+
 export const ENTITY_HUBS = {
   contractors: {
     title: "Seattle Contractors by Permit Activity",
@@ -15,7 +17,7 @@ export const ENTITY_HUBS = {
     pathPrefix: "/contractor/",
     selectSql: `/* seo-hub:contractors */
       SELECT o.slug, o.name AS label, COALESCE(NULLIF(o.type_guess, 'unknown'), 'Contractor') AS detail,
-             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value,
              MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM people_orgs o
       JOIN permit_participants pp ON pp.people_org_id = o.id AND pp.role = 'contractor'
@@ -33,7 +35,7 @@ export const ENTITY_HUBS = {
     pathPrefix: "/neighborhood/",
     selectSql: `/* seo-hub:neighborhoods */
       SELECT n.slug, n.name AS label, 'Seattle neighborhood' AS detail,
-             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value,
              MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM neighborhoods n
       JOIN address_neighborhoods an ON an.neighborhood_id = n.id
@@ -51,7 +53,7 @@ export const ENTITY_HUBS = {
     pathPrefix: "/project/",
     selectSql: `/* seo-hub:projects */
       SELECT pr.slug, pr.name AS label, COALESCE(a.display_address, 'Seattle project') AS detail,
-             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             COUNT(DISTINCT pp.permit_id) AS permit_count, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value,
              MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM projects pr
       JOIN project_permits pp ON pp.project_id = pr.id
@@ -70,7 +72,7 @@ export const ENTITY_HUBS = {
     pathPrefix: "/address/",
     selectSql: `/* seo-hub:addresses */
       SELECT a.slug, a.display_address AS label, 'Seattle property' AS detail,
-             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(p.value), 0) AS total_value,
+             COUNT(DISTINCT p.id) AS permit_count, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value,
              MAX(COALESCE(p.issued_date, p.applied_date, p.created_at)) AS latest_activity
       FROM addresses a
       JOIN permits p ON p.address_id = a.id`,

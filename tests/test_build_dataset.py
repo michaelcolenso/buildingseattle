@@ -146,3 +146,28 @@ def test_changelog_prepend(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert text.index("2026-08") < text.index("2026-07")
     assert build.previous_record_count(path) == 14101
+
+
+def test_counted_values_repeated_demolition_valuation_counts_once():
+    rows = [
+        make_record(1, permit_number="7009320-DM", address="4747 30TH AVE NE, SEATTLE, WA", value=129_000_000),
+        make_record(2, permit_number="7009657-DM", address="4747 30th Ave NE,  Seattle, WA", value=129_000_000),
+        make_record(3, permit_number="7100001-CN", address="10 ELM ST, SEATTLE, WA", value=13_000_000),
+        make_record(4, permit_number="7100002-DM", address="10 ELM ST, SEATTLE, WA", value=13_000_000),
+        make_record(5, permit_number="7200001-CN", address="20 OAK ST, SEATTLE, WA", value=450_000),
+        make_record(6, permit_number="7200002-CN", address="20 OAK ST, SEATTLE, WA", value=450_000),
+        make_record(7, permit_number="7300001-DM", address="30 PINE ST, SEATTLE, WA", value=25_000),
+    ]
+    assert build.counted_values(rows) == [129_000_000, 0, 13_000_000, 0, 450_000, 450_000, 25_000]
+    stats = build.compute_stats(rows)
+    assert stats["total_value"] == 129_000_000 + 13_000_000 + 900_000 + 25_000
+    assert stats["declared_value"] == sum(r["value"] for r in rows)
+
+
+def test_refresh_counted_values_never_drifts_from_build(records):
+    rows = list(records) + [
+        make_record(900, permit_number="7009320-DM", address="4747 30TH AVE NE, SEATTLE, WA", value=129_000_000),
+        make_record(901, permit_number="7009657-DM", address="4747 30TH AVE NE, SEATTLE, WA", value=129_000_000),
+        make_record(902, permit_number="7100002-DM", address="1 EXAMPLE ST, SEATTLE, WA", value=1000),
+    ]
+    assert refresh.counted_values(rows) == build.counted_values(rows)

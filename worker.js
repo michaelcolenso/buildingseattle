@@ -15,6 +15,7 @@ import {
   classifyAduPermit,
 } from "./adu.js";
 import { ENTITY_HUBS } from "./entity_hubs.js";
+import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadar } from "./basis_reset_routes.js";
@@ -1201,7 +1202,7 @@ export async function getCanonicalStats(env) {
          SUM(CASE WHEN lower(COALESCE(status,'')) = 'active' THEN 1 ELSE 0 END) AS active_permits,
          COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL THEN contractor_id END) AS contractors,
          COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL AND lower(COALESCE(status,'')) = 'active' THEN contractor_id END) AS active_contractors,
-         COALESCE(SUM(value), 0) AS total_value,
+         COALESCE(SUM(${countedValueSql("permits")}), 0) AS total_value,
          MAX(COALESCE(issued_date, applied_date)) AS latest_record_date
        FROM permits`,
     ),
@@ -1257,7 +1258,7 @@ export async function buildHomeSnapshot(env) {
     dbAll(
       env,
       `/* homepage:active-addresses */
-       SELECT p.address AS label, COUNT(*) AS active_permits, COALESCE(SUM(p.value), 0) AS total_value
+       SELECT p.address AS label, COUNT(*) AS active_permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p
        WHERE lower(COALESCE(p.status,'')) = 'active'
          AND p.address IS NOT NULL AND trim(p.address) != ''
@@ -1268,7 +1269,7 @@ export async function buildHomeSnapshot(env) {
     dbAll(
       env,
       `/* homepage:contractors-30d */
-       SELECT c.name AS label, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value), 0) AS total_value
+       SELECT c.name AS label, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM contractors c
        JOIN permits p ON p.contractor_id = c.id
        WHERE lower(COALESCE(p.status,'')) = 'active'
@@ -1280,7 +1281,7 @@ export async function buildHomeSnapshot(env) {
     dbAll(
       env,
       `/* homepage:neighborhoods-30d */
-       SELECT p.neighborhood AS label, COUNT(*) AS permits, COALESCE(SUM(p.value), 0) AS total_value
+       SELECT p.neighborhood AS label, COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p
        WHERE p.neighborhood IS NOT NULL AND trim(p.neighborhood) != ''
          AND date(COALESCE(p.issued_date, p.applied_date)) >= date('now', '-30 days')
@@ -3593,7 +3594,7 @@ async function renderContractorPage(slug, env, request) {
       })),
     env.DB.prepare(
       `
-      SELECT neighborhood, COUNT(*) as count, SUM(value) as total_value
+      SELECT neighborhood, COUNT(*) as count, SUM(${countedValueSql("permits")}) as total_value
       FROM permits 
       WHERE contractor_id = ? AND neighborhood IS NOT NULL
       GROUP BY neighborhood 
@@ -3620,7 +3621,7 @@ async function renderContractorPage(slug, env, request) {
   const [graphAddresses, graphProjects] = await Promise.all([
     safeAll(
       env,
-      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
        FROM permits p JOIN addresses a ON a.id = p.address_id
        WHERE p.contractor_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 12`,
       [contractor.id],
@@ -4499,7 +4500,7 @@ async function entityGraphReport(env) {
     one(`SELECT COUNT(*) AS n FROM permits WHERE project_id IS NULL`),
     one(`SELECT COUNT(*) AS n FROM neighborhoods`),
     many(
-      `SELECT a.display_address, a.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+      `SELECT a.display_address, a.slug, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
        FROM addresses a JOIN permits p ON p.address_id = a.id
        GROUP BY a.id ORDER BY permits DESC, total_value DESC LIMIT 20`,
     ),
@@ -4857,7 +4858,7 @@ function buildEntityHubQuery(type, state) {
     where.push("date(COALESCE(p.issued_date, p.applied_date, p.created_at)) >= date('now', '-365 days')");
   }
   if (state.minValue) {
-    havingParts.push("COALESCE(SUM(p.value), 0) >= ?");
+    havingParts.push(`COALESCE(SUM(${countedValueSql("p")}), 0) >= ?`);
     binds.push(Number(state.minValue));
   }
   if (state.minPermits) {
@@ -5888,7 +5889,7 @@ async function getAduDaduData(env) {
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
              SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count,
-             SUM(COALESCE(value, 0)) AS total_value,
+             SUM(${countedValueSql("permits")}) AS total_value,
              SUM(COALESCE(housing_units_added, 0)) AS units_added,
              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
              SUM(CASE WHEN lower(COALESCE(status, '')) IN ('active', 'pending', 'new', 'in review', 'under review') THEN 1 ELSE 0 END) AS active,
@@ -5915,7 +5916,7 @@ async function getAduDaduData(env) {
              COUNT(*) AS permits,
              SUM(CASE WHEN adu_type = 'ADU' THEN 1 ELSE 0 END) AS adu_count,
              SUM(CASE WHEN adu_type = 'DADU' THEN 1 ELSE 0 END) AS dadu_count,
-             SUM(COALESCE(value, 0)) AS total_value
+             SUM(${countedValueSql("permits")}) AS total_value
       FROM permits
       WHERE adu_type IN ('ADU', 'DADU')
       GROUP BY label
@@ -6402,7 +6403,7 @@ async function getMarketSegmentData(env, segment) {
     safeFirst(
       env,
       `/* market-segment:${segment}:totals */
-       SELECT COUNT(*) AS total, COALESCE(SUM(value), 0) AS total_value,
+       SELECT COUNT(*) AS total, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value,
               SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
               SUM(CASE WHEN ${ACTIVE_PERMIT_SQL} THEN 1 ELSE 0 END) AS active,
               MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS updated_through
@@ -6412,7 +6413,7 @@ async function getMarketSegmentData(env, segment) {
       env,
       `/* market-segment:${segment}:year */
        SELECT substr(COALESCE(NULLIF(issued_date, ''), applied_date), 1, 4) AS year,
-              COUNT(*) AS permits, COALESCE(SUM(value), 0) AS total_value
+              COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p WHERE ${where}
          AND COALESCE(NULLIF(issued_date, ''), applied_date) IS NOT NULL
        GROUP BY year HAVING year IS NOT NULL AND year != '' ORDER BY year ASC`,
@@ -6421,7 +6422,7 @@ async function getMarketSegmentData(env, segment) {
       env,
       `/* market-segment:${segment}:neighborhood */
        SELECT COALESCE(NULLIF(neighborhood, ''), 'Unknown') AS label,
-              COUNT(*) AS permits, COALESCE(SUM(value), 0) AS total_value
+              COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p WHERE ${where}
        GROUP BY label ORDER BY permits DESC, total_value DESC LIMIT 12`,
     ),
@@ -6591,7 +6592,7 @@ export function projectSeattle(lat, lng, W, H, pad) {
 async function getMapData(env) {
   const rows = await safeAll(
     env,
-    `SELECT neighborhood AS name, COUNT(*) AS permits, COALESCE(SUM(value),0) AS total_value
+    `SELECT neighborhood AS name, COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("permits")}),0) AS total_value
      FROM permits WHERE neighborhood IS NOT NULL AND neighborhood != ''
      GROUP BY neighborhood ORDER BY permits DESC`,
   );
@@ -6747,7 +6748,7 @@ async function getContractorScorecards(env) {
   const [topByPermits, topByValue, totals] = await Promise.all([
     safeAll(
       env,
-      `SELECT c.name, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value,
+      `SELECT c.name, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value,
               COUNT(DISTINCT p.neighborhood) AS neighborhoods,
               AVG(p.total_days_plan_review) AS avg_review,
               SUM(CASE WHEN p.status='active' THEN 1 ELSE 0 END) AS active
@@ -6756,7 +6757,7 @@ async function getContractorScorecards(env) {
     ),
     safeAll(
       env,
-      `SELECT c.name, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+      `SELECT c.name, c.slug, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
        FROM contractors c JOIN permits p ON p.contractor_id = c.id
        GROUP BY c.id ORDER BY total_value DESC LIMIT 12`,
     ),
@@ -7710,6 +7711,23 @@ async function renderProjectPage(slug, env, request) {
     ],
   }).replace(/</g, "\\u003c");
 
+  // Repeated demolition valuations count once (value_counting.js); computed
+  // from the permits so the page is right before the next graph rebuild.
+  const countedByPermit = countedValues(permits);
+  const projectValue = permits.length
+    ? [...countedByPermit.values()].reduce((sum, v) => sum + v, 0)
+    : project.total_estimated_value;
+  const skippedByValue = new Map();
+  for (const p of permits) {
+    if ((Number(p.value) || 0) > 0 && countedByPermit.get(p.id) === 0) {
+      skippedByValue.set(Number(p.value), (skippedByValue.get(Number(p.value)) || 0) + 1);
+    }
+  }
+  const repeatedValueNote = skippedByValue.size
+    ? `<p style="font-size:0.8rem;color:var(--text-muted);margin:0.25rem 0 0;">${[...skippedByValue.entries()]
+        .map(([value, extra]) => `SDCI repeats ${entMoney(value)} on ${countLabel(extra + 1, "permit", "permits")}; it is counted once.`)
+        .join(" ")} <a class="ent-link" href="/methodology">How values are counted</a></p>`
+    : "";
   const participantsHtml = participants.length
     ? `<ul class="ent-list">${participants
         .map(
@@ -7736,10 +7754,11 @@ async function renderProjectPage(slug, env, request) {
           <h2>Summary</h2>
           <div class="stat-row">
             ${entStat("Permits", permits.length)}
-            ${entStat("Est. value", entMoney(project.total_estimated_value))}
+            ${entStat("Est. value", entMoney(projectValue))}
             ${entStat("First activity", entDate(project.first_seen_date))}
             ${entStat("Latest activity", entDate(project.latest_activity_date))}
           </div>
+          ${repeatedValueNote}
           ${project.description_summary ? `<p style="margin-top:0.5rem;">${escapeHtml(project.description_summary)}</p>` : ""}
         </div>
         ${renderProjectReviewSummary(permits)}
@@ -7815,7 +7834,7 @@ async function renderNeighborhoodPage(slug, env, request) {
     ),
     safeFirst(
       env,
-      `SELECT COUNT(DISTINCT p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+      `SELECT COUNT(DISTINCT p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
        FROM permits p JOIN address_neighborhoods an ON an.address_id = p.address_id
        WHERE an.neighborhood_id = ?`,
       [nb.id],
@@ -7957,7 +7976,7 @@ async function renderOrgContractorPage(slug, env, request) {
     ),
     safeAll(
       env,
-      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(p.value),0) AS total_value
+      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
        FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
        JOIN addresses a ON a.id = p.address_id
        WHERE pp.people_org_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 12`,
@@ -10564,6 +10583,7 @@ async function renderMethodologyPage(env) {
     <section class="bs-card">
       <h2>Values, units, and completion</h2>
       <p><strong>Declared permit value is not verified project cost.</strong> It can omit land, design, financing, owner-provided work, later changes, or portions filed under related permits.</p>
+      <p><strong>Repeated demolition valuations are counted once in totals.</strong> SDCI often attaches a redevelopment's whole valuation to each of its demolition permits; twelve demolition permits at 4747 30th Ave NE each declare $129,000,000. When a demolition permit's value matches another permit at the same address, totals, rankings and project values count it once. Each permit's own page keeps the value SDCI declared, and construction permits are never de-duplicated, since identical values there are usually separate buildings.</p>
       <p><strong>A permit record is not a completed project or dwelling.</strong> One property can have several related permits, and applied, issued, active, expired, and completed records represent different stages. Housing-unit fields are presented as reported and can be incomplete or revised.</p>
     </section>
     <section class="bs-card">
@@ -10748,7 +10768,7 @@ async function renderDataPage(env) {
       `
       SELECT
         COUNT(*) as permits,
-        SUM(value) as total_value,
+        SUM(${countedValueSql("permits")}) as total_value,
         COUNT(DISTINCT neighborhood) as neighborhoods,
         COUNT(DISTINCT contractor_id) as contractors
       FROM permits

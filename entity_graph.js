@@ -7,6 +7,8 @@
 // tested in isolation. The worker (worker.js) is responsible for loading
 // permits from D1, calling buildEntityGraph(), and persisting the result.
 
+import { countedValues } from "./value_counting.js";
+
 // --------------------------------------------------------------------------
 // slugs
 // --------------------------------------------------------------------------
@@ -413,6 +415,8 @@ export function buildEntityGraph(permits, options = {}) {
   let projectId = 0;
 
   for (const addr of addresses) {
+    // Repeated demolition valuations count once per address (value_counting.js).
+    const countedByPermit = countedValues(addr.permits, () => addr.tmpId);
     const clusters = clusterPermits(addr.permits);
     for (const cluster of clusters) {
       projectId += 1;
@@ -420,7 +424,7 @@ export function buildEntityGraph(permits, options = {}) {
       const dates = cps.map((p) => bestDate(p)).filter(Boolean).sort();
       const first = dates[0] || null;
       const latest = dates[dates.length - 1] || null;
-      const totalValue = cps.reduce((sum, p) => sum + (Number(p.value) || 0), 0);
+      const totalValue = cps.reduce((sum, p) => sum + (countedByPermit.get(p.id) ?? (Number(p.value) || 0)), 0);
       const longestDesc = cps
         .map((p) => p.detailed_description || p.description || "")
         .sort((a, b) => b.length - a.length)[0] || "";

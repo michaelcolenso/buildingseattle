@@ -205,6 +205,42 @@ def derive_contractors(records):
     return rows
 
 
+def _address_key(record):
+    return " ".join(str(record.get("address") or "").upper().split())
+
+
+def counted_values(records):
+    """Per-record counted value; mirrors value_counting.js.
+
+    SDCI repeats a redevelopment's valuation on each of its demolition
+    ("-DM") permits. A demolition's value is not counted when another permit
+    at the same address already carries that exact value (a non-demolition
+    permit, or an earlier demolition in record order). Construction permits
+    always count. Rows in the CSV keep SDCI's declared value; only totals use
+    this.
+    """
+    groups = {}
+    for index, r in enumerate(records):
+        key, value = _address_key(r), r.get("value") or 0
+        if key and value > 0:
+            groups.setdefault((key, value), []).append(index)
+    out = []
+    for index, r in enumerate(records):
+        key, value = _address_key(r), r.get("value") or 0
+        is_dm = str(r.get("permit_number") or "").upper().endswith("-DM")
+        skip = False
+        if is_dm and key and value > 0:
+            for other in groups.get((key, value), []):
+                if other == index:
+                    continue
+                other_dm = str(records[other].get("permit_number") or "").upper().endswith("-DM")
+                if not other_dm or other < index:
+                    skip = True
+                    break
+        out.append(0 if skip else value)
+    return out
+
+
 def compute_stats(records):
     statuses = Counter((r.get("status") or "unknown") for r in records)
     types = Counter((r.get("type") or "unknown") for r in records)
@@ -215,7 +251,8 @@ def compute_stats(records):
     return {
         "records": len(records),
         "columns": len(PERMIT_COLUMNS),
-        "total_value": sum(r.get("value") or 0 for r in records),
+        "total_value": sum(counted_values(records)),
+        "declared_value": sum(r.get("value") or 0 for r in records),
         "neighborhoods": len({r["neighborhood"] for r in records if r.get("neighborhood")}),
         "statuses": dict(statuses.most_common()),
         "types": dict(types.most_common()),
@@ -278,7 +315,9 @@ def render_version_section(stats, version, export_date):
         f"- Export date: {export_date:%B %-d, %Y}",
         f"- Records: {stats['records']:,}",
         f"- Columns: {stats['columns']}",
-        f"- Total construction value: ${billions:.2f} billion",
+        f"- Total construction value: ${billions:.2f} billion "
+        f"(declared ${stats.get('declared_value', stats['total_value']) / 1e9:.2f} billion; "
+        "a valuation SDCI repeats across a project's demolition permits is counted once)",
     ])
 
 
@@ -296,7 +335,8 @@ def render_version_txt(stats, version, export_date, checksums):
         f"Version: {version}",
         f"Records: {stats['records']:,}",
         f"Columns: {stats['columns']}",
-        f"Total value: ${stats['total_value']:,}",
+        f"Total value: ${stats['total_value']:,} (repeated demolition valuations counted once)",
+        f"Declared value (raw sum): ${stats.get('declared_value', stats['total_value']):,}",
         f"Neighborhoods: {stats['neighborhoods']}",
         "Source: Seattle SDCI (services.seattle.gov/portal)",
         f"Export date: {export_date:%B %-d, %Y}",
@@ -316,7 +356,8 @@ def render_changelog_entry(stats, version, export_date, previous_records=None):
         f"## {version} — {export_date:%B %-d, %Y}",
         "",
         f"- {stats['records']:,} permits{delta}, {stats['columns']} columns",
-        f"- Total construction value ${stats['total_value']:,}",
+        f"- Total construction value ${stats['total_value']:,} "
+        f"(declared ${stats.get('declared_value', stats['total_value']):,}; repeated demolition valuations counted once)",
         f"- {stats['neighborhoods']} neighborhoods, "
         f"{stats['statuses'].get('active', 0):,} active permits",
         "",
