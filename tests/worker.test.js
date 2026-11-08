@@ -3157,3 +3157,71 @@ test("GET /methodology explains how repeated demolition valuations are counted",
   const response = await worker.fetch(new Request("http://example.com/methodology"), createEnv(), createCtx());
   assert.match(await response.text(), /Repeated demolition valuations are counted once in totals/);
 });
+
+function countedValueEnv({ first = () => null, all = () => [] } = {}) {
+  const seen = [];
+  return {
+    seen,
+    DB: {
+      prepare(query) {
+        seen.push(query);
+        const statement = {
+          bind: () => statement,
+          first: async () => first(query),
+          all: async () => ({ results: all(query) }),
+          run: async () => ({}),
+        };
+        return statement;
+      },
+    },
+  };
+}
+
+const blakeleyDemolitions = Array.from({ length: 12 }, (_, i) => ({
+  id: i + 1, permit_number: `70093${20 + i}-DM`, address_id: 7, value: 129000000,
+  type: "commercial", status: "active", issued_date: "2025-10-06", address: "4747 30TH AVE NE, SEATTLE, WA",
+}));
+
+test("GET /address/:slug totals a repeated demolition valuation once", async () => {
+  const env = countedValueEnv({
+    first: (q) => (/FROM addresses WHERE slug/.test(q)
+      ? { id: 7, slug: "4747-30th-ave-ne-seattle-wa", display_address: "4747 30TH AVE NE, SEATTLE, WA", street: "4747 30TH AVE NE" }
+      : null),
+    all: (q) => (/FROM permits p LEFT JOIN contractors c ON c\.id = p\.contractor_id\s+WHERE p\.address_id = \?/.test(q) ? blakeleyDemolitions : []),
+  });
+  const html = await (await worker.fetch(new Request("http://example.com/address/4747-30th-ave-ne-seattle-wa"), env, createCtx())).text();
+  assert.doesNotMatch(html, /1,548,000,000|\$1\.5B|\$1\.55B/);
+  assert.match(html, /\$129,000,000|\$129M/);
+});
+
+test("GET /project/:slug judges repeats against every permit at the address", async () => {
+  // The $13M construction permit sits in a different project at the same address.
+  const projectPermits = [{ id: 2, permit_number: "7100002-DM", address_id: 9, value: 13000000, type: "demolition", status: "completed", issued_date: "2025-01-02" },
+    { id: 3, permit_number: "7100003-DM", address_id: 9, value: 40000, type: "demolition", status: "completed", issued_date: "2025-01-03" }];
+  const addressPermits = [{ id: 1, permit_number: "7100001-CN", address_id: 9, value: 13000000 }, ...projectPermits];
+  const env = countedValueEnv({
+    first: (q) => (/FROM projects pr/.test(q)
+      ? { id: 5, slug: "demolition-at-10-elm-st", name: "Demolition at 10 ELM ST", address_id: 9, display_address: "10 ELM ST, SEATTLE, WA",
+          address_slug: "10-elm-st", total_estimated_value: 40000, confidence_score: 80, first_seen_date: "2025-01-02", latest_activity_date: "2025-01-03" }
+      : null),
+    all: (q) => (/project_permits jp/.test(q) ? projectPermits : /SELECT id, permit_number, address_id, value FROM permits WHERE address_id = \?/.test(q) ? addressPermits : []),
+  });
+  const html = await (await worker.fetch(new Request("http://example.com/project/demolition-at-10-elm-st"), env, createCtx())).text();
+  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /SDCI repeats \$13,000,000 on 2 permits; it is counted once\./);
+});
+
+test("org contractor pages total value with the counted-value rule across all their permits", async () => {
+  const env = countedValueEnv({
+    first: (q) => (/FROM contractors WHERE slug/.test(q) ? null
+      : /FROM people_orgs WHERE slug/.test(q) ? { id: 3, slug: "uw", name: "UNIVERSITY OF WASHINGTON", type_guess: "organization" }
+      : /SUM\(counted\)/.test(q) ? { total: 129000000 } : null),
+    all: (q) => (/FROM permit_participants pp JOIN permits p ON p\.id = pp\.permit_id\s+LEFT JOIN addresses/.test(q) ? blakeleyDemolitions : []),
+  });
+  const html = await (await worker.fetch(new Request("http://example.com/contractor/uw"), env, createCtx())).text();
+  const totalQuery = env.seen.find((q) => /SUM\(counted\)/.test(q));
+  assert.ok(totalQuery, "org total comes from SQL");
+  assert.match(totalQuery, /CASE WHEN p\.permit_number LIKE '%-DM'/);
+  assert.doesNotMatch(totalQuery, /LIMIT/);
+  assert.doesNotMatch(html, /1,548,000,000|\$1\.5B|\$1\.55B/);
+});

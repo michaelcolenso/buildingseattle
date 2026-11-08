@@ -7469,7 +7469,9 @@ async function renderAddressPage(slug, env, request) {
         "We no longer have construction permit records for this address in the public Seattle DCI data we publish. Try browsing permits or searching for another address.",
     });
   }
-  const totalValue = permits.reduce((s, p) => s + (Number(p.value) || 0), 0);
+  // All permits at this address are loaded, so the shared rule sees every
+  // match: a valuation SDCI repeats across demolition permits counts once.
+  const totalValue = [...countedValues(permits).values()].reduce((s, v) => s + v, 0);
   const dates = permits.map((p) => p.issued_date || p.applied_date).filter(Boolean).sort();
   const firstDate = dates[0];
   const lastDate = dates[dates.length - 1];
@@ -7711,9 +7713,14 @@ async function renderProjectPage(slug, env, request) {
     ],
   }).replace(/</g, "\\u003c");
 
-  // Repeated demolition valuations count once (value_counting.js); computed
-  // from the permits so the page is right before the next graph rebuild.
-  const countedByPermit = countedValues(permits);
+  // Repeated demolition valuations count once (value_counting.js). The match
+  // can sit in another project at the same address, so judge against every
+  // permit there; computed live so the page is right before the next rebuild.
+  const addressPermits = project.address_id
+    ? await safeAll(env, "SELECT id, permit_number, address_id, value FROM permits WHERE address_id = ?", [project.address_id])
+    : [];
+  const countedAtAddress = countedValues(addressPermits.length ? addressPermits : permits);
+  const countedByPermit = new Map(permits.map((p) => [p.id, countedAtAddress.has(p.id) ? countedAtAddress.get(p.id) : Number(p.value) || 0]));
   const projectValue = permits.length
     ? [...countedByPermit.values()].reduce((sum, v) => sum + v, 0)
     : project.total_estimated_value;
@@ -8002,7 +8009,17 @@ async function renderOrgContractorPage(slug, env, request) {
     safeAll(env, `SELECT DISTINCT role FROM permit_participants WHERE people_org_id = ?`, [org.id]),
   ]);
 
-  const totalValue = permits.reduce((s, p) => s + (Number(p.value) || 0), 0);
+  // Counted total over every permit this org is on (not just the 50 listed),
+  // with repeated demolition valuations counted once (value_counting.js).
+  const valueRow = await safeFirst(
+    env,
+    `SELECT COALESCE(SUM(counted), 0) AS total FROM (
+       SELECT DISTINCT p.id, ${countedValueSql("p")} AS counted
+       FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+       WHERE pp.people_org_id = ?)`,
+    [org.id],
+  );
+  const totalValue = valueRow ? Number(valueRow.total) || 0 : 0;
   const activeCount = permits.filter((p) => ["active", "pending", "new"].includes(p.status)).length;
   const roleLabels = roles.map((r) => r.role).join(", ") || "participant";
   const noindex = permits.length === 0;
