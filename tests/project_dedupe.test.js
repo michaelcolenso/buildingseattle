@@ -8,7 +8,7 @@ import { developmentSiteColumns, developmentSiteJoin } from "../development_site
 
 // A cluster of one permit is not a project: it repeats the record the address
 // page already publishes. These tests pin the two halves of that rule — the
-// duplicate canonicalizes onto the property page, and every project listing
+// duplicate redirects to the property page, and every project listing
 // (sitemap, hub, address page, permit page) only surfaces multi-permit groups.
 
 const workerSource = readFileSync(new URL("../worker.js", import.meta.url), "utf8");
@@ -110,25 +110,42 @@ async function fetchProject(permits) {
   return { response, html: await response.text() };
 }
 
-const onePermit = [{ id: 100, permit_number: "1000001-CN", status: "active", type: "residential" }];
+const onePermit = [{ id: 100, permit_number: "1000001-CN", status: "active", type: "residential", address_id: 1 }];
 const twoPermits = [
   ...onePermit,
-  { id: 101, permit_number: "1000002-CN", status: "active", type: "residential" },
+  { id: 101, permit_number: "1000002-CN", status: "active", type: "residential", address_id: 1 },
 ];
 
-test("a one-permit project canonicalizes onto its address page", async () => {
+test("a one-permit project redirects to its address page", async () => {
   const { response, html } = await fetchProject(onePermit);
 
-  assert.equal(response.status, 200);
-  assert.match(
-    html,
-    /<link rel="canonical" href="https:\/\/buildingseattle\.com\/address\/1-single-ave-seattle-wa">/,
-  );
-  assert.match(html, /<meta property="og:url" content="https:\/\/buildingseattle\.com\/address\/1-single-ave-seattle-wa">/);
-  // The page stays crawlable and the markup still describes the page itself.
-  assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
-  assert.match(html, /"url":"https:\/\/buildingseattle\.com\/project\/single-permit-cluster"/);
-  assert.doesNotMatch(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/project\//);
+  assert.equal(response.status, 301);
+  assert.equal(response.headers.get("Location"), "https://buildingseattle.com/address/1-single-ave-seattle-wa");
+  // Not pinned forever: the URL is a real page again once a second permit joins.
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=3600");
+  assert.equal(html, "");
+});
+
+test("a one-permit project whose permit is not linked to that address stays a page", async () => {
+  // The address page is only certain to render when the permit is linked to
+  // it; otherwise keep the canonicalized page rather than redirect blind.
+  for (const permit of [{ ...onePermit[0], address_id: 2 }, { ...onePermit[0], address_id: null }]) {
+    const { response, html } = await fetchProject([permit]);
+
+    assert.equal(response.status, 200);
+    assert.match(
+      html,
+      /<link rel="canonical" href="https:\/\/buildingseattle\.com\/address\/1-single-ave-seattle-wa">/,
+    );
+    assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
+  }
+});
+
+test("a project whose permits cannot be read is not redirected", async () => {
+  const { response } = await fetchProject([]);
+
+  assert.notEqual(response.status, 301);
+  assert.equal(response.headers.get("Location"), null);
 });
 
 test("a multi-permit project keeps a self-referencing canonical", async () => {

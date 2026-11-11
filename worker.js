@@ -7726,13 +7726,25 @@ async function renderProjectPage(slug, env, request) {
 
   const noindex = permits.length === 0;
   // A cluster of one permit is not a project: it repeats the record the
-  // address page already publishes. Canonicalize the duplicate onto the
-  // property page so the two URLs consolidate instead of competing, and keep
-  // serving the page so existing links still resolve.
+  // address page already publishes. Google kept such pages indexed and kept
+  // recrawling them for weeks under a canonical alone, so the duplicate now
+  // redirects to the property page. Only when the permit is linked to that
+  // same address, which guarantees the target renders: a failed read yields
+  // zero permits (safeAll) and falls through to the page below.
   const duplicatesAddress = permits.length === 1 && Boolean(project.address_slug);
-  const canonical = duplicatesAddress
-    ? `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}`
-    : selfUrl;
+  const addressUrl = project.address_slug ? `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}` : null;
+  if (
+    duplicatesAddress &&
+    project.address_id != null &&
+    Number(permits[0].address_id) === Number(project.address_id)
+  ) {
+    // Short-lived: the URL becomes a real page again if the project gains a permit.
+    return new Response(null, {
+      status: 301,
+      headers: { Location: addressUrl, "Cache-Control": "public, max-age=3600" },
+    });
+  }
+  const canonical = duplicatesAddress ? addressUrl : selfUrl;
   const title = `${project.name} | Seattle Construction Activity`;
   const description = `Track permits, contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
 
