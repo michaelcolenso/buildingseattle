@@ -47,11 +47,15 @@ const SECURITY_HEADERS = {
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
   "Content-Security-Policy": [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com",
+    // No 'unsafe-inline' for scripts: the only inline script is the theme
+    // boot script, allowed by hash (tests/security.test.js keeps it honest).
+    // Inline styles stay allowed: templates use style="" attributes widely.
+    `script-src 'self' '${THEME_BOOT_SCRIPT_SHA256}' https://static.cloudflareinsights.com https://challenges.cloudflare.com`,
+    "script-src-attr 'none'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",
     "connect-src 'self' https://cloudflareinsights.com https://*.cloudflareinsights.com",
-    "frame-src https://maps.google.com https://www.google.com",
+    "frame-src https://maps.google.com https://www.google.com https://challenges.cloudflare.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -1187,7 +1191,7 @@ function renderNav(activePage) {
   ];
   const link = ({ href, label, keys }) =>
     `<a href="${href}"${keys.includes(activePage) ? ' class="active"' : ""}>${label}</a>`;
-  return `<nav class="global-nav" id="global-nav" onkeydown="if(event.key==='Escape'){var l=document.getElementById('global-nav-links');if(l.classList.contains('open')){l.classList.remove('open');var b=this.querySelector('.global-nav-hamburger');b.setAttribute('aria-expanded','false');b.focus();}}">
+  return `<nav class="global-nav" id="global-nav">
       <div class="container global-nav-row">
         <a href="/" class="logo">${themedLockup("Building Seattle")}</a>
         <div class="global-nav-end">
@@ -1195,7 +1199,7 @@ function renderNav(activePage) {
           ${items.map(link).join("\n          ")}
           </div>
           ${themeToggleButton()}
-          <button class="global-nav-hamburger" onclick="this.setAttribute('aria-expanded',String(document.getElementById('global-nav-links').classList.toggle('open')))" aria-label="Menu" aria-expanded="false" aria-controls="global-nav-links">&#9776;</button>
+          <button type="button" class="global-nav-hamburger" aria-label="Menu" aria-expanded="false" aria-controls="global-nav-links">&#9776;</button>
         </div>
       </div>
     </nav>`;
@@ -3184,7 +3188,8 @@ async function renderPermitDetail(permitNumber, env, request) {
   const addressLabel = cleanFeedText(permit.address) || "Seattle";
   const permitAddressLabel = entStreet(addressLabel) || "Seattle";
   const safePermitNumber = escapeHtml(permit.permit_number || "Unknown permit");
-  const serializedPermitNumber = JSON.stringify(String(permit.permit_number || "")).replace(/</g, "\\u003c");
+  // Rendered only when the site key is set; enforced only when the secret is.
+  const turnstileSiteKey = String(env?.TURNSTILE_SITE_KEY || "").trim();
   const safeAddress = escapeHtml(smartTitleCase(addressLabel) || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
@@ -3562,7 +3567,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                         : `
 	                        <div class="bs-card__title" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
 	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
-	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" onclick="openModal()" style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
+	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" data-open-lead-modal style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
                     `
                     }
                     ${peopleCards}
@@ -3587,7 +3592,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             </div>
 
             <div class="actions">
-                <button class="bs-btn bs-btn--primary" onclick="openModal()">${primaryLeadLabel}</button>
+                <button type="button" class="bs-btn bs-btn--primary" data-open-lead-modal>${primaryLeadLabel}</button>
                 ${
                   permit.contractor_slug
                     ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="bs-btn bs-btn--secondary">View Contractor</a>`
@@ -3600,15 +3605,16 @@ async function renderPermitDetail(permitNumber, env, request) {
 
     <dialog id="leadModal" class="modal" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
         <div class="modal-content">
-            <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
+            <button type="button" class="modal-close" data-close-lead-modal aria-label="Close dialog">&times;</button>
             <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
             <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get an email when permit ${safePermitNumber} changes status.</p>
-            <form id="leadForm" onsubmit="submitLead(event)">
+            <form id="leadForm" data-permit-number="${escapeHtml(String(permit.permit_number || ""))}">
                 <div class="form-group">
                     <label for="lead-email">Email *</label>
                     <input id="lead-email" type="email" name="email" required autocomplete="email" placeholder="you@example.com">
                     <p id="lead-error" class="lead-error hidden"></p>
                 </div>
+                ${turnstileSiteKey ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(turnstileSiteKey)}" style="margin-bottom:1rem;"></div>` : ""}
                 <button type="submit" class="bs-btn bs-btn--primary" style="width:100%;">
                     <span id="submitText">Email Me Status Changes</span>
                     <span id="submitLoader" class="loader hidden"></span>
@@ -3623,54 +3629,8 @@ async function renderPermitDetail(permitNumber, env, request) {
     </dialog>
 
     ${renderFooter()}
-    <script>
-        var leadModal = document.getElementById('leadModal');
-        var leadTrigger;
-        function openModal() { leadTrigger = document.activeElement; leadModal.showModal(); var field = document.getElementById('lead-email'); if (field) field.focus(); }
-        function closeModal() { leadModal.close(); }
-        // Clicking the backdrop (the dialog box itself, outside .modal-content) closes it.
-        leadModal.addEventListener('click', function(e) { if (e.target === leadModal) closeModal(); });
-        leadModal.addEventListener('close', function() { if (leadTrigger && leadTrigger.focus) leadTrigger.focus(); });
-
-        async function submitLead(e) {
-            e.preventDefault();
-            var form = e.target;
-            var submitBtn = form.querySelector('button[type="submit"]');
-            var loader = document.getElementById('submitLoader');
-            var text = document.getElementById('submitText');
-            text.classList.add('hidden');
-            loader.classList.remove('hidden');
-            submitBtn.disabled = true;
-            var data = {
-                email: form.email.value,
-                permit_number: ${serializedPermitNumber}
-            };
-            try {
-                var response = await fetch('/alerts/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-                if (response.ok) {
-                    form.style.display = 'none';
-                    document.getElementById('formSuccess').classList.remove('hidden');
-                    document.getElementById('formSuccessTitle').focus();
-                } else {
-                    var result = await response.json().catch(function() { return {}; });
-                    var failure = new Error('Submission failed');
-                    failure.serverMessage = result.error;
-                    throw failure;
-                }
-            } catch (err) {
-                var errorEl = document.getElementById('lead-error');
-                var emailField = document.getElementById('lead-email');
-                errorEl.textContent = (err && err.serverMessage) || "We couldn't save your alert. Check your connection and try again.";
-                errorEl.classList.remove('hidden');
-                emailField.setAttribute('aria-invalid', 'true');
-                emailField.setAttribute('aria-describedby', 'lead-error');
-                emailField.focus();
-                text.classList.remove('hidden');
-                loader.classList.add('hidden');
-                submitBtn.disabled = false;
-            }
-        }
-    </script>
+    ${turnstileSiteKey ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ""}
+    <script src="/brand/permit-alert.js" defer></script>
 </body>
 </html>`;
 
