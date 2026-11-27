@@ -152,6 +152,9 @@ export default {
     const secure = (response) => withSecurityHeaders(response);
 
     if (request.method === "OPTIONS") {
+      // Same-origin form endpoints never grant CORS, so other sites cannot
+      // preflight a JSON POST to them.
+      if (isFormPostPath(path)) return secure(new Response(null, { status: 204 }));
       return secure(new Response(null, { headers: corsHeaders }));
     }
 
@@ -188,7 +191,7 @@ export default {
         return secure(await handleAlertSubscription(request, env));
       }
 
-      if (path === "/alerts/confirm" && request.method === "GET") {
+      if (path === "/alerts/confirm" && (request.method === "GET" || request.method === "POST")) {
         return secure(await handleAlertConfirmation(request, env));
       }
 
@@ -1673,27 +1676,65 @@ async function handleRoot(request, env) {
   });
 }
 
-async function handleLeadCapture(request, env) {
-  let data;
+// Shared front door for the public same-origin forms (leads, alert sign-up):
+// JSON only, same-site Origin only, then a per-IP throttle.
+async function checkPublicFormRequest(request, env, { scope, binding, hourlyLimit }) {
+  if (!isJsonContentType(request)) {
+    return formJsonResponse({ error: "Content-Type must be application/json" }, 415);
+  }
+  if (isCrossSiteRequest(request)) {
+    return formJsonResponse({ error: "Cross-site requests are not allowed" }, 403);
+  }
+  const allowed = await consumeRateLimit(env, {
+    binding,
+    key: await rateLimitKey(`${scope}:ip`, clientIp(request)),
+    limit: hourlyLimit,
+    windowSeconds: 3600,
+  });
+  if (!allowed) {
+    return formJsonResponse({ error: "Too many requests. Try again later." }, 429, { "Retry-After": "3600" });
+  }
+  return null;
+}
+
+async function readJsonObject(request) {
   try {
-    data = await request.json();
+    const data = await request.json();
+    return data && typeof data === "object" && !Array.isArray(data) ? data : null;
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return null;
+  }
+}
+
+async function handleLeadCapture(request, env) {
+  const rejected = await checkPublicFormRequest(request, env, {
+    scope: "leads",
+    binding: "LEADS_RATE_LIMITER",
+    hourlyLimit: LEAD_IP_HOURLY_LIMIT,
+  });
+  if (rejected) return rejected;
+
+  const data = await readJsonObject(request);
+  if (!data) {
+    return formJsonResponse({ error: "Invalid JSON" }, 400);
   }
 
   const email = String(data.email || "").trim().toLowerCase();
   const company = String(data.company || "").trim();
   const interest = String(data.interest || "").trim();
-  if (!isValidEmail(email) || !company || !interest) {
-    return new Response(JSON.stringify({ error: "A valid email, company, and interest are required" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  if (
+    !isValidEmail(email) ||
+    !company ||
+    !interest ||
+    company.length > LEAD_TEXT_MAX_LENGTH ||
+    interest.length > LEAD_TEXT_MAX_LENGTH
+  ) {
+    return formJsonResponse(
+      { error: `A valid email, company, and interest (up to ${LEAD_TEXT_MAX_LENGTH} characters each) are required` },
+      400,
+    );
   }
-  const neighborhoods = String(data.neighborhoods || "").trim().slice(0, 500) || null;
+  const neighborhoods = String(data.neighborhoods || "").trim().slice(0, LEAD_FIELD_MAX_LENGTH) || null;
   const source = String(data.source || "website").slice(0, 100);
   const userAgent = String(data.userAgent || "").slice(0, 300) || null;
 
@@ -1713,9 +1754,7 @@ async function handleLeadCapture(request, env) {
     )
     .run();
 
-  return new Response(JSON.stringify({ success: true, id: crypto.randomUUID() }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+  return formJsonResponse({ success: true, id: crypto.randomUUID() });
 }
 
 const LEAD_BATCH_MAX_ITEMS = 500;
@@ -1784,22 +1823,41 @@ async function handleLeadBatch(request, env) {
   });
 }
 
+// Every accepted sign-up gets this same answer, whether a confirmation was
+// sent, throttled, suppressed or the address already subscribes (A12): the
+// endpoint must not reveal who watches which permit.
+const ALERT_ACCEPTED = { success: true, status: "pending_confirmation" };
+
 async function handleAlertSubscription(request, env) {
   if (!env.EMAIL) {
-    return alertJsonResponse({ error: "Permit alerts are temporarily unavailable" }, 503);
+    return formJsonResponse({ error: "Permit alerts are temporarily unavailable" }, 503);
   }
 
-  let data;
-  try {
-    data = await request.json();
-  } catch {
-    return alertJsonResponse({ error: "Invalid JSON" }, 400);
+  const rejected = await checkPublicFormRequest(request, env, {
+    scope: "alerts",
+    binding: "ALERTS_RATE_LIMITER",
+    hourlyLimit: ALERT_IP_HOURLY_LIMIT,
+  });
+  if (rejected) return rejected;
+
+  const data = await readJsonObject(request);
+  if (!data) {
+    return formJsonResponse({ error: "Invalid JSON" }, 400);
   }
 
   const email = String(data.email || "").trim().toLowerCase();
   const permitNumber = String(data.permit_number || "").trim();
-  if (!isValidEmail(email) || !permitNumber) {
-    return alertJsonResponse({ error: "A valid email and permit number are required" }, 400);
+  if (!isValidEmail(email) || !permitNumber || permitNumber.length > PERMIT_NUMBER_MAX_LENGTH) {
+    return formJsonResponse({ error: "A valid email and permit number are required" }, 400);
+  }
+
+  // Turnstile is enforced only once TURNSTILE_SECRET_KEY is configured.
+  let humanVerified = false;
+  if (turnstileEnabled(env)) {
+    humanVerified = await verifyTurnstile(env, data.turnstile_token, clientIp(request));
+    if (!humanVerified) {
+      return formJsonResponse({ error: "Please complete the verification and try again" }, 403);
+    }
   }
 
   const permit = await env.DB.prepare(
@@ -1808,18 +1866,47 @@ async function handleAlertSubscription(request, env) {
     .bind(permitNumber)
     .first();
   if (!permit) {
-    return alertJsonResponse({ error: "Permit not found" }, 404);
+    return formJsonResponse({ error: "Permit not found" }, 404);
+  }
+
+  const suppressed = await env.DB.prepare("SELECT 1 AS suppressed FROM alert_email_suppressions WHERE email = ?")
+    .bind(email)
+    .first();
+  if (suppressed) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
   }
 
   const existing = await env.DB.prepare(`
-    SELECT *
+    SELECT
+      id,
+      status,
+      confirmation_sent_at,
+      confirmation_sent_at > datetime('now', ?) AS recently_sent
     FROM permit_alert_subscriptions
     WHERE lower(email) = ? AND permit_number = ?
   `)
-    .bind(email, permitNumber)
+    .bind(`-${ALERT_RESEND_COOLDOWN_MINUTES} minutes`, email, permitNumber)
     .first();
   if (existing?.status === "active") {
-    return alertJsonResponse({ success: true, status: "active" });
+    return formJsonResponse(ALERT_ACCEPTED, 202);
+  }
+  // An unsubscribed pair is only re-opened by a fresh, human-verified opt-in;
+  // without Turnstile configured it stays suppressed.
+  if (existing?.status === "unsubscribed" && !humanVerified) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
+  }
+  if (existing?.status === "pending" && Number(existing.recently_sent)) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
+  }
+
+  // Per-address cap across all permits, counted only when we would send.
+  const underEmailCap = await consumeRateLimit(env, {
+    key: await rateLimitKey("alerts:email", email),
+    limit: ALERT_EMAIL_DAILY_LIMIT,
+    windowSeconds: 86400,
+  });
+  if (!underEmailCap) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
   }
 
   const confirmationToken = createAlertToken();
@@ -1846,11 +1933,13 @@ async function handleAlertSubscription(request, env) {
       confirmed_at = NULL,
       unsubscribed_at = NULL,
       updated_at = datetime('now')
+    WHERE permit_alert_subscriptions.status != 'active'
   `)
     .bind(email, permitNumber, confirmationTokenHash, unsubscribeToken)
     .run();
 
   const confirmationUrl = `${BASE_URL}/alerts/confirm?token=${encodeURIComponent(confirmationToken)}`;
+  const blockUrl = `${BASE_URL}/alerts/unsubscribe?token=${encodeURIComponent(unsubscribeToken)}&scope=all`;
   try {
     await env.EMAIL.send({
       from: ALERT_EMAIL_FROM,
@@ -1863,15 +1952,19 @@ async function handleAlertSubscription(request, env) {
         `Current status: ${normalizeStoredStatus(permit.status)}`,
         "",
         `Confirm: ${confirmationUrl}`,
+        `This link expires in ${ALERT_CONFIRMATION_TTL_DAYS} days.`,
         "",
         "You will receive email only when this permit's recorded status changes.",
+        "",
+        `Didn't ask for this? Ignore this email, or stop all Building Seattle email to this address: ${blockUrl}`,
       ].join("\n"),
       html: `
         <h1>Confirm your permit alert</h1>
         <p><strong>${escapeHtml(permitNumber)}</strong>: ${escapeHtml(permit.address || "Seattle permit")}</p>
         <p>Current status: ${escapeHtml(normalizeStoredStatus(permit.status))}</p>
-        <p><a href="${escapeHtml(confirmationUrl)}">Confirm permit alerts</a></p>
+        <p><a href="${escapeHtml(confirmationUrl)}">Confirm permit alerts</a> (expires in ${ALERT_CONFIRMATION_TTL_DAYS} days)</p>
         <p>You will receive email only when this permit's recorded status changes.</p>
+        <p style="color:#666;font-size:0.9em;">Didn't ask for this? Ignore this email, or <a href="${escapeHtml(blockUrl)}">stop all Building Seattle email to this address</a>.</p>
       `,
     });
   } catch (error) {
@@ -1885,25 +1978,55 @@ async function handleAlertSubscription(request, env) {
       .bind(email, permitNumber, confirmationTokenHash)
       .run();
     console.error("Permit alert confirmation email failed:", error);
-    return alertJsonResponse({ error: "Confirmation email could not be sent" }, 503);
+    return formJsonResponse({ error: "Confirmation email could not be sent" }, 503);
   }
 
-  return alertJsonResponse({ success: true, status: "pending_confirmation" }, 202);
+  return formJsonResponse(ALERT_ACCEPTED, 202);
 }
 
+// Read a token from the query string or a POSTed form body. Mail providers'
+// RFC 8058 one-click POST keeps the token in the URL and sends
+// "List-Unsubscribe=One-Click" as the body.
+async function readAlertTokenAndScope(request) {
+  const url = new URL(request.url);
+  let token = url.searchParams.get("token") || "";
+  let scope = url.searchParams.get("scope") || "";
+  if (request.method === "POST") {
+    const type = (request.headers.get("Content-Type") || "").toLowerCase();
+    if (type.includes("application/x-www-form-urlencoded") || type.includes("multipart/form-data")) {
+      try {
+        const form = await request.formData();
+        token = String(form.get("token") || token);
+        scope = String(form.get("scope") || scope);
+      } catch {
+        // Fall back to the query string.
+      }
+    }
+  }
+  return { token: token.slice(0, 200), scope: scope === "all" ? "all" : "permit" };
+}
+
+// GET only shows a page; the state change needs the POST from its button
+// (A11), so link scanners and prefetchers cannot confirm or unsubscribe.
 async function handleAlertConfirmation(request, env) {
-  const token = new URL(request.url).searchParams.get("token") || "";
+  if (request.method === "POST" && isCrossSiteRequest(request)) {
+    return renderAlertResult("Request refused", "Confirm your alert from the link in your email.", 403);
+  }
+  const { token } = await readAlertTokenAndScope(request);
   if (!token) {
     return renderAlertResult("Invalid confirmation link", "This confirmation link is missing its token.", 400);
   }
 
   const tokenHash = await hashAlertToken(token);
+  const expiry = `-${ALERT_CONFIRMATION_TTL_DAYS} days`;
   const subscription = await env.DB.prepare(`
-    SELECT *
+    SELECT id, permit_number
     FROM permit_alert_subscriptions
-    WHERE confirmation_token_hash = ? AND status = 'pending'
+    WHERE confirmation_token_hash = ?
+      AND status = 'pending'
+      AND confirmation_sent_at > datetime('now', ?)
   `)
-    .bind(tokenHash)
+    .bind(tokenHash, expiry)
     .first();
   if (!subscription) {
     return renderAlertResult(
@@ -1913,7 +2036,16 @@ async function handleAlertConfirmation(request, env) {
     );
   }
 
-  await env.DB.prepare(`
+  if (request.method !== "POST") {
+    return renderAlertResult(
+      "Confirm your permit alert",
+      `Press the button to start email alerts for permit ${subscription.permit_number}.`,
+      200,
+      renderAlertActionForm("/alerts/confirm", token, [{ label: "Confirm permit alerts" }]),
+    );
+  }
+
+  const result = await env.DB.prepare(`
     UPDATE permit_alert_subscriptions
     SET
       status = 'active',
@@ -1926,10 +2058,13 @@ async function handleAlertConfirmation(request, env) {
         WHERE permit_number = permit_alert_subscriptions.permit_number
       ),
       updated_at = datetime('now')
-    WHERE id = ? AND status = 'pending'
+    WHERE id = ? AND status = 'pending' AND confirmation_token_hash = ?
   `)
-    .bind(subscription.id)
+    .bind(subscription.id, tokenHash)
     .run();
+  if (!Number(result?.meta?.changes)) {
+    return renderAlertResult("Confirmation link expired", "This link has already been used.", 404);
+  }
 
   return renderAlertResult(
     "Permit alert confirmed",
@@ -1938,10 +2073,10 @@ async function handleAlertConfirmation(request, env) {
 }
 
 async function handleAlertUnsubscribe(request, env) {
-  const token = new URL(request.url).searchParams.get("token") || "";
+  const { token, scope } = await readAlertTokenAndScope(request);
   const subscription = token
     ? await env.DB.prepare(`
-      SELECT *
+      SELECT id, email, permit_number
       FROM permit_alert_subscriptions
       WHERE unsubscribe_token = ?
     `)
@@ -1953,6 +2088,30 @@ async function handleAlertUnsubscribe(request, env) {
     return renderAlertResult("Invalid unsubscribe link", "This unsubscribe link is not valid.", 404);
   }
 
+  if (request.method !== "POST") {
+    const actions = [{ label: `Stop alerts for permit ${subscription.permit_number}` }];
+    actions.push({ label: "Stop all Building Seattle email to this address", scope: "all", secondary: true });
+    return renderAlertResult(
+      scope === "all" ? "Stop all email to this address?" : "Stop this permit alert?",
+      scope === "all"
+        ? "Press the button below and Building Seattle will not email this address again, for any permit."
+        : `Press the button to stop status alerts for permit ${subscription.permit_number}.`,
+      200,
+      renderAlertActionForm(`/alerts/unsubscribe?token=${encodeURIComponent(token)}`, token, scope === "all" ? actions.reverse() : actions),
+    );
+  }
+
+  const email = String(subscription.email || "").toLowerCase();
+  if (scope === "all") {
+    await env.DB.prepare(`
+      INSERT INTO alert_email_suppressions (email, reason, created_at)
+      VALUES (?, 'user_request', datetime('now'))
+      ON CONFLICT(email) DO NOTHING
+    `)
+      .bind(email)
+      .run();
+  }
+
   await env.DB.prepare(`
     UPDATE permit_alert_subscriptions
     SET
@@ -1960,21 +2119,27 @@ async function handleAlertUnsubscribe(request, env) {
       confirmation_token_hash = NULL,
       unsubscribed_at = datetime('now'),
       updated_at = datetime('now')
-    WHERE id = ?
+    WHERE ${scope === "all" ? "lower(email) = ?" : "id = ?"}
   `)
-    .bind(subscription.id)
+    .bind(scope === "all" ? email : subscription.id)
     .run();
 
   return renderAlertResult(
     "Permit alert stopped",
-    `You will no longer receive status alerts for permit ${subscription.permit_number}.`,
+    scope === "all"
+      ? "Building Seattle will not email this address again."
+      : `You will no longer receive status alerts for permit ${subscription.permit_number}.`,
   );
 }
 
-async function sendPendingPermitAlerts(env) {
+// A3: each (subscription, change) is claimed in permit_alert_deliveries
+// before the email goes out, so overlapping runs (per-batch ingest plus the
+// cron) cannot send one change twice. A failed send releases its claim for
+// the next run; a claim stuck in 'sending' for an hour is reclaimable.
+export async function sendPendingPermitAlerts(env) {
   if (!env.EMAIL) {
     console.warn("Permit alert delivery skipped because the EMAIL binding is unavailable.");
-    return { sent: 0, failed: 0 };
+    return { sent: 0, failed: 0, skipped: 0 };
   }
 
   const { results } = await env.DB.prepare(`
@@ -1994,12 +2159,35 @@ async function sendPendingPermitAlerts(env) {
       AND sc.id > COALESCE(s.last_notified_change_id, 0)
     LEFT JOIN permits p ON p.permit_number = s.permit_number
     WHERE s.status = 'active'
+      AND NOT EXISTS (SELECT 1 FROM alert_email_suppressions x WHERE x.email = lower(s.email))
+      AND NOT EXISTS (
+        SELECT 1 FROM permit_alert_deliveries d
+        WHERE d.subscription_id = s.id AND d.change_id = sc.id AND d.status = 'sent'
+      )
     ORDER BY sc.id ASC
+    LIMIT ${ALERT_SEND_BATCH_LIMIT}
   `).all();
 
   let sent = 0;
   let failed = 0;
+  let skipped = 0;
   for (const change of results || []) {
+    const claim = await env.DB.prepare(`
+      INSERT INTO permit_alert_deliveries (subscription_id, change_id, status, claimed_at)
+      VALUES (?, ?, 'sending', datetime('now'))
+      ON CONFLICT(subscription_id, change_id) DO UPDATE SET
+        status = 'sending',
+        claimed_at = datetime('now')
+      WHERE permit_alert_deliveries.status = 'failed'
+        OR (permit_alert_deliveries.status = 'sending' AND permit_alert_deliveries.claimed_at < datetime('now', '-1 hour'))
+    `)
+      .bind(change.subscription_id, change.change_id)
+      .run();
+    if (!Number(claim?.meta?.changes)) {
+      skipped++;
+      continue;
+    }
+
     const permitUrl = `${BASE_URL}/permits/${encodeURIComponent(change.permit_number)}`;
     const unsubscribeUrl = `${BASE_URL}/alerts/unsubscribe?token=${encodeURIComponent(change.unsubscribe_token)}`;
     const previousStatus = normalizeStoredStatus(change.previous_status);
@@ -2031,25 +2219,38 @@ async function sendPendingPermitAlerts(env) {
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         },
       });
-
-      await env.DB.prepare(`
-        UPDATE permit_alert_subscriptions
-        SET
-          last_notified_change_id = ?,
-          last_notified_at = ?,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `)
-        .bind(change.change_id, change.changed_at, change.subscription_id)
-        .run();
-      sent++;
     } catch (error) {
       failed++;
       console.error(`Permit alert delivery failed for subscription ${change.subscription_id}:`, error);
+      await env.DB.prepare(`
+        UPDATE permit_alert_deliveries SET status = 'failed'
+        WHERE subscription_id = ? AND change_id = ? AND status = 'sending'
+      `)
+        .bind(change.subscription_id, change.change_id)
+        .run();
+      continue;
     }
+
+    await env.DB.prepare(`
+      UPDATE permit_alert_deliveries SET status = 'sent', notified_at = datetime('now')
+      WHERE subscription_id = ? AND change_id = ?
+    `)
+      .bind(change.subscription_id, change.change_id)
+      .run();
+    await env.DB.prepare(`
+      UPDATE permit_alert_subscriptions
+      SET
+        last_notified_change_id = MAX(COALESCE(last_notified_change_id, 0), ?),
+        last_notified_at = ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `)
+      .bind(change.change_id, change.changed_at, change.subscription_id)
+      .run();
+    sent++;
   }
 
-  return { sent, failed };
+  return { sent, failed, skipped };
 }
 
 function isValidEmail(value) {
@@ -2067,14 +2268,25 @@ async function hashAlertToken(token) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function alertJsonResponse(payload, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
-  });
+// POST form for the confirm/unsubscribe pages. Each action is a submit
+// button; `scope` rides along as the button's value.
+function renderAlertActionForm(action, token, actions) {
+  const buttons = actions
+    .map(({ label, scope, secondary }) => {
+      const style = secondary
+        ? "background:none;border:1px solid var(--border);color:var(--text);"
+        : "";
+      const scopeAttrs = scope ? ` name="scope" value="${escapeHtml(scope)}"` : "";
+      return `<button type="submit" class="bs-btn ${secondary ? "" : "bs-btn--primary"}"${scopeAttrs} style="margin:0 0.75rem 0.75rem 0;${style}">${escapeHtml(label)}</button>`;
+    })
+    .join("");
+  return `<form method="post" action="${escapeHtml(action)}" style="margin-bottom:2rem;">
+      <input type="hidden" name="token" value="${escapeHtml(token)}">
+      ${buttons}
+    </form>`;
 }
 
-function renderAlertResult(title, message, status = 200) {
+function renderAlertResult(title, message, status = 200, actionHtml = "") {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2097,6 +2309,7 @@ function renderAlertResult(title, message, status = 200) {
   <main class="container" style="padding-top:4rem;padding-bottom:6rem;max-width:720px;">
     <h1 style="font-size:2rem;margin-bottom:1rem;color:var(--primary);">${escapeHtml(title)}</h1>
     <p style="color:var(--text-muted);font-size:1.05rem;margin-bottom:2rem;">${escapeHtml(message)}</p>
+    ${actionHtml}
     <a href="/permits" style="color:var(--accent);font-weight:650;text-decoration:none;">Browse Seattle permits &rarr;</a>
   </main>
   ${renderFooter()}
@@ -2104,22 +2317,50 @@ function renderAlertResult(title, message, status = 200) {
 </html>`;
   return new Response(html, {
     status,
-    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex",
+    },
   });
 }
 
-async function getPermits(request, env) {
+// Public permit API (A4, A7, F2). Anonymous callers get a sample: at most
+// ANON_API_MAX_PER_PAGE slim rows per page and ANON_API_MAX_PAGE pages. An API
+// key (X-API-Key or Authorization: Bearer) unlocks full rows and depth.
+async function getPermits(request, env, { access = null } = {}) {
   const siteContext = developmentSitesArePublic(env);
   const url = new URL(request.url);
+  const tier = access?.tier === "key" ? "key" : "anonymous";
+  const limits = apiLimits(access);
   const permitNumber = url.searchParams.get("permit");
   const neighborhood = url.searchParams.get("neighborhood");
   const type = url.searchParams.get("type");
   const status = url.searchParams.get("status");
   const q = url.searchParams.get("q");
-  const requestedPage = Number.parseInt(url.searchParams.get("page") || "1", 10);
-  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.min(requestedPage, 1000) : 1;
-  const requestedPerPage = parseInt(url.searchParams.get("per_page") || "50", 10);
-  const perPage = Math.max(1, Math.min(100, Number.isFinite(requestedPerPage) ? requestedPerPage : 50));
+  const pageParam = parseIntegerParam(url.searchParams.get("page"), { fallback: 1 });
+  const perPageParam = parseIntegerParam(url.searchParams.get("per_page"), {
+    fallback: Math.min(50, limits.maxPerPage),
+    max: limits.maxPerPage,
+  });
+  if (!pageParam.ok) return apiErrorResponse("page must be a positive integer", 400);
+  if (!perPageParam.ok) return apiErrorResponse("per_page must be a positive integer", 400);
+  if (q && q.length > SEARCH_QUERY_MAX_LENGTH) {
+    return apiErrorResponse(`q must be at most ${SEARCH_QUERY_MAX_LENGTH} characters`, 400);
+  }
+  if ([neighborhood, type, status, permitNumber].some((value) => value && value.length > FILTER_PARAM_MAX_LENGTH)) {
+    return apiErrorResponse("Filter value too long", 400);
+  }
+  if (pageParam.value > limits.maxPage) {
+    return apiErrorResponse(
+      tier === "key"
+        ? `page must be at most ${limits.maxPage}`
+        : `Anonymous access is limited to the first ${ANON_API_MAX_PAGE} pages. Use an API key for full access, or see ${BASE_URL}/data for the full dataset.`,
+      403,
+    );
+  }
+  const page = pageParam.value;
+  const perPage = perPageParam.value;
   const offset = (page - 1) * perPage;
 
   if (permitNumber) {
