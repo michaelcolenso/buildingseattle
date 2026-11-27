@@ -8,6 +8,10 @@ and exports it as a CSV with the same 38 columns as the product.
 Usage:   python3 refresh.py [--output FILE] [--max-pages N]
 Output:  buildingseattle_fresh.csv (default)
 
+Exit status is 0 only for a complete pull. If any page fails after retries,
+the rows that did arrive go to FILE.partial.csv (FILE itself is left
+untouched) and the script exits 1.
+
 Requirements: Python 3.10+ (stdlib only — no pip installs needed)
 """
 import argparse
@@ -17,6 +21,7 @@ import urllib.request
 import urllib.error
 import time
 import sys
+from pathlib import Path
 
 API_BASE = "https://buildingseattle.com"
 PER_PAGE = 100  # API maximum page size
@@ -117,6 +122,12 @@ def fetch_json(url):
     return None
 
 
+def partial_output_path(output):
+    """FILE.csv -> FILE.partial.csv (where an incomplete pull is written)."""
+    path = Path(output)
+    return str(path.with_name(f"{path.stem}.partial{path.suffix or '.csv'}"))
+
+
 def fetch_page(page):
     return fetch_json(f"{API_BASE}/api/permits?per_page={PER_PAGE}&page={page}")
 
@@ -134,8 +145,8 @@ def main():
     print(f"Source: {API_BASE}/api/permits (page size {PER_PAGE})")
 
     stats = fetch_json(f"{API_BASE}/api/stats")
-    if stats:
-        print(f"Snapshot: {stats.get('permits', '?'):,} permits in the live database "
+    if isinstance(stats, dict) and isinstance(stats.get("permits"), int):
+        print(f"Snapshot: {stats['permits']:,} permits in the live database "
               f"as of {stats.get('timestamp', 'now')}")
     print()
 
@@ -198,7 +209,10 @@ def main():
         sys.stderr.write("Development-site fields are unavailable; the 38-column rollout is not enabled. No CSV was written.\n")
         return 1
 
-    with open(args.output, "w", newline="", encoding="utf-8") as f:
+    # A failed page means rows are missing. Never overwrite a good CSV with
+    # an incomplete one: write the partial result beside it and exit nonzero.
+    output = args.output if errors == 0 else partial_output_path(args.output)
+    with open(output, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=PERMIT_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(records)
@@ -209,16 +223,28 @@ def main():
         set(r.get("neighborhood", "") for r in records if r.get("neighborhood")))
 
     print()
-    print(f"✅ Done. {len(records):,} records written to {args.output}")
+    if errors == 0:
+        print(f"✅ Done. {len(records):,} records written to {output}")
+    else:
+        print(f"❌ Incomplete. {len(records):,} records written to {output}")
     print(f"   Total construction value: ${total_value:,.0f} "
           f"(declared ${declared_value:,.0f}; repeated demolition valuations counted once)")
     print(f"   Neighborhoods: {neighborhoods}")
     print(f"   Pages fetched: {page}")
     print(f"   Errors encountered: {errors}")
 
+    live_count = stats.get("permits") if isinstance(stats, dict) else None
+    if (errors == 0 and not args.max_pages and isinstance(live_count, int)
+            and live_count != len(records)):
+        print(f"\n⚠️  The live database reported {live_count:,} permits but "
+              f"{len(records):,} were fetched; the data changed during the pull "
+              f"or pages shifted. Re-run to confirm.")
+
     if errors > 0:
-        print(f"\n⚠️  Refresh completed with {errors} error(s). "
-              f"Some records may be missing.")
+        sys.stderr.write(
+            f"\n❌ Refresh failed: {errors} page(s) could not be fetched, so some "
+            f"records are missing. {args.output} was not changed. Re-run later.\n")
+        return 1
 
     return 0
 

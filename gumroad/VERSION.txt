@@ -5,7 +5,7 @@ Columns: 38
 Total value: $11,250,805,473 (repeated demolition valuations counted once)
 Declared value (raw sum): $14,599,801,224
 Neighborhoods: 53
-Source: Seattle SDCI (services.seattle.gov/portal)
+Source: Seattle Open Data k44w-2dcq + SDCI portal detail pages
 Export date: November 8, 2026
 
 SHA256:

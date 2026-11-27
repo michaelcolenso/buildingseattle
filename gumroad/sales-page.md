@@ -121,7 +121,7 @@ The risk is entirely ours. You literally cannot lose.
 | File size | ~11.1 MB |
 | Format | CSV (UTF-8) |
 | Last updated | November 8, 2026 |
-| Source | Seattle SDCI (services.seattle.gov/portal) |
+| Source | Seattle Open Data k44w-2dcq + SDCI portal detail pages |
 | Neighborhoods | 53 |
 | Total value | $11.25 billion (repeated demolition valuations counted once) |
 

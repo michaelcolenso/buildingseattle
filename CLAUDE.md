@@ -52,11 +52,14 @@ node --check worker.js                     # syntax check (CI runs this too)
 
 CI (`.github/workflows/test.yml`) runs `node --check worker.js`, all Node tests, and pytest on every push. Secrets for local `wrangler dev` go in `.dev.vars` (gitignored).
 
+Scheduled workflows (`enrich-daily`, `development-sites`, `data-freshness`) end with the reusable `.github/workflows/notify-failure.yml` job, which opens or comments on a `[Workflow failure] <name>` issue and closes it on the next success. `data-freshness.yml` runs `python3 scripts/check_freshness.py` daily against the public `/api/stats` (fails if `latest_record_date` is >4 days or `last_ingest_at` >36 h old). Third-party actions are pinned to full commit SHAs (Dependabot keeps them current); pass dispatch inputs through `env:`, never inline `${{ }}` in `run:`.
+
 ### Gumroad Dataset Build
 
 ```bash
 # Rebuild every shipped dataset artifact (CSVs, dictionary, VERSION,
-# CHANGELOG, Foundation/Pro ZIPs) from a fresh snapshot
+# CHANGELOG, Foundation/Pro ZIPs) from a fresh snapshot. Paid CSVs and ZIPs
+# land in gitignored gumroad/dist/ — never commit them
 python3 gumroad/build_dataset.py
 
 # D1-snapshot source (drift-checked against live COUNT(*)); falls back to
@@ -92,7 +95,7 @@ The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split int
 - SQL queries are built inline with parameterized bindings via the D1 `prepare().bind()` API
 - CORS headers are added to every response
 - **Do not add non-function named exports to `worker.js`.** The Workers runtime rejects them and `wrangler dev` fails at startup. Constants/SQL fragments shared with tests go in a sibling module (this is why `adu.js` and `entity_hubs.js` exist).
-- A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`).
+- A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`): new permits plus a bounded rotation of stale ones (status changed since the last enrichment, or still open and enriched >30 days ago; queue SQL in `scripts/enrichment_queue.py`). It posts to `https://buildingseattle.com` (override with `WORKER_URL`), never workers.dev.
 
 Key routes:
 | Route | Purpose |
@@ -155,11 +158,16 @@ Both `sdci_scraper.py` and `worker.js` contain hardcoded neighborhood name mappi
 
 `gumroad/build_dataset.py` is the single source of truth for the shipped Gumroad
 product — rebuild every artifact (permit/sample/contractor CSVs, data dictionary,
-VERSION.txt, CHANGELOG.md, Foundation/Pro ZIPs) with one command. Column contracts
+VERSION.txt, CHANGELOG.md, Foundation/Pro ZIPs) with one command. **The repo is
+public:** the paid full permit CSV, contractor CSV and ZIPs are written only to
+gitignored `gumroad/dist/` and uploaded to Gumroad; only the free 100-row sample
+is tracked (see `docs/gumroad-dataset-in-git-history.md`). Column contracts
 live in `gumroad/columns.py`; `refresh.py` (ships standalone inside the Pro ZIP)
 keeps its own inline copy that tests assert never drifts. The scripts this
-pipeline superseded (`export_full.py`, `generate_csv.py`, and other one-off
-import/push helpers) live in `scripts/legacy/` for reference only.
+pipeline superseded (`export_full.py`, `generate_csv.py`, the old requests-based
+`enrich_sdci.py`, and other one-off import/push helpers) live in `scripts/legacy/`
+for reference only. Despite its name, root `sdci_detail_probe.py` is live: the
+enrichment scripts import its parser and fetchers.
 
 ### SEO Tooling
 
