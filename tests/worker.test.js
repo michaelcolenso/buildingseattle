@@ -2926,7 +2926,9 @@ test("entity hub pages highlight their own nav item", async () => {
       },
     },
   };
-  const expected = { contractors: "Contractors", neighborhoods: "Neighborhoods", projects: null, addresses: null };
+  // Projects and Addresses are in the global nav now (audit E20), so their
+  // hubs highlight their own item too.
+  const expected = { contractors: "Contractors", neighborhoods: "Neighborhoods", projects: "Projects", addresses: "Addresses" };
   for (const [slug, label] of Object.entries(expected)) {
     const response = await worker.fetch(new Request(`http://example.com/${slug}`), env, createCtx());
     const html = await response.text();

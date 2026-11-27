@@ -30,9 +30,9 @@ function createEnv() {
             if (sql.includes("homepage:what-changed")) {
               return { results: [{ id: 1, permit_number: "P-1", previous_status: "pending", new_status: "active", changed_at: "2026-08-24 07:00:00", address: '<script>alert("x")</script> 1 Main St', neighborhood: "Downtown", type: "commercial", value: 400000 }] };
             }
-            if (sql.includes("homepage:active-addresses")) return { results: [{ label: "1 Main St", active_permits: 4, total_value: 900000 }] };
+            if (sql.includes("homepage:active-addresses")) return { results: [{ label: "1 MAIN ST, SEATTLE, WA", slug: "1-main-st-seattle-wa", active_permits: 4, total_value: 900000 }, { label: "9 UNLINKED AVE", active_permits: 1, total_value: 5000 }] };
             if (sql.includes("homepage:contractors-30d")) return { results: [{ label: "Build Co", slug: "build-co", permits: 3, total_value: 1200000 }] };
-            if (sql.includes("homepage:neighborhoods-30d")) return { results: [{ label: "Ballard", permits: 5, total_value: 2000000 }] };
+            if (sql.includes("homepage:neighborhoods-30d")) return { results: [{ label: "Ballard", slug: "ballard", permits: 5, total_value: 2000000 }] };
             if (sql.includes("api:active-contractors")) return { results: [{ id: 1, name: "Build Co", slug: "build-co", active_projects: 3 }] };
             throw new Error(`Unhandled all query: ${sql}`);
           },
@@ -59,7 +59,10 @@ test("homepage is task-first and uses mechanically correct data labels", async (
   assert.match(html, /name="q" type="search"/);
   assert.match(html, />7<\/span><span class="bs-metric__label">active permits/);
   assert.match(html, />2<\/span><span class="bs-metric__label">contractors linked to permits/);
-  assert.match(html, /\$12\.5M<\/span><span class="bs-metric__label">declared permit value/);
+  // The figure is the counted total (repeat demolition values once), so it
+  // is not labelled "declared" (audit E11).
+  assert.match(html, /\$12\.5M<\/span><span class="bs-metric__label">counted permit value/);
+  assert.match(html, /href="\/methodology#value"/);
   assert.match(html, /Scheduled daily ingest/);
   assert.match(html, /Last successful ingest/);
   assert.match(html, /Latest permit event/);
@@ -129,7 +132,10 @@ test("homepage includes mobile/accessibility protections and has no JS-dependent
   assert.match(html, /:focus-visible/);
   assert.match(html, /aria-label="Current database metrics"/);
   assert.match(html, /<label for="home-search">/);
-  assert.doesNotMatch(html, /onclick=/);
+  // The only script handlers belong to the shared nav's menu toggle; the
+  // page's own content (search, CTAs) works without JavaScript.
+  const withoutNav = html.replace(/<nav class="global-nav"[\s\S]*?<\/nav>/, "");
+  assert.doesNotMatch(withoutNav, /onclick=/);
 });
 
 test("homepage is edge-cacheable and advertises discovery resources", async () => {
@@ -189,7 +195,7 @@ test("root markdown representation carries the same data semantics", async () =>
   assert.match(response.headers.get("Content-Type") || "", /text\/markdown/);
   assert.match(markdown, /7 active permits/);
   assert.match(markdown, /2 contractors linked to permits/);
-  assert.match(markdown, /\$12\.5M declared permit value/);
+  assert.match(markdown, /\$12\.5M counted permit value/);
   assert.match(markdown, /PENDING → ACTIVE/);
   assert.match(markdown, /Permit values are declared values, not verified total project costs/);
 });
@@ -221,4 +227,37 @@ test("homepage formats date-only freshness as the same calendar day (audit E13)"
   assert.doesNotMatch(html, /Aug 22, 2026/);
   // Ingest timestamps carry the year and the time zone.
   assert.match(html, /Last successful ingest <strong>Aug 24, 2026, 1:15 AM PDT<\/strong>/);
+});
+
+test("homepage rankings link indexable entity pages, not noindexed searches (audit E4/G1)", async () => {
+  const env = createEnv();
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), env, ctx());
+  const html = await response.text();
+  assert.match(html, /<a class="rank-row" href="\/address\/1-main-st-seattle-wa">/);
+  assert.match(html, /<a class="rank-row" href="\/neighborhood\/ballard">/);
+  assert.doesNotMatch(html, /href="\/permits\?neighborhood=Ballard"/);
+  // An address the entity graph hasn't linked keeps the search fallback.
+  assert.match(html, /href="\/permits\?q=9%20UNLINKED%20AVE"/);
+  // Pluralization and one display form for names (E17/E18).
+  assert.match(html, /<strong>1 Main St, Seattle, WA<\/strong><small>4 active permits<\/small>/);
+  assert.match(html, /<small>1 active permit<\/small>/);
+  assert.doesNotMatch(html, /1 active permits/);
+  const addressSql = env._queries.find((sql) => sql.includes("homepage:active-addresses"));
+  assert.match(addressSql, /LEFT JOIN addresses a ON a\.id = p\.address_id/);
+  const neighborhoodSql = env._queries.find((sql) => sql.includes("homepage:neighborhoods-30d"));
+  assert.match(neighborhoodSql, /LEFT JOIN neighborhoods n/);
+  assert.match(neighborhoodSql, /NOT IN \('Other', 'Other Seattle'\)/);
+});
+
+test("homepage uses the shared global nav and footer (audit E20)", async () => {
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), ctx());
+  const html = await response.text();
+  assert.match(html, /<nav class="global-nav" id="global-nav"/);
+  assert.match(html, /<footer class="global-footer">/);
+  assert.doesNotMatch(html, /class="site-header"|class="site-footer"/);
+  for (const href of ["/projects", "/addresses", "/api-docs"]) {
+    assert.match(html.match(/<nav class="global-nav"[\s\S]*?<\/nav>/)[0], new RegExp(`href="${href}"`));
+  }
+  assert.match(html, /<footer class="global-footer">[\s\S]*href="\/privacy"[\s\S]*<\/footer>/);
+  assert.match(html, /<footer class="global-footer">[\s\S]*href="\/alerts"[\s\S]*<\/footer>/);
 });

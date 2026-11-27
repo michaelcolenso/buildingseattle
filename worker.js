@@ -1095,6 +1095,8 @@ function renderNav(activePage) {
     { href: "/permits", label: "Permits", keys: ["permits"] },
     { href: "/contractors", label: "Contractors", keys: ["contractors"] },
     { href: "/neighborhoods", label: "Neighborhoods", keys: ["neighborhoods", "explore"] },
+    { href: "/projects", label: "Projects", keys: ["projects"] },
+    { href: "/addresses", label: "Addresses", keys: ["addresses"] },
     { href: "/insights", label: "Insights", keys: ["insights"] },
     { href: "/data", label: "Data", keys: ["data"] },
     { href: "/api-docs", label: "API", keys: ["api"] },
@@ -1115,11 +1117,14 @@ function renderNav(activePage) {
     </nav>`;
 }
 
+// One footer for every template (the homepage included); the link list lives
+// in site_content.js so the privacy and alerts pages can't drop off one copy.
 function renderFooter() {
+  const links = FOOTER_LINKS.map(({ href, label }) => `<a href="${href}">${label}</a>`).join(" &middot; ");
   return `<footer class="global-footer">
       <div class="global-footer-row">
         <div>Building Seattle &mdash; Seattle construction intelligence</div>
-        <div><a href="/about">About</a> &middot; <a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/insights">Insights</a> &middot; <a href="/data">Dataset</a> &middot; <a href="/methodology">Methodology</a> &middot; <a href="/api-docs">API</a> &middot; <a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></div>
+        <nav aria-label="Footer navigation">${links} &middot; <a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav>
       </div>
     </footer>`;
 }
@@ -1274,12 +1279,14 @@ export async function buildHomeSnapshot(env) {
     dbAll(
       env,
       `/* homepage:active-addresses */
-       SELECT p.address AS label, COUNT(*) AS active_permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
+       SELECT COALESCE(a.display_address, p.address) AS label, a.slug AS slug,
+              COUNT(*) AS active_permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p
+       LEFT JOIN addresses a ON a.id = p.address_id
        WHERE lower(COALESCE(p.status,'')) = 'active'
          AND p.address IS NOT NULL AND trim(p.address) != ''
-       GROUP BY p.address
-       ORDER BY active_permits DESC, total_value DESC, p.address ASC
+       GROUP BY COALESCE('id:' || a.id, p.address)
+       ORDER BY active_permits DESC, total_value DESC, label ASC
        LIMIT 5`,
     ),
     dbAll(
@@ -1297,12 +1304,16 @@ export async function buildHomeSnapshot(env) {
     dbAll(
       env,
       `/* homepage:neighborhoods-30d */
-       SELECT p.neighborhood AS label, COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
+       SELECT COALESCE(n.name, p.neighborhood) AS label, n.slug AS slug,
+              COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p
-       WHERE p.neighborhood IS NOT NULL AND trim(p.neighborhood) != ''
+       LEFT JOIN address_neighborhoods an ON an.address_id = p.address_id
+       LEFT JOIN neighborhoods n ON n.id = an.neighborhood_id
+       WHERE trim(COALESCE(n.name, p.neighborhood, '')) != ''
+         AND COALESCE(n.name, p.neighborhood) NOT IN ('Other', 'Other Seattle')
          AND date(COALESCE(p.issued_date, p.applied_date)) >= date('now', '-30 days')
-       GROUP BY p.neighborhood
-       ORDER BY permits DESC, total_value DESC, p.neighborhood ASC
+       GROUP BY COALESCE(n.slug, p.neighborhood)
+       ORDER BY permits DESC, total_value DESC, label ASC
        LIMIT 5`,
     ),
   ]);
@@ -1345,23 +1356,25 @@ function renderRanking(rows, type) {
   return rows
     .map((row, index) => {
       const rawLabel = row.label || "Unclassified";
-      const label = type === "address" ? smartTitleCase(rawLabel) : rawLabel;
+      const label = type === "neighborhood" ? rawLabel : displayName(rawLabel);
+      // Rank rows link the indexable entity page; the noindexed /permits
+      // search is only a fallback for rows the entity graph hasn't linked.
       let href = "/permits";
       let metric = "";
       if (type === "address") {
-        href = `/permits?q=${encodeURIComponent(rawLabel)}`;
-        metric = `${Number(row.active_permits) || 0} active permits`;
+        href = row.slug ? `/address/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(rawLabel)}`;
+        metric = countLabel(row.active_permits, "active permit", "active permits");
       } else if (type === "contractor") {
-        href = row.slug ? `/contractor/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(label)}`;
-        metric = `${Number(row.permits) || 0} new active permits`;
+        href = row.slug ? `/contractor/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(rawLabel)}`;
+        metric = countLabel(row.permits, "new active permit", "new active permits");
       } else {
-        href = `/permits?neighborhood=${encodeURIComponent(label)}`;
-        metric = `${Number(row.permits) || 0} recent permits`;
+        href = row.slug ? `/neighborhood/${encodeURIComponent(row.slug)}` : `/permits?neighborhood=${encodeURIComponent(rawLabel)}`;
+        metric = countLabel(row.permits, "recent permit", "recent permits");
       }
-      return `<a class="rank-row" href="${href}">
+      return `<a class="rank-row" href="${escapeHtml(href)}">
         <span class="rank-index">${index + 1}</span>
         <span class="rank-copy"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(metric)}</small></span>
-        <span class="rank-value">${escapeHtml(compactMetricMoney(row.total_value || 0))}<small>declared</small></span>
+        <span class="rank-value">${escapeHtml(compactMetricMoney(row.total_value || 0))}<small>permit value</small></span>
       </a>`;
     })
     .join("");
@@ -1449,38 +1462,21 @@ export function renderHomepage(snapshot) {
   <meta name="twitter:image" content="${BASE_URL}/social/insight.png">
   <meta name="twitter:image:alt" content="Building Seattle — Seattle construction permit data">
   <script type="application/ld+json">${structuredData}</script>
+  ${renderDesignTokens()}
   <style>
     .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:var(--brand-navy);color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:800;text-decoration:none}.skip-link:focus{left:0}
     :root{--primary:var(--ink);--bg:var(--surface);--bg-alt:var(--surface-alt);--panel:var(--surface-raised);--text:var(--ink);--muted:var(--ink-muted);--border:var(--line);--soft:var(--line-subtle);--max:1200px;color-scheme:light}[data-theme="dark"]{color-scheme:dark}
-    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:var(--header-bg,rgba(255,255,255,.96));border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:var(--ink)}.brand img{display:block;height:24px;width:auto}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:var(--ink);background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(11,41,69,.14);z-index:40}.mobile-nav a{text-decoration:none;color:var(--ink);font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:var(--ink-secondary)}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:var(--link);font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:var(--ink-secondary)}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .bs-metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .bs-metric:first-child{border-top-width:3px;border-top-color:var(--ink)}.hero-aside .bs-metric__value{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.bs-metric:hover .bs-metric__value{color:var(--accent)}.bs-metric__value{font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05}.freshness{max-width:820px;margin:18px 0 0;flex-wrap:nowrap;align-items:flex-start}.freshness>span{flex:1;min-width:0}.freshness>.bs-icon{margin-top:1px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:var(--ink-secondary)}.text-link{font-weight:800;color:var(--link);text-underline-offset:4px;white-space:nowrap}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:var(--ink);font-size:16px}.market-card p{margin:5px 0 0;color:var(--ink-secondary);font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:var(--ink-muted);font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:13px}.rank-copy small,.rank-value small{display:block;color:var(--ink-muted);font-size:11px;font-weight:600}.rank-value{text-align:right;color:var(--ink);font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:var(--ink);font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:var(--ink-secondary);font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid var(--ink);padding:4px 0 4px 18px;color:var(--ink-secondary)}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}.trust-meta dd{margin:4px 0 0;font-weight:750;color:var(--ink)}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:var(--ink)}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:var(--ink-secondary)}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:var(--ink-secondary)}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:var(--brand-navy);color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:var(--brand-navy);font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:var(--ink)}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:var(--ink-secondary);text-underline-offset:3px}
-    @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form .bs-btn{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:var(--link);font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:var(--ink-secondary)}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .bs-metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .bs-metric:first-child{border-top-width:3px;border-top-color:var(--ink)}.hero-aside .bs-metric__value{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.bs-metric:hover .bs-metric__value{color:var(--accent)}.bs-metric__value{font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05}.freshness{max-width:820px;margin:18px 0 0;flex-wrap:nowrap;align-items:flex-start}.freshness>span{flex:1;min-width:0}.freshness>.bs-icon{margin-top:1px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:var(--ink-secondary)}.text-link{font-weight:800;color:var(--link);text-underline-offset:4px;white-space:nowrap}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:var(--ink);font-size:16px}.market-card p{margin:5px 0 0;color:var(--ink-secondary);font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:var(--ink-muted);font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:13px}.rank-copy small,.rank-value small{display:block;color:var(--ink-muted);font-size:11px;font-weight:600}.rank-value{text-align:right;color:var(--ink);font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:var(--ink);font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:var(--ink-secondary);font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid var(--ink);padding:4px 0 4px 18px;color:var(--ink-secondary)}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}.trust-meta dd{margin:4px 0 0;font-weight:750;color:var(--ink)}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:var(--ink)}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:var(--ink-secondary)}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:var(--ink-secondary)}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:var(--brand-navy);color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:var(--brand-navy);font-weight:850;text-decoration:none;white-space:nowrap}
+    @media(max-width:780px){.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form .bs-btn{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.task{min-height:auto}.rank-copy strong{white-space:normal}}
     @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.bs-metric__value{font-size:1.16rem}.bs-metric__label{font-size:11px}.hero h1{font-size:2.05rem}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-    [data-theme="dark"] .site-header{--header-bg:rgba(8,24,42,.96)}
     [data-theme="dark"] .alert-panel{box-shadow:inset 0 0 0 1px var(--line)}
-    .header-end{display:flex;align-items:center;gap:12px;flex:0 0 auto}.brand{min-width:0;flex:0 1 auto}.brand img{max-width:100%;height:auto;max-height:24px}@media(max-width:380px){.header-inner,.header-end{gap:8px}}
-    ${themeToggleStyles()}
   </style>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <header class="site-header">
-    <div class="container header-inner">
-      <a class="brand" href="/" aria-label="Building Seattle home">${themedLockup("")}</a>
-      <div class="header-end">
-      <nav class="nav" aria-label="Primary navigation">
-        <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a>
-      </nav>
-      ${themeToggleButton()}
-      <details class="nav-toggle">
-        <summary aria-label="Open navigation menu">&#9776;</summary>
-        <nav class="mobile-nav" aria-label="Mobile navigation">
-          <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a><a href="/api-docs">API</a>
-        </nav>
-      </details>
-      </div>
-    </div>
-  </header>
+  ${renderNav("home")}
+  <div class="global-nav-spacer"></div>
   <main id="main-content">
     <section class="hero">
       <div class="container hero-grid">
@@ -1499,7 +1495,7 @@ export function renderHomepage(snapshot) {
         <div class="metric-strip" aria-label="Current database metrics">
           <a class="bs-metric" href="/permits?status=active"><span class="bs-metric__value">${escapeHtml(stats.active_permits.toLocaleString("en-US"))}</span><span class="bs-metric__label">active permits</span></a>
           <a class="bs-metric" href="/contractors"><span class="bs-metric__value">${escapeHtml(stats.contractors.toLocaleString("en-US"))}</span><span class="bs-metric__label">contractors linked to permits</span></a>
-          <a class="bs-metric" href="/permits"><span class="bs-metric__value">${escapeHtml(compactMetricMoney(stats.total_value))}</span><span class="bs-metric__label">declared permit value</span></a>
+          <a class="bs-metric" href="/methodology#value"><span class="bs-metric__value">${escapeHtml(compactMetricMoney(stats.total_value))}</span><span class="bs-metric__label">counted permit value</span></a>
         </div>
         <p class="bs-source freshness">${bsIcon("source", 14)}<span>Seattle SDCI Open Data · Scheduled daily ingest · Last successful ingest <strong>${escapeHtml(ingestLabel)}</strong> · Latest permit event <strong>${escapeHtml(recordLabel)}</strong> · <a href="/methodology">Methodology</a></span></p>
         </aside>
@@ -1515,7 +1511,7 @@ export function renderHomepage(snapshot) {
 
     <section class="section alt" aria-labelledby="market-heading">
       <div class="container">
-        <div class="section-head"><div><p class="section-kicker">Market activity</p><h2 id="market-heading">Seattle construction activity</h2><p class="section-deck">Explicit rankings with the metric and timeframe shown. Declared values are source-reported permit values, not verified total project costs.</p></div></div>
+        <div class="section-head"><div><p class="section-kicker">Market activity</p><h2 id="market-heading">Seattle construction activity</h2><p class="section-deck">Explicit rankings with the metric and timeframe shown. Permit values are source-reported declared values, with a demolition valuation SDCI repeats at one address counted once. They are not verified total project costs.</p></div></div>
         <div class="market-grid">
           <article class="market-card"><header><h3>Most active addresses</h3><p>Current active permit count · all active records</p></header>${renderRanking(addresses, "address")}</article>
           <article class="market-card"><header><h3>Contractors with new active work</h3><p>Active permits applied or issued · past 30 days</p></header>${renderRanking(contractors30d, "contractor")}</article>
@@ -1544,7 +1540,7 @@ export function renderHomepage(snapshot) {
 
     <section class="section alt" aria-labelledby="trust-heading">
       <div class="container trust">
-        <div class="trust-copy"><p class="section-kicker">Source &amp; methodology</p><h2 id="trust-heading">Built from Seattle public records</h2><p>Building Seattle organizes Seattle Department of Construction and Inspections records into searchable permits, addresses, projects, contractors, and neighborhoods.</p><p class="trust-note">Permit values are <strong>declared permit values</strong>, not verified total project costs. Some project and entity relationships are inferred from source records and should be read with the methodology in mind.</p><p><a class="text-link" href="/methodology">Read the methodology →</a> &nbsp; <a class="text-link" href="/data">Explore the dataset →</a></p></div>
+        <div class="trust-copy"><p class="section-kicker">Source &amp; methodology</p><h2 id="trust-heading">Built from Seattle public records</h2><p>Building Seattle organizes Seattle Department of Construction and Inspections records into searchable permits, addresses, projects, contractors, and neighborhoods.</p><p class="trust-note">Permit values are <strong>declared permit values</strong>, not verified total project costs. Site totals count a demolition valuation SDCI repeats at one address once. Some project and entity relationships are inferred from source records and should be read with the methodology in mind.</p><p><a class="text-link" href="/methodology">Read the methodology →</a> &nbsp; <a class="text-link" href="/data">Explore the dataset →</a></p></div>
         <section class="trust-meta" aria-label="Data freshness"><dl><div><dt>Source</dt><dd>Seattle SDCI Open Data</dd></div><div><dt>Ingest cadence</dt><dd>Scheduled daily</dd></div><div><dt>Last successful ingest</dt><dd>${escapeHtml(ingestLabel)}</dd></div><div><dt>Latest permit event</dt><dd>${escapeHtml(recordLabel)}</dd></div></dl></section>
       </div>
     </section>
@@ -1560,7 +1556,7 @@ export function renderHomepage(snapshot) {
 
     <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:var(--brand-sky)">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Building Seattle already supports free per-permit alerts with confirmation and one-click unsubscribe.</p></div><a class="alert-button" href="/permits">Find a permit to watch</a></div></div></section>
   </main>
-  <footer class="site-footer"><div class="container footer-inner"><div><div class="footer-brand">Building Seattle</div><div style="margin-top:4px;color:var(--ink-muted);font-size:12px">Seattle construction intelligence</div></div><nav class="footer-nav" aria-label="Footer navigation"><a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/projects">Projects</a><a href="/addresses">Addresses</a><a href="/insights">Insights</a><a href="/data">Dataset</a><a href="/methodology">Methodology</a><a href="/about">About</a><a href="/api-docs">API</a><a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav></div></footer>
+  ${renderFooter()}
 </body>
 </html>`;
 }
@@ -1573,7 +1569,7 @@ function renderHomeMarkdown(snapshot) {
     "",
     `- ${stats.active_permits.toLocaleString("en-US")} active permits`,
     `- ${stats.contractors.toLocaleString("en-US")} contractors linked to permits`,
-    `- ${compactMetricMoney(stats.total_value)} declared permit value`,
+    `- ${compactMetricMoney(stats.total_value)} counted permit value (repeated demolition valuations counted once)`,
     `- Scheduled daily ingest; last successful ingest: ${stats.last_ingest_at ? formatDate(stats.last_ingest_at, true) : "Unavailable"}`,
     `- Latest permit event in the dataset: ${stats.latest_record_date ? formatDate(stats.latest_record_date) : "Unavailable"}`,
     "",
@@ -10716,7 +10712,7 @@ async function renderMethodologyPage(env) {
       <p>Permits are the evidence records. Address pages come from normalized street addresses. Projects group permits that share an address and have related timing and work signals. Contractor and participant pages use names and license information published on permits.</p>
       <p>Entity grouping is deterministic but inferred. Similar names, shared addresses, incomplete licenses, or changed project descriptions can split one real-world entity into several pages or combine records that later need correction.</p>
     </section>
-    <section class="bs-card">
+    <section class="bs-card" id="value">
       <h2>Values, units, and completion</h2>
       <p><strong>Declared permit value is not verified project cost.</strong> It can omit land, design, financing, owner-provided work, later changes, or portions filed under related permits.</p>
       <p><strong>Repeated demolition valuations are counted once in totals.</strong> SDCI often attaches a redevelopment's whole valuation to each of its demolition permits; twelve demolition permits at 4747 30th Ave NE each declare $129,000,000. When a demolition permit's value matches another permit at the same address, totals, rankings and project values count it once. Each permit's own page keeps the value SDCI declared, and construction permits are never de-duplicated, since identical values there are usually separate buildings.</p>
