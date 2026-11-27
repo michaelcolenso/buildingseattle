@@ -1361,7 +1361,9 @@ test("address hub filters by bounded latest activity, neighborhood, permit count
   assert.match(html, /<option value="recent90" selected>Past 90 days<\/option>/);
   assert.match(seenSql, /p\.neighborhood = \?/);
   assert.match(seenSql, /date\('now', '-90 days'\)/);
-  assert.match(seenSql, /HAVING COALESCE\(SUM\(\(CASE WHEN p\.permit_number LIKE '%-DM'[\s\S]*?END\)\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
+  // The hub only lists addresses with more than one permit (single-permit
+  // addresses are noindex), then applies the requested filters.
+  assert.match(seenSql, /HAVING COUNT\(DISTINCT p\.id\) >= 2 AND COALESCE\(SUM\(\(CASE WHEN p\.permit_number LIKE '%-DM'[\s\S]*?END\)\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
   assert.deepEqual(seenBinds, ["Ballard", 1000000, 5]);
 });
 
@@ -2973,7 +2975,7 @@ test("entity hub pages highlight their own nav item", async () => {
             return this;
           },
           async all() {
-            return { results: [] };
+            return { results: [{ slug: "one", label: "One", detail: "Seattle", permit_count: 2, total_value: 0 }] };
           },
         };
       },
@@ -3130,10 +3132,12 @@ test("GET /projects tells a failed query apart from an empty result", async () =
       },
     },
   });
-  const failed = await (
-    await worker.fetch(new Request("http://example.com/projects"), hubEnv(async () => { throw new Error("no such table"); }), createCtx())
-  ).text();
-  assert.match(failed, /Listings are temporarily unavailable/);
+  // A failed read is a 503 the edge never caches, not a 200 noindex page.
+  const failedResponse = await worker.fetch(new Request("http://example.com/projects"), hubEnv(async () => { throw new Error("no such table"); }), createCtx());
+  const failed = await failedResponse.text();
+  assert.equal(failedResponse.status, 503);
+  assert.equal(failedResponse.headers.get("Cache-Control"), "no-store");
+  assert.equal(failedResponse.headers.get("Retry-After"), "3600");
   assert.doesNotMatch(failed, /No matching projects/);
 
   const empty = await (

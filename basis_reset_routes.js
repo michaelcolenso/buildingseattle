@@ -1,4 +1,5 @@
 import { BASIS_RESET_EVENT_TYPES, scoreBasisReset } from "./basis_reset.js";
+import { MULTI_PERMIT_PROJECT_SQL } from "./entity_hubs.js";
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -140,11 +141,13 @@ export async function getBasisResetRadar(request, env) {
   const { results } = await env.DB.prepare(`
     SELECT s.*, e.event_type, e.event_date, e.prior_basis, e.current_basis, e.asking_price,
       e.source_url, e.source_name, e.confidence,
-      a.slug address_slug, a.display_address, p.slug project_slug, p.name project_name
+      a.slug address_slug, a.display_address, pr.slug project_slug, pr.name project_name
     FROM basis_reset_scores s
     JOIN basis_reset_events e ON e.id=s.latest_event_id
     LEFT JOIN addresses a ON a.id=s.address_id
-    LEFT JOIN projects p ON p.id=s.project_id
+    -- Only projects that are their own page; one that redirects to its
+    -- address (or is noindex) links the address instead.
+    LEFT JOIN projects pr ON pr.id=s.project_id AND ${MULTI_PERMIT_PROJECT_SQL}
     ORDER BY s.opportunity_score DESC, e.event_date DESC
     LIMIT ?
   `).bind(limit).all();

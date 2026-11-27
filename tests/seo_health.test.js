@@ -5,11 +5,17 @@ import {
   decodedTitleLength,
   entityHubItemCount,
   expectedSchemaType,
+  expectedSchemaTypes,
   htmlMetadata,
+  isEntityPath,
   pngDimensions,
+  robotsTxtProblems,
   schemaTypes,
+  seededSample,
   summarizeHistory,
   titleBudget,
+  unstableLastmods,
+  xmlEntries,
   xmlLocations,
 } from "../scripts/check_seo_health.mjs";
 
@@ -117,4 +123,49 @@ test("pngDimensions rejects truncated and non-PNG payloads", () => {
   assert.equal(pngDimensions(new Uint8Array(10)), null);
   assert.equal(pngDimensions(new Uint8Array(new Array(24).fill(0x41))), null);
   assert.equal(pngDimensions(undefined), null);
+});
+
+test("seededSample is deterministic per seed, distinct, bounded and non-mutating", () => {
+  const items = Array.from({ length: 50 }, (_, index) => `u${index}`);
+  const copy = [...items];
+  const first = seededSample(items, 5, "2026-11-27:addresses");
+  assert.deepEqual(seededSample(items, 5, "2026-11-27:addresses"), first);
+  assert.notDeepEqual(seededSample(items, 5, "2026-11-28:addresses"), first);
+  assert.equal(new Set(first).size, 5);
+  assert.ok(first.every((item) => items.includes(item)));
+  assert.deepEqual(items, copy);
+  assert.equal(seededSample(items.slice(0, 2), 5, "x").length, 2);
+  assert.deepEqual(seededSample([], 3, "x"), []);
+  // Over many seeds every position is reachable, not just the head of the list.
+  const seen = new Set();
+  for (let day = 0; day < 200; day += 1) for (const item of seededSample(items, 3, `d${day}`)) seen.add(item);
+  assert.ok(seen.size > 45, `${seen.size} of 50 reached`);
+});
+
+test("xmlEntries and unstableLastmods compare lastmod across two sitemap fetches", () => {
+  const before = "<urlset><url><loc>https://b.com/a</loc><lastmod>2026-11-01</lastmod></url><url><loc>https://b.com/b&amp;c</loc><lastmod>2026-11-02</lastmod></url></urlset>";
+  const same = before;
+  const moved = before.replace("2026-11-02", "2026-11-27");
+  assert.deepEqual(xmlEntries(before), [
+    { loc: "https://b.com/a", lastmod: "2026-11-01" },
+    { loc: "https://b.com/b&c", lastmod: "2026-11-02" },
+  ]);
+  assert.deepEqual(unstableLastmods(before, same), []);
+  assert.deepEqual(unstableLastmods(before, moved), ["https://b.com/b&c"]);
+  // A URL that appears only in one fetch is not a lastmod change.
+  assert.deepEqual(unstableLastmods(before, "<urlset><url><loc>https://b.com/new</loc><lastmod>x</lastmod></url></urlset>"), []);
+});
+
+test("robotsTxtProblems requires the sitemap line and rejects a site-wide disallow", () => {
+  const base = "https://buildingseattle.com";
+  assert.deepEqual(robotsTxtProblems("User-agent: *\nDisallow: /admin\nSitemap: https://buildingseattle.com/sitemap.xml\n", base), []);
+  assert.deepEqual(robotsTxtProblems("User-agent: *\nDisallow: /\n", base), ["Missing Sitemap line", "Disallow: / blocks the site"]);
+});
+
+test("contractor URLs accept LocalBusiness, Organization or Person; entity paths are recognized", () => {
+  assert.deepEqual(expectedSchemaTypes("/contractor/acme"), ["LocalBusiness", "Organization", "Person"]);
+  assert.deepEqual(expectedSchemaTypes("/address/x"), ["Place"]);
+  assert.deepEqual(expectedSchemaTypes("/not-a-real-route"), []);
+  assert.ok(isEntityPath("/address/x") && isEntityPath("/permits/1-CN") && isEntityPath("/contractor/x"));
+  assert.ok(!isEntityPath("/contractors") && !isEntityPath("/insights/map"));
 });

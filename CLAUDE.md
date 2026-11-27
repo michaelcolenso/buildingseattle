@@ -177,7 +177,13 @@ tables are linked from `permits` via `permits.address_id` / `permits.project_id`
   changed permits, and deletes entities last, so a failure never unlinks live pages. Outcomes are logged in
   `ingest_logs` as `run_type = 'entity_graph'` (`running` while it works, then `success` / `partial` / `error`);
   `/address/:slug` answers 503 (not 410) for an address with no permits while any permit is unlinked or the
-  latest rebuild is not `success`.
+  latest rebuild is not `success`. Every entity route (address, project, neighborhood, contractor, hubs) answers
+  503 + `Retry-After` + `no-store` when a read that decides its status or robots fails, and 404s an unknown slug only
+  while the graph is settled (`entityGraphSettled`).
+- Which entity URLs are published (indexable, sitemapped, listed in hubs) is decided once, in `entity_hubs.js`
+  (`projectPagePolicy`/`MULTI_PERMIT_PROJECT_SQL`, `addressIsIndexable`, placeholder neighborhoods/addresses, org
+  roles). Pages, sitemaps and hubs all read it; `tests/indexing_policy.test.js` asserts every sitemapped URL answers
+  200, index, self-canonical.
 - After a bulk import, rebuild: `curl -X POST -H "X-Admin-Token: $ADMIN_API_TOKEN" https://buildingseattle.com/admin/build-graph`
 - Only one rebuild runs at a time (`rebuild_lock.js`): a rebuild starts only if no `entity_graph` row is `running` and younger than 30 minutes; otherwise `/admin/build-graph` answers 409 and the cron skips. A run that died leaves its `running` row, which blocks for at most 30 minutes; `POST /admin/build-graph?force=1` overrides it.
 - Validation report: `node scripts/entity_report.mjs` (or `GET /admin/entity-report`).
