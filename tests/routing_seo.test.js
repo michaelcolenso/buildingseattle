@@ -57,3 +57,28 @@ test("URL normalization never redirects a POST", async () => {
   const response = await worker.fetch(new Request(`${BASE}/alerts/subscribe/`, { method: "POST" }), emptyEnv(), ctx);
   assert.notEqual(response.status, 301);
 });
+
+function permitBrowserEnv(total) {
+  const statement = {
+    bind: () => statement,
+    all: async () => ({ results: [] }),
+    first: async () => ({ total }),
+    run: async () => ({}),
+  };
+  return { DB: { prepare: () => statement } };
+}
+
+test("/permits?page=N past the last page is a 404; the last page still renders", async () => {
+  // 120 permits at 50 per page is three pages.
+  const last = await worker.fetch(new Request(`${BASE}/permits?page=3`), permitBrowserEnv(120), ctx);
+  const lastHtml = await last.text();
+  assert.equal(last.status, 200);
+  assert.match(lastHtml, /<title>[^<]*— Page 3<\/title>/);
+  assert.match(lastHtml, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/permits\?page=3">/);
+
+  const beyond = await worker.fetch(new Request(`${BASE}/permits?page=4`), permitBrowserEnv(120), ctx);
+  assert.equal(beyond.status, 404);
+  assert.match(await beyond.text(), /<meta name="robots" content="noindex">/);
+  const filteredBeyond = await worker.fetch(new Request(`${BASE}/permits?type=commercial&page=9`), permitBrowserEnv(120), ctx);
+  assert.equal(filteredBeyond.status, 404);
+});

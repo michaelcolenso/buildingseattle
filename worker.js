@@ -2298,6 +2298,14 @@ async function renderPermitBrowser(request, env) {
   const totalRaw = totalResult?.total || 0;
   const total = totalRaw || 0;
   const totalPages = Math.ceil(total / perPage);
+  // Past the last page there is nothing to list: a 404, not an empty page
+  // that canonicalizes to itself and sits in the index (D10).
+  if (page > 1 && page > totalPages) {
+    return render404({
+      heading: "Page not found",
+      message: "There are no more permits on this page. Start from the first page of results.",
+    });
+  }
   const lastUpdated = lastRun?.end_time ? timeAgo(new Date(lastRun.end_time)) : "Recently";
 
   if (wantsMarkdown(request)) {
