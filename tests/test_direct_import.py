@@ -7,6 +7,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+try:
+    import httpx  # noqa: F401  (direct_import needs it)
+except ImportError:  # pragma: no cover - environments without the dev extras
+    raise unittest.SkipTest("httpx is not installed")
+
 import direct_import
 
 
@@ -75,15 +80,16 @@ class DirectImportBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(imported, 1)
         self.assertEqual(client.calls[0]["headers"]["X-Ingest-Token"], "secret-token")
 
-    async def test_replace_all_data_calls_guarded_refresh_endpoint(self):
-        client = FakeClient()
+    def test_replace_all_flag_and_refresh_call_are_gone(self):
+        self.assertFalse(hasattr(direct_import, "replace_all_data"))
+        with self.assertRaises(SystemExit):
+            direct_import.build_parser().parse_args(["--replace-all"])
 
-        with patch.dict(os.environ, {"INGEST_API_TOKEN": "secret-token"}, clear=False):
-            await direct_import.replace_all_data(client, "https://example.com")
-
-        self.assertEqual(client.calls[0]["url"], "https://example.com/ingest/refresh")
-        self.assertEqual(client.calls[0]["json"], {"confirm": "replace-all"})
-        self.assertEqual(client.calls[0]["headers"]["X-Ingest-Token"], "secret-token")
+    def test_batch_size_is_capped_at_the_endpoint_limit(self):
+        self.assertEqual(direct_import.build_parser().parse_args(["--batch-size", "100"]).batch_size, 100)
+        for bad in ("0", "101"):
+            with self.assertRaises(SystemExit):
+                direct_import.build_parser().parse_args(["--batch-size", bad])
 
     def test_ingest_headers_can_read_local_dev_vars(self):
         with tempfile.TemporaryDirectory() as tmpdir:
