@@ -53,6 +53,22 @@ test("trailing-slash and mixed-case URLs 301 to the canonical URL, keeping the q
   }
 });
 
+test("www plus a non-canonical path is one 301 straight to the canonical URL (N6)", async () => {
+  for (const [path, location] of [
+    ["/Address/100-MAIN-ST-seattle-wa/", "/address/100-main-st-seattle-wa"],
+    ["/contractors/?page=2", "/contractors?page=2"],
+    ["/permits/7000101-cn", "/permits/7000101-CN"],
+    ["/", "/"],
+  ]) {
+    const response = await worker.fetch(new Request(`https://www.buildingseattle.com${path}`), emptyEnv(), ctx);
+    assert.equal(response.status, 301, path);
+    const target = response.headers.get("Location");
+    assert.equal(target, `${BASE}${location}`, path);
+    const next = await worker.fetch(new Request(target), emptyEnv(), ctx);
+    assert.notEqual(next.status, 301, `${path} needed a second hop`);
+  }
+});
+
 test("URL normalization never redirects a POST", async () => {
   const response = await worker.fetch(new Request(`${BASE}/alerts/subscribe/`, { method: "POST" }), emptyEnv(), ctx);
   assert.notEqual(response.status, 301);

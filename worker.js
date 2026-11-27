@@ -241,6 +241,9 @@ export default {
     try {
       if (url.hostname === "www.buildingseattle.com") {
         url.hostname = "buildingseattle.com";
+        // Fold the path in the same hop (N6): www + /Address/X/ is one 301,
+        // not a host redirect followed by a case redirect.
+        if (request.method === "GET" || request.method === "HEAD") url.pathname = canonicalRequestPath(path);
         return secure(Response.redirect(url.toString(), 301));
       }
 
