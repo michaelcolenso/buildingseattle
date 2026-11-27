@@ -56,7 +56,8 @@ CI (`.github/workflows/test.yml`) runs `node --check worker.js`, all Node tests,
 
 ```bash
 # Rebuild every shipped dataset artifact (CSVs, dictionary, VERSION,
-# CHANGELOG, Foundation/Pro ZIPs) from a fresh snapshot
+# CHANGELOG, Foundation/Pro ZIPs) from a fresh snapshot. Paid CSVs and ZIPs
+# land in gitignored gumroad/dist/ — never commit them
 python3 gumroad/build_dataset.py
 
 # D1-snapshot source (drift-checked against live COUNT(*)); falls back to
@@ -155,7 +156,10 @@ Both `sdci_scraper.py` and `worker.js` contain hardcoded neighborhood name mappi
 
 `gumroad/build_dataset.py` is the single source of truth for the shipped Gumroad
 product — rebuild every artifact (permit/sample/contractor CSVs, data dictionary,
-VERSION.txt, CHANGELOG.md, Foundation/Pro ZIPs) with one command. Column contracts
+VERSION.txt, CHANGELOG.md, Foundation/Pro ZIPs) with one command. **The repo is
+public:** the paid full permit CSV, contractor CSV and ZIPs are written only to
+gitignored `gumroad/dist/` and uploaded to Gumroad; only the free 100-row sample
+is tracked (see `docs/gumroad-dataset-in-git-history.md`). Column contracts
 live in `gumroad/columns.py`; `refresh.py` (ships standalone inside the Pro ZIP)
 keeps its own inline copy that tests assert never drifts. The scripts this
 pipeline superseded (`export_full.py`, `generate_csv.py`, and other one-off

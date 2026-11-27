@@ -2,16 +2,20 @@
 """One-command reproducible build for the Gumroad dataset products.
 
 Rebuilds every shipped artifact from a fresh snapshot of the production
-database:
+database. The paid files are written only to the gitignored gumroad/dist/
+directory; never commit them (the repo is public):
 
-  gumroad/buildingseattle_permits.csv   full export, 38 columns
+  gumroad/dist/buildingseattle_permits.csv   full export, 38 columns (paid)
+  gumroad/dist/contractors.csv               contractor aggregate (paid, Pro)
+  gumroad/dist/buildingseattle-permits-YYYY-MM_foundation.zip
+  gumroad/dist/buildingseattle-permits-YYYY-MM_pro.zip
+
+Free, tracked files regenerated in gumroad/:
+
   gumroad/buildingseattle_sample.csv    100 rows (top-25 by value + 75 random, seed-pinned)
-  gumroad/contractors.csv               contractor aggregate (no empty columns)
   gumroad/data-dictionary.md            stats/version sections regenerated in place
   gumroad/VERSION.txt                   version, counts, totals, SHA256 checksums
   gumroad/CHANGELOG.md                  entry prepended for this version
-  gumroad/dist/buildingseattle-permits-YYYY-MM_foundation.zip
-  gumroad/dist/buildingseattle-permits-YYYY-MM_pro.zip
 
 Data sources (picked automatically, or force with --source):
   d1    Cloudflare D1 REST API snapshot — keyset-paginated on permit_number,
@@ -53,6 +57,10 @@ from columns import (  # noqa: E402
 )
 
 GUMROAD_DIR = Path(__file__).resolve().parent
+DIST_DIRNAME = "dist"  # gitignored; holds every paid artifact
+PERMITS_CSV_NAME = "buildingseattle_permits.csv"
+SAMPLE_CSV_NAME = "buildingseattle_sample.csv"
+CONTRACTORS_CSV_NAME = "contractors.csv"
 DEFAULT_DB_ID = "e065e988-045f-42b5-b47a-4027c2e5c417"
 API_BASE = "https://buildingseattle.com"
 USER_AGENT = "BuildingSeattle-Build/1.0"
@@ -428,17 +436,19 @@ def build_zip(path, members):
 
 # ------------------------------------------------------------------ main
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", choices=["auto", "d1", "api"], default="auto")
     parser.add_argument("--version", default=None,
                         help="Version label, default current YYYY-MM")
     parser.add_argument("--out-dir", default=str(GUMROAD_DIR),
-                        help="Directory holding the product files (default gumroad/)")
-    args = parser.parse_args()
+                        help="Directory holding the tracked product files (default gumroad/)")
+    parser.add_argument("--dist-dir", default=None,
+                        help="Gitignored directory for the paid CSVs and ZIPs (default <out-dir>/dist)")
+    args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    dist_dir = out_dir / "dist"
+    dist_dir = Path(args.dist_dir) if args.dist_dir else out_dir / DIST_DIRNAME
     dist_dir.mkdir(parents=True, exist_ok=True)
     export_date = dt.date.today()
     version = args.version or f"{export_date:%Y-%m}"
@@ -473,9 +483,10 @@ def main():
     counted_by_permit = dict(zip((r.get("permit_number") for r in raw), counted_values(raw)))
     contractors = derive_contractors(records, counted_by_permit)
 
-    permits_csv = out_dir / "buildingseattle_permits.csv"
-    sample_csv = out_dir / "buildingseattle_sample.csv"
-    contractors_csv = out_dir / "contractors.csv"
+    # Paid files go to the gitignored dist dir only; the free sample stays tracked.
+    permits_csv = dist_dir / PERMITS_CSV_NAME
+    sample_csv = out_dir / SAMPLE_CSV_NAME
+    contractors_csv = dist_dir / CONTRACTORS_CSV_NAME
     write_csv(permits_csv, records, PERMIT_COLUMNS)
     write_csv(sample_csv, sample, PERMIT_COLUMNS)
     write_csv(contractors_csv, contractors, CONTRACTOR_COLUMNS)
@@ -522,6 +533,7 @@ def main():
     for name, digest in checksums.items():
         print(f"sha256 {name}: {digest}")
     print(f"zips:           {foundation_zip.name}, {pro_zip.name}")
+    print(f"paid artifacts: {dist_dir} (gitignored; upload to Gumroad, never commit)")
     return 0
 
 

@@ -66,8 +66,10 @@ Updated from the Seattle SDCI portal as of **November 8, 2026**. The included Py
 
 <!-- Maintainer note (not buyer-facing): rebuild all artifacts with
      `python3 gumroad/build_dataset.py` (supersedes export_full.py /
-     generate_csv.py, now in scripts/legacy/). Current CSVs stay in git;
-     monthly release ZIPs live in gitignored gumroad/dist/. -->
+     generate_csv.py, now in scripts/legacy/). The repo is public, so the
+     paid files (full permits CSV, contractors CSV, release ZIPs) are
+     written only to gitignored gumroad/dist/ and uploaded to Gumroad;
+     only the free 100-row sample CSV is tracked in git. -->
 
 
 ---

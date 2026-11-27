@@ -40,9 +40,14 @@ buildingseattle_fresh.csv
 # Base64 image blobs (the .png versions are the source of truth)
 *.b64
 
-# Gumroad build outputs (built by gumroad/build_dataset.py)
+# Gumroad build outputs (built by gumroad/build_dataset.py). The repo is
+# public: the paid CSVs and ZIPs live only in gumroad/dist/ and on Gumroad.
+# Only the free 100-row sample CSV is tracked.
 gumroad/dist/
 gumroad/releases/
+gumroad/*.csv
+gumroad/*.zip
+!gumroad/buildingseattle_sample.csv
 
 # Wrangler local dev state/cache (created by `wrangler dev`)
 .wrangler/
