@@ -3,17 +3,13 @@
 import {
   buildEntityGraph,
   makeSlug,
-  parseAddress,
   unaddressableAddressSql,
-  guessOrgType,
-  normalizeOrgName,
 } from "./entity_graph.js";
 import {
   ADU_CLASSIFICATION_VERSION,
   ADU_DADU_SQL,
   ADU_MATCH_SQL,
   ADU_NORMALIZED_TEXT_SQL,
-  classifyAduPermit,
 } from "./adu.js";
 import {
   ADDRESS_MIN_INDEXABLE_PERMITS,
