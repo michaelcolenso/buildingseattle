@@ -18,6 +18,11 @@ import { ENTITY_HUBS } from "./entity_hubs.js";
 import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
+import {
+  DATASET_RELEASE, SITE_CONTACT_EMAIL, FOOTER_LINKS,
+  countLabel, smartTitleCase, displayName, statusLabel, isClosedPermitStatus, roleLabel, roleList,
+  formatCalendarDate, formatMonthYear, latestSourceEventDate, renderDatasetCta, renderAlertCta,
+} from "./site_content.js";
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadarBody } from "./basis_reset_routes.js";
 import {
   developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
@@ -643,25 +648,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-// Display helper: SDCI source text arrives in ALL CAPS ("2704 S HINDS ST,
-// SEATTLE, WA"). Render title case for readability while keeping directionals,
-// unit types, and common business suffixes uppercase.
-const TITLECASE_KEEP_UPPER = new Set(["NE", "NW", "SE", "SW", "N", "S", "E", "W", "LLC", "LLP", "INC", "CO", "USA", "US", "WA", "ADU", "DADU", "HVAC", "IID", "IV", "III", "II"]);
-function countLabel(count, singular, plural) {
-  const n = Number(count) || 0;
-  const word = new Intl.PluralRules("en-US").select(n) === "one" ? singular : plural;
-  return `${n.toLocaleString("en-US")} ${word}`;
-}
-
-function smartTitleCase(value) {
-  return String(value ?? "")
-    .toLowerCase()
-    .replace(/\b[a-z][a-z0-9&.'/()-]*/g, (word) => {
-      const upper = word.toUpperCase();
-      if (TITLECASE_KEEP_UPPER.has(upper)) return upper;
-      return word.replace(/(^|[\s/('-])([a-z])/g, (m, p, c) => p + c.toUpperCase());
-    });
-}
+// countLabel, smartTitleCase and displayName live in site_content.js.
 
 function truncateMetaDescription(value, maxLength = 165) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
