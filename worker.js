@@ -4804,6 +4804,9 @@ function renderBasisResetPage(env) {
         title: "Basis Reset Radar | Building Seattle",
         description: "Seattle properties where a lower basis and existing development work may change redevelopment economics.",
         canonical: `${BASE_URL}/insights/basis-reset`,
+        // An empty radar is one sentence of copy: keep it out of the index
+        // (and the sitemap, see hasBasisResetRows) until it has scores.
+        noindex: rows.length === 0,
         activeNav: "insights",
         body: `${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Insights", href: "/insights" }, { label: "Basis Reset Radar" }])}
       <div class="ent-hero">
@@ -4818,6 +4821,14 @@ function renderBasisResetPage(env) {
         headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" },
       });
     });
+}
+
+// The radar page is indexable (and sitemapped) only once it lists a score.
+async function hasBasisResetRows(env) {
+  const row = await env.DB.prepare(
+    "SELECT 1 AS present FROM basis_reset_scores s JOIN basis_reset_events e ON e.id = s.latest_event_id LIMIT 1",
+  ).first();
+  return Boolean(row?.present);
 }
 
 function renderBasisResetUnavailable() {
@@ -10275,6 +10286,11 @@ async function renderChildSitemapXml(path, env, request) {
     } catch (error) {
       console.error("ADU sitemap availability query failed:", error);
       staticPaths = staticPaths.filter((staticPath) => staticPath !== "/insights/adu-dadu");
+    }
+    try {
+      if (await hasBasisResetRows(env)) staticPaths = [...staticPaths, "/insights/basis-reset"];
+    } catch (error) {
+      console.error("Basis reset sitemap availability query failed:", error);
     }
     const entries = staticPaths.map((staticPath) => ({
       loc: origin + staticPath,

@@ -411,3 +411,47 @@ test("projectPagePolicy encodes the subset threshold", () => {
   assert.equal(policy(PROJECT_SUBSET_NOINDEX_MAX_PERMITS + 1, 5), "index");
   assert.equal(projectPagePolicy({ permits: [...at(1), ...at(1, 2)], addressId: 1, addressSlug: "a" }).action, "index");
 });
+
+function seedBasisReset(db) {
+  db.exec(`
+    INSERT INTO basis_reset_events (id, address_id, project_id, event_type, event_date, prior_basis, current_basis, source_url) VALUES
+      (1, 4, 3, 'sale', '2026-01-01', 2000000, 1500000, 'https://example.com/a'),  -- indexed project
+      (2, 2, 2, 'sale', '2026-01-02', 900000, 600000, 'https://example.com/b'),    -- project redirects to its address
+      (3, 4, 4, 'listing', '2026-01-03', 800000, 700000, 'https://example.com/c'); -- noindex subset project
+    INSERT INTO basis_reset_scores (address_id, project_id, latest_event_id, reset_pct, reset_score, readiness_score, signal_score, opportunity_score) VALUES
+      (4, 3, 1, 25, 60, 60, 60, 90),
+      (2, 2, 2, 33, 70, 50, 50, 80),
+      (4, 4, 3, 12, 40, 40, 40, 70);
+  `);
+  return db;
+}
+
+test("Basis Reset links only indexable project pages; others link the address (D11)", async () => {
+  const page = await get(createEnv(seedBasisReset(seededDatabase())), "/insights/basis-reset");
+  assert.equal(page.status, 200);
+  assert.match(page.robots, /^index/);
+  const hrefs = [...page.html.matchAll(/class="ent-link" href="(\/(?:project|address)\/[^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(hrefs, [
+    "/project/new-construction-at-400-oak-st",
+    "/address/200-pine-st-seattle-wa",
+    "/address/400-oak-st-seattle-wa",
+  ]);
+  const env = createEnv(seedBasisReset(seededDatabase()));
+  for (const href of hrefs) assert.equal((await get(env, href)).status, 200, href);
+});
+
+test("an empty Basis Reset Radar is noindex and left out of the sitemap; a scored one is listed (E9)", async () => {
+  const empty = createEnv(seededDatabase());
+  const emptyPage = await get(empty, "/insights/basis-reset");
+  assert.equal(emptyPage.status, 200);
+  assert.equal(emptyPage.robots, "noindex,follow");
+  assert.doesNotMatch((await get(empty, "/sitemaps/static.xml")).html, /insights\/basis-reset/);
+
+  const scored = createEnv(seedBasisReset(seededDatabase()));
+  assert.match((await get(scored, "/sitemaps/static.xml")).html, /<loc>https:\/\/buildingseattle\.com\/insights\/basis-reset<\/loc>/);
+
+  const failing = createEnv(seedBasisReset(seededDatabase()), { faults: ["SELECT 1 AS present FROM basis_reset_scores"] });
+  const fallback = await get(failing, "/sitemaps/static.xml");
+  assert.equal(fallback.status, 200);
+  assert.doesNotMatch(fallback.html, /insights\/basis-reset/);
+});
