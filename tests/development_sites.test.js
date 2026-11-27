@@ -28,7 +28,9 @@ function fixture() {
     first: async () => db.prepare(sql).get(...binds) ?? null,
     run: async () => ({ success: true, meta: db.prepare(sql).run(...binds) }),
   });
-  const env = { INGEST_API_TOKEN: "test-ingest", DB: {
+  // Development-site fields are part of the keyed API tier (anonymous callers
+  // get slim rows), so these tests call the API with a key unless told not to.
+  const env = { INGEST_API_TOKEN: "test-ingest", API_KEYS: "test-api-key", DB: {
     prepare: sql => wrap(sql),
     batch: async statements => {
       db.exec("BEGIN");
@@ -39,8 +41,11 @@ function fixture() {
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     },
   } };
-  const fetch = async (path, options = {}) => {
+  const fetch = async (path, { anonymous = false, ...options } = {}) => {
     const pending = [];
+    if (!anonymous && (path.startsWith("/api/") || path === "/mcp")) {
+      options = { ...options, headers: { ...(options.headers || {}), "X-API-Key": "test-api-key" } };
+    }
     const response = await worker.fetch(new Request(`https://buildingseattle.com${path}`, options), env, { waitUntil: p => pending.push(p) });
     await Promise.allSettled(pending);
     return response;
@@ -72,6 +77,12 @@ test("matched site data preserves permit grain, pagination, values and raw refer
     const page = await (await fetch("/api/permits?per_page=1&page=2")).json();
     assert.equal(page.total, 3);
     assert.equal(page.results.length, 1);
+    // Anonymous callers get the slim sample without enrichment fields.
+    const anonymous = await (await fetch("/api/permits", { anonymous: true })).json();
+    assert.equal(anonymous.access, "anonymous");
+    assert.equal(anonymous.results.length, 3);
+    assert.equal("development_site_id" in anonymous.results[0], false);
+    assert.equal("parcel_number" in anonymous.results[0], false);
   } finally { db.close(); }
 });
 

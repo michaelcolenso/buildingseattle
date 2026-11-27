@@ -104,9 +104,12 @@ function createEnv() {
   const alertSubscriptions = [];
   const sentEmails = [];
   const ingestLogs = [];
+  const suppressions = new Set();
+  const rateLimitHits = new Map();
+  const deliveries = new Map();
 
   return {
-    _state: { permits, contractors, statusChanges, leads, alertSubscriptions, sentEmails, ingestLogs },
+    _state: { permits, contractors, statusChanges, leads, alertSubscriptions, sentEmails, ingestLogs, suppressions, deliveries },
     INGEST_API_TOKEN: "test-ingest-token",
     EMAIL: {
       async send(message) {
@@ -272,14 +275,22 @@ function createEnv() {
                 : null;
             }
 
+            if (sql.includes("INSERT INTO request_rate_limits")) {
+              const key = `${params[0]}|${params[1]}`;
+              rateLimitHits.set(key, (rateLimitHits.get(key) || 0) + 1);
+              return { hits: rateLimitHits.get(key) };
+            }
+
+            if (sql.includes("FROM alert_email_suppressions WHERE email = ?")) {
+              return suppressions.has(params[0]) ? { suppressed: 1 } : null;
+            }
+
             if (sql.includes("FROM permit_alert_subscriptions") && sql.includes("lower(email) = ?")) {
-              return (
-                alertSubscriptions.find(
-                  (subscription) =>
-                    subscription.email.toLowerCase() === String(params[0]).toLowerCase() &&
-                    subscription.permit_number === params[1],
-                ) || null
+              const subscription = alertSubscriptions.find(
+                (item) => item.email.toLowerCase() === String(params[1]).toLowerCase() && item.permit_number === params[2],
               );
+              // The mock treats any stored confirmation as outside the resend cooldown.
+              return subscription ? { ...subscription, recently_sent: 0 } : null;
             }
 
             if (sql.includes("FROM permit_alert_subscriptions") && sql.includes("confirmation_token_hash = ?")) {
@@ -409,17 +420,42 @@ function createEnv() {
             }
 
             if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("status = 'unsubscribed'")) {
-              const subscription = alertSubscriptions.find((item) => item.id === params[0]);
-              if (!subscription) return { success: true, meta: { changes: 0 } };
-              subscription.status = "unsubscribed";
-              subscription.unsubscribed_at = "2026-06-12 08:02:00";
+              const matches = sql.includes("lower(email) = ?")
+                ? alertSubscriptions.filter((item) => item.email.toLowerCase() === params[0])
+                : alertSubscriptions.filter((item) => item.id === params[0]);
+              for (const subscription of matches) {
+                subscription.status = "unsubscribed";
+                subscription.unsubscribed_at = "2026-06-12 08:02:00";
+              }
+              return { success: true, meta: { changes: matches.length } };
+            }
+
+            if (sql.includes("DELETE FROM request_rate_limits")) {
+              return { success: true, meta: { changes: 0 } };
+            }
+
+            if (sql.includes("INSERT INTO alert_email_suppressions")) {
+              suppressions.add(params[0]);
               return { success: true, meta: { changes: 1 } };
             }
 
-            if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("last_notified_change_id = ?")) {
+            if (sql.includes("INSERT INTO permit_alert_deliveries")) {
+              const key = `${params[0]}:${params[1]}`;
+              const existing = deliveries.get(key);
+              if (existing && existing !== "failed") return { success: true, meta: { changes: 0 } };
+              deliveries.set(key, "sending");
+              return { success: true, meta: { changes: 1 } };
+            }
+
+            if (sql.includes("UPDATE permit_alert_deliveries")) {
+              deliveries.set(`${params[0]}:${params[1]}`, sql.includes("status = 'sent'") ? "sent" : "failed");
+              return { success: true, meta: { changes: 1 } };
+            }
+
+            if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("last_notified_change_id = MAX(")) {
               const subscription = alertSubscriptions.find((item) => item.id === params[2]);
               if (!subscription) return { success: true, meta: { changes: 0 } };
-              subscription.last_notified_change_id = params[0];
+              subscription.last_notified_change_id = Math.max(subscription.last_notified_change_id || 0, params[0]);
               subscription.last_notified_at = "2026-06-12 08:03:00";
               return { success: true, meta: { changes: 1 } };
             }
@@ -658,7 +694,20 @@ async function subscribeAndConfirm(env, permitNumber = "PERM123", email = "reade
 
   const confirmationEmail = env._state.sentEmails.at(-1);
   const confirmationUrl = confirmationEmail.text.match(/https?:\/\/\S+\/alerts\/confirm\?token=[^\s]+/)[0];
-  const confirmResponse = await worker.fetch(new Request(confirmationUrl), env, createCtx());
+  // GET only shows the confirmation page; the button's POST activates it.
+  const pageResponse = await worker.fetch(new Request(confirmationUrl), env, createCtx());
+  assert.equal(pageResponse.status, 200);
+  assert.match(await pageResponse.text(), /<form method="post" action="\/alerts\/confirm"/);
+  const token = new URL(confirmationUrl).searchParams.get("token");
+  const confirmResponse = await worker.fetch(
+    new Request("http://example.com/alerts/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }).toString(),
+    }),
+    env,
+    createCtx(),
+  );
   assert.equal(confirmResponse.status, 200);
 }
 
@@ -2082,10 +2131,13 @@ test("lead modals expose accessible dialog markup and associated labels", async 
   // Native <dialog> opened with showModal() supplies the dialog role, modality,
   // an inert background and Escape handling, so no hand-rolled ARIA is needed.
   assert.match(html, /<dialog id="leadModal"[^>]*aria-labelledby="leadModalTitle"/);
-  assert.match(html, /leadModal\.showModal\(\)/);
-  assert.match(html, /addEventListener\('close', function\(\) \{[^}]*leadTrigger\.focus\(\)/);
-  assert.match(html, /aria-describedby', 'lead-error'/);
-  assert.doesNotMatch(html, /alert\(err\.message/);
+  // The dialog behaviour lives in a static script (the CSP forbids inline ones).
+  assert.match(html, /<script src="\/brand\/permit-alert\.js" defer><\/script>/);
+  const script = readFileSync(new URL("../public/brand/permit-alert.js", import.meta.url), "utf8");
+  assert.match(script, /leadModal\.showModal\(\)/);
+  assert.match(script, /addEventListener\('close', function \(\) \{[^}]*leadTrigger\.focus\(\)/);
+  assert.match(script, /aria-describedby', 'lead-error'/);
+  assert.doesNotMatch(script, /alert\(err\.message/);
   assert.match(html, /<iframe title="Map of /);
   assert.match(html, /aria-label="Close dialog"/);
   assert.match(html, /<label for="lead-email">Email \*<\/label>/);
@@ -2098,7 +2150,8 @@ test("permit alert form requests only an email and posts to the alert subscripti
 
   assert.equal(response.status, 200);
   assert.match(html, /Email Me Permit Updates/i);
-  assert.match(html, /fetch\('\/alerts\/subscribe'/);
+  assert.match(html, /data-permit-number="PERM123"/);
+  assert.match(readFileSync(new URL("../public/brand/permit-alert.js", import.meta.url), "utf8"), /fetch\('\/alerts\/subscribe'/);
   assert.doesNotMatch(html, /name="company"/);
   assert.doesNotMatch(html, /name="interest"/);
   assert.match(html, /Check your inbox to confirm/i);
@@ -2165,8 +2218,22 @@ test("unsubscribe link deactivates only the selected permit alert", async () => 
   const firstSubscription = env._state.alertSubscriptions.find(
     (subscription) => subscription.permit_number === "PERM123",
   );
-  const response = await worker.fetch(
+  // A plain GET (link scanner, prefetch) only shows the confirmation page.
+  const page = await worker.fetch(
     new Request(`http://example.com/alerts/unsubscribe?token=${firstSubscription.unsubscribe_token}`),
+    env,
+    createCtx(),
+  );
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<form method="post" action="\/alerts\/unsubscribe\?token=/);
+  assert.equal(firstSubscription.status, "active");
+
+  const response = await worker.fetch(
+    new Request(`http://example.com/alerts/unsubscribe?token=${firstSubscription.unsubscribe_token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: firstSubscription.unsubscribe_token }).toString(),
+    }),
     env,
     createCtx(),
   );
@@ -3030,8 +3097,11 @@ test("global nav hamburger exposes and toggles its expanded state", async () => 
   }), createCtx());
   const html = await response.text();
   assert.match(html, /aria-controls="global-nav-links"/);
-  assert.match(html, /setAttribute\('aria-expanded',String\(/);
-  assert.match(html, /event\.key==='Escape'/);
+  // Toggle and Escape handling live in the hashed theme boot script, not in
+  // inline on* attributes (the CSP sets script-src-attr 'none').
+  assert.match(html, /setAttribute\("aria-expanded",String\(n\.classList\.toggle\("open"\)\)\)/);
+  assert.match(html, /e\.key!=="Escape"/);
+  assert.doesNotMatch(html, / on(click|keydown)=/);
   assert.match(html, /scroll-padding-block-start: 5rem/);
 });
 
