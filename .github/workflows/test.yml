@@ -18,16 +18,29 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # The tests use node:sqlite, unflagged from Node 22.13 (review S9). Set
+      # NODE_VERSION to the same line in Cloudflare Workers Builds.
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23'
+
+      - name: Install Node dependencies (wrangler, from the lockfile)
+        run: npm ci
 
       - name: Check worker.js syntax
         run: node --check worker.js
 
       - name: Run node tests
         run: node --test "tests/**/*.test.js"
+
+      # Bundles the Worker exactly as a deploy would (esbuild resolves every
+      # import and the wrangler.toml bindings are validated) without uploading
+      # anything or needing Cloudflare credentials. It does not start the
+      # Worker, so the no-non-function-exports rule is still caught only by
+      # `wrangler dev` / the runtime.
+      - name: Check the Worker bundles
+        run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker-bundle"
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0

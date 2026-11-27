@@ -62,3 +62,13 @@ def test_workflows_parse_as_yaml():
     for name, text in workflow_texts().items():
         data = yaml.safe_load(text)
         assert data.get("jobs"), name
+
+
+def test_test_workflow_pins_node_for_node_sqlite_and_checks_the_bundle():
+    """Review S9: node:sqlite needs Node >= 22.13; a dry-run deploy proves the bundle builds."""
+    text = workflow_texts()["test.yml"]
+    version = re.search(r"node-version:\s*'([^']+)'", text).group(1)
+    assert version == ">=22.13.0 <23", version
+    assert "npm ci" in text
+    assert text.index("npm ci") < text.index("wrangler deploy --dry-run")
+    assert re.search(r"npx wrangler deploy --dry-run --outdir \S+", text)
