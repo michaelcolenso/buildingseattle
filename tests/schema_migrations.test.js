@@ -115,3 +115,38 @@ test("the permit list query is served by an index, with no full scan or temp sor
   }
   db.close();
 });
+
+test("migration headers never tell anyone to apply them with d1 execute --file (S1)", () => {
+  for (const name of migrationFiles()) {
+    for (const line of read(`migrations/${name}`).split("\n")) {
+      if (!/execute\b.*--file/.test(line)) continue;
+      // The only allowed mention is the warning against it.
+      assert.match(line, /\bNever\b|\bnever\b/, `${name}: "${line.trim()}"`);
+    }
+  }
+});
+
+test("no numbered migration adds an index that duplicates an existing one (S1)", () => {
+  // The baseline mirrors production as-is (it has its own historical
+  // duplicates); every index added after it must cover new columns.
+  const db = new DatabaseSync(":memory:");
+  const keys = () => {
+    const out = new Map();
+    for (const [table, list] of Object.entries(describe(db).indexes)) {
+      for (const index of list) out.set(index.name, `${table}:${index.partial}:${JSON.stringify(index.columns)}`);
+    }
+    return out;
+  };
+  for (const name of migrationFiles()) {
+    const before = keys();
+    db.exec(read(`migrations/${name}`));
+    if (name === "0000_baseline.sql") continue;
+    const existing = new Map([...before].map(([index, key]) => [key, index]));
+    for (const [index, key] of keys()) {
+      if (before.has(index)) continue;
+      assert.ok(!existing.has(key), `${name}: ${index} duplicates ${existing.get(key)}`);
+      existing.set(key, index);
+    }
+  }
+  db.close();
+});

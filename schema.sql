@@ -413,8 +413,7 @@ ON basis_reset_events(source_url, event_type, event_date);
 
 -- Security hardening tables (migrations/0002_security_hardening.sql).
 -- Security hardening (audit A1, A3, A7, A12, B3, F2, F10, F11).
---   npx wrangler d1 execute buildingseattle --remote --file migrations/20261127_security_hardening.sql
--- Every statement is idempotent.
+-- Applied with `wrangler d1 migrations apply`. Every statement is idempotent.
 
 -- Fixed-window counters for the D1 rate-limit fallback (alerts, leads).
 -- bucket_key holds a scope plus a truncated sha256 of the IP or email, never
@@ -465,4 +464,3 @@ ALTER TABLE permits ADD COLUMN status_raw TEXT;
 ALTER TABLE permits ADD COLUMN source_updated_at TEXT;
 ALTER TABLE ingest_logs ADD COLUMN cursor TEXT;
 ALTER TABLE ingest_logs ADD COLUMN records_unchanged INTEGER DEFAULT 0;
-CREATE INDEX IF NOT EXISTS idx_ingest_logs_run_type_start ON ingest_logs(run_type, status, start_time);

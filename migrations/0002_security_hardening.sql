@@ -1,6 +1,8 @@
 -- Security hardening (audit A1, A3, A7, A12, B3, F2, F10, F11).
--- Apply once, BEFORE deploying the worker that uses these tables:
---   npx wrangler d1 execute buildingseattle --remote --file migrations/0002_security_hardening.sql
+-- Apply BEFORE merging/deploying the worker that uses these tables, with
+--   npx wrangler d1 migrations apply buildingseattle --remote
+-- (see docs/deploy-runbook.md). Never apply it with `d1 execute --file`: that
+-- skips the d1_migrations record, so `migrations apply` would run it again.
 -- Every statement is idempotent.
 
 -- Fixed-window counters for the D1 rate-limit fallback (alerts, leads).
