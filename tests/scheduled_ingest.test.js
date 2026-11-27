@@ -379,3 +379,15 @@ test("ordinary daily churn is not mistaken for a replace", async () => {
   assert.equal(db.prepare("SELECT status FROM ingest_logs WHERE run_type = 'scheduled' ORDER BY id DESC").get().status, "success");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM permits").get().n, 30);
 });
+
+test("the scheduled ingest sends env.SOCRATA_APP_TOKEN as X-App-Token (N13)", async () => {
+  const db = openDatabase();
+  logRun(db, "full_sweep", "2026-11-26 13:00:00");
+  const feed = fakeSocrata([feedRow(1)]);
+  const headers = [];
+  const fetchImpl = async (url, init) => { headers.push(init?.headers || {}); return feed.fetchImpl(url); };
+  const env = { ...createEnv(db), SOCRATA_APP_TOKEN: "app-token" };
+  await runScheduledIngest(env, { ...fast, fetchImpl });
+  assert.ok(headers.length > 0);
+  assert.ok(headers.every((h) => h["X-App-Token"] === "app-token"));
+});

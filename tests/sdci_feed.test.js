@@ -244,3 +244,12 @@ test("detectFullReplace flags one dominant :updated_at far past the watermark, n
   // Dominant stamp right at the watermark (within the gap).
   assert.equal(detectFullReplace(rows(10, "2026-11-27T11:30:00.000Z"), { since }, limits), null);
 });
+
+test("fetchFeedPage sends X-App-Token only when a token is configured (N13)", async () => {
+  const seen = [];
+  const fetchImpl = async (_url, init) => { seen.push(init.headers); return response(200, []); };
+  await fetchFeedPage("https://example.test", { fetchImpl, log: quiet, appToken: "tok123" });
+  await fetchFeedPage("https://example.test", { fetchImpl, log: quiet });
+  assert.equal(seen[0]["X-App-Token"], "tok123");
+  assert.equal("X-App-Token" in seen[1], false);
+});

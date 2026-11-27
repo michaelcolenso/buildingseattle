@@ -8903,7 +8903,13 @@ async function feedCoverageFloor(env) {
 export async function runScheduledIngest(env, options = {}) {
   const startTime = new Date();
   const limits = { ...FEED_LIMITS, ...(options.limits || {}) };
-  const fetchOptions = { fetchImpl: options.fetchImpl || fetch, sleep: options.sleep, attempts: limits.fetchAttempts, backoffMs: limits.backoffMs };
+  const fetchOptions = {
+    fetchImpl: options.fetchImpl || fetch,
+    sleep: options.sleep,
+    attempts: limits.fetchAttempts,
+    backoffMs: limits.backoffMs,
+    appToken: env.SOCRATA_APP_TOKEN || null,
+  };
   const totals = { added: 0, updated: 0, unchanged: 0, contractors: 0, unknownStatuses: new Map() };
   let incrementalLogged = false;
 

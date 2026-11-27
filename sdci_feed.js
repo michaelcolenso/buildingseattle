@@ -250,14 +250,17 @@ export async function fetchFeedPage(url, {
   attempts = FEED_LIMITS.fetchAttempts,
   backoffMs = FEED_LIMITS.backoffMs,
   log = console,
+  appToken = null,
 } = {}) {
+  // A Socrata app token (env.SOCRATA_APP_TOKEN) gets a much higher throttle
+  // than anonymous calls (review N13). It is optional and never logged.
+  const headers = { Accept: "application/json", "User-Agent": "BuildingSeattle-Worker/1.1" };
+  if (appToken) headers["X-App-Token"] = String(appToken);
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     let response;
     try {
-      response = await fetchImpl(url, {
-        headers: { Accept: "application/json", "User-Agent": "BuildingSeattle-Worker/1.1" },
-      });
+      response = await fetchImpl(url, { headers });
     } catch (error) {
       lastError = new Error(`Seattle Open Data request failed: ${error?.message || error}`);
     }
