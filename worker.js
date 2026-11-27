@@ -37,10 +37,15 @@ import { PERMIT_UPSERT_SQL, permitUpsertBinds, STATUS_CHANGE_INSERT_SQL, statusC
 import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
+import {
+  DATASET_RELEASE, SITE_CONTACT_EMAIL, FOOTER_LINKS,
+  countLabel, formatCount, smartTitleCase, displayName, statusLabel, isClosedPermitStatus, roleLabel, roleList,
+  formatCalendarDate, formatMonthYear, latestSourceEventDate, renderDatasetCta, renderAlertCta,
+} from "./site_content.js";
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadarBody } from "./basis_reset_routes.js";
 import {
   developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
-  ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, developmentSitesArePublic,
+  ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, DEVELOPMENT_SITE_FIELDS, developmentSitesArePublic,
 } from "./development_sites.js";
 import {
   ALERT_CONFIRMATION_TTL_DAYS, ALERT_EMAIL_DAILY_LIMIT, ALERT_IP_HOURLY_LIMIT, ALERT_RESEND_COOLDOWN_MINUTES,
@@ -97,7 +102,7 @@ const SECURITY_HEADERS = {
 // mobile (cold Worker start + D1 query + 900KB script transfer per hit).
 // Keyed by URL with a version prefix: bump HTML_CACHE_VERSION after any
 // template change so stale entries are bypassed.
-const HTML_CACHE_VERSION = "v10";
+const HTML_CACHE_VERSION = "v11";
 const HTML_CACHE_EXCLUDED_PREFIXES = [
   "/api/", "/admin", "/ingest/", "/leads", "/alerts",
   "/social/", "/icons/", "/.well-known/", "/openapi", "/api-docs",
@@ -405,6 +410,16 @@ export default {
       if (["/contractors", "/neighborhoods", "/projects", "/addresses"].includes(path)) {
         ctx.waitUntil(logPageView(request, env, path));
         return secure(await renderEntityHubPage(path.slice(1), env, request));
+      }
+
+      if ((path === "/alerts" || path === "/alerts/") && request.method === "GET") {
+        ctx.waitUntil(logPageView(request, env, "/alerts"));
+        return secure(renderAlertsLandingPage());
+      }
+
+      if (path === "/privacy" || path === "/privacy/") {
+        ctx.waitUntil(logPageView(request, env, "/privacy"));
+        return secure(renderPrivacyPage());
       }
 
       if (path === "/about" || path === "/about/") {
@@ -821,25 +836,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-// Display helper: SDCI source text arrives in ALL CAPS ("2704 S HINDS ST,
-// SEATTLE, WA"). Render title case for readability while keeping directionals,
-// unit types, and common business suffixes uppercase.
-const TITLECASE_KEEP_UPPER = new Set(["NE", "NW", "SE", "SW", "N", "S", "E", "W", "LLC", "LLP", "INC", "CO", "USA", "US", "WA", "ADU", "DADU", "HVAC", "IID", "IV", "III", "II"]);
-function countLabel(count, singular, plural) {
-  const n = Number(count) || 0;
-  const word = new Intl.PluralRules("en-US").select(n) === "one" ? singular : plural;
-  return `${n.toLocaleString("en-US")} ${word}`;
-}
-
-function smartTitleCase(value) {
-  return String(value ?? "")
-    .toLowerCase()
-    .replace(/\b[a-z][a-z0-9&.'/()-]*/g, (word) => {
-      const upper = word.toUpperCase();
-      if (TITLECASE_KEEP_UPPER.has(upper)) return upper;
-      return word.replace(/(^|[\s/('-])([a-z])/g, (m, p, c) => p + c.toUpperCase());
-    });
-}
+// countLabel, smartTitleCase and displayName live in site_content.js.
 
 function truncateMetaDescription(value, maxLength = 165) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -1228,6 +1225,8 @@ function renderNav(activePage) {
     { href: "/permits", label: "Permits", keys: ["permits"] },
     { href: "/contractors", label: "Contractors", keys: ["contractors"] },
     { href: "/neighborhoods", label: "Neighborhoods", keys: ["neighborhoods", "explore"] },
+    { href: "/projects", label: "Projects", keys: ["projects"] },
+    { href: "/addresses", label: "Addresses", keys: ["addresses"] },
     { href: "/insights", label: "Insights", keys: ["insights"] },
     { href: "/data", label: "Data", keys: ["data"] },
     { href: "/api-docs", label: "API", keys: ["api"] },
@@ -1248,11 +1247,14 @@ function renderNav(activePage) {
     </nav>`;
 }
 
+// One footer for every template (the homepage included); the link list lives
+// in site_content.js so the privacy and alerts pages can't drop off one copy.
 function renderFooter() {
+  const links = FOOTER_LINKS.map(({ href, label }) => `<a href="${href}">${label}</a>`).join(" &middot; ");
   return `<footer class="global-footer">
       <div class="global-footer-row">
         <div>Building Seattle &mdash; Seattle construction intelligence</div>
-        <div><a href="/about">About</a> &middot; <a href="/contractors">Contractors</a> &middot; <a href="/neighborhoods">Neighborhoods</a> &middot; <a href="/projects">Projects</a> &middot; <a href="/addresses">Addresses</a> &middot; <a href="/insights">Insights</a> &middot; <a href="/data">Dataset</a> &middot; <a href="/methodology">Methodology</a> &middot; <a href="/api-docs">API</a> &middot; <a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></div>
+        <nav aria-label="Footer navigation">${links} &middot; <a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav>
       </div>
     </footer>`;
 }
@@ -1290,13 +1292,17 @@ function parseUtcDate(value) {
 function formatDate(value, includeTime = false) {
   const date = parseUtcDate(value);
   if (!date) return "Unavailable";
+  // A date-only value ("2026-09-18") is a calendar day, not UTC midnight:
+  // formatting it in Pacific time printed the day before.
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(String(value).trim());
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
-    year: includeTime ? undefined : "numeric",
+    year: "numeric",
     hour: includeTime ? "numeric" : undefined,
     minute: includeTime ? "2-digit" : undefined,
-    timeZone: "America/Los_Angeles",
+    timeZoneName: includeTime ? "short" : undefined,
+    timeZone: dateOnly && !includeTime ? "UTC" : "America/Los_Angeles",
   }).format(date);
 }
 function humanize(value, fallback = "Permit") {
@@ -1330,6 +1336,13 @@ async function dbAll(env, sql, binds = []) {
   }
 }
 
+// Source freshness, one definition for every "latest permit event" and
+// "updated through" label: the newest applied/issued/completed date SDCI
+// reports. Row-touch timestamps (updated_at, created_at) are excluded because
+// every upsert bumps them, so they showed the render date, not source activity.
+const LATEST_SOURCE_EVENT_SQL =
+  "NULLIF(MAX(MAX(COALESCE(completed_date, ''), COALESCE(issued_date, ''), COALESCE(applied_date, ''))), '')";
+
 export async function getCanonicalStats(env) {
   const [stats, ingest] = await Promise.all([
     dbFirst(
@@ -1341,7 +1354,7 @@ export async function getCanonicalStats(env) {
          COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL THEN contractor_id END) AS contractors,
          COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL AND lower(COALESCE(status,'')) = 'active' THEN contractor_id END) AS active_contractors,
          COALESCE(SUM(${countedValueSql("permits")}), 0) AS total_value,
-         MAX(COALESCE(issued_date, applied_date)) AS latest_record_date
+         ${LATEST_SOURCE_EVENT_SQL} AS latest_record_date
        FROM permits`,
     ),
     dbFirst(
@@ -1396,13 +1409,16 @@ export async function buildHomeSnapshot(env) {
     dbAll(
       env,
       `/* homepage:active-addresses */
-       SELECT p.address AS label, COUNT(*) AS active_permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
+       SELECT COALESCE(a.display_address, p.address) AS label,
+              CASE WHEN (SELECT COUNT(*) FROM permits ap WHERE ap.address_id = a.id) >= ${ADDRESS_MIN_INDEXABLE_PERMITS} THEN a.slug END AS slug,
+              COUNT(*) AS active_permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p
+       LEFT JOIN addresses a ON a.id = p.address_id
        WHERE lower(COALESCE(p.status,'')) = 'active'
          AND p.address IS NOT NULL AND trim(p.address) != ''
          AND NOT EXISTS (SELECT 1 FROM addresses pa WHERE pa.id = p.address_id AND NOT ${realAddressSql("pa")})
-       GROUP BY p.address
-       ORDER BY active_permits DESC, total_value DESC, p.address ASC
+       GROUP BY COALESCE('id:' || a.id, p.address)
+       ORDER BY active_permits DESC, total_value DESC, label ASC
        LIMIT 5`,
     ),
     dbAll(
@@ -1420,12 +1436,15 @@ export async function buildHomeSnapshot(env) {
     dbAll(
       env,
       `/* homepage:neighborhoods-30d */
-       SELECT p.neighborhood AS label, COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
+       SELECT COALESCE(n.name, p.neighborhood) AS label, n.slug AS slug,
+              COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p
-       WHERE p.neighborhood IS NOT NULL AND ${realNeighborhoodSql("p.neighborhood")}
+       LEFT JOIN address_neighborhoods an ON an.address_id = p.address_id
+       LEFT JOIN neighborhoods n ON n.id = an.neighborhood_id
+       WHERE ${realNeighborhoodSql("COALESCE(n.name, p.neighborhood)")}
          AND date(COALESCE(p.issued_date, p.applied_date)) >= date('now', '-30 days')
-       GROUP BY p.neighborhood
-       ORDER BY permits DESC, total_value DESC, p.neighborhood ASC
+       GROUP BY COALESCE(n.slug, p.neighborhood)
+       ORDER BY permits DESC, total_value DESC, label ASC
        LIMIT 5`,
     ),
   ]);
@@ -1468,23 +1487,25 @@ function renderRanking(rows, type) {
   return rows
     .map((row, index) => {
       const rawLabel = row.label || "Unclassified";
-      const label = type === "address" ? smartTitleCase(rawLabel) : rawLabel;
+      const label = type === "neighborhood" ? rawLabel : displayName(rawLabel);
+      // Rank rows link the indexable entity page; the noindexed /permits
+      // search is only a fallback for rows the entity graph hasn't linked.
       let href = "/permits";
       let metric = "";
       if (type === "address") {
-        href = `/permits?q=${encodeURIComponent(rawLabel)}`;
-        metric = `${Number(row.active_permits) || 0} active permits`;
+        href = row.slug ? `/address/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(rawLabel)}`;
+        metric = countLabel(row.active_permits, "active permit", "active permits");
       } else if (type === "contractor") {
-        href = row.slug ? `/contractor/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(label)}`;
-        metric = `${Number(row.permits) || 0} new active permits`;
+        href = row.slug ? `/contractor/${encodeURIComponent(row.slug)}` : `/permits?q=${encodeURIComponent(rawLabel)}`;
+        metric = countLabel(row.permits, "new active permit", "new active permits");
       } else {
-        href = `/permits?neighborhood=${encodeURIComponent(label)}`;
-        metric = `${Number(row.permits) || 0} recent permits`;
+        href = row.slug ? `/neighborhood/${encodeURIComponent(row.slug)}` : `/permits?neighborhood=${encodeURIComponent(rawLabel)}`;
+        metric = countLabel(row.permits, "recent permit", "recent permits");
       }
-      return `<a class="rank-row" href="${href}">
+      return `<a class="rank-row" href="${escapeHtml(href)}">
         <span class="rank-index">${index + 1}</span>
         <span class="rank-copy"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(metric)}</small></span>
-        <span class="rank-value">${escapeHtml(compactMetricMoney(row.total_value || 0))}<small>declared</small></span>
+        <span class="rank-value">${escapeHtml(compactMetricMoney(row.total_value || 0))}<small>permit value</small></span>
       </a>`;
     })
     .join("");
@@ -1572,38 +1593,21 @@ export function renderHomepage(snapshot) {
   <meta name="twitter:image" content="${BASE_URL}/social/insight.png">
   <meta name="twitter:image:alt" content="Building Seattle — Seattle construction permit data">
   <script type="application/ld+json">${structuredData}</script>
+  ${renderDesignTokens()}
   <style>
     .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:var(--brand-navy);color:#fff;padding:10px 16px;border-radius:0 0 10px 0;font-weight:800;text-decoration:none}.skip-link:focus{left:0}
     :root{--primary:var(--ink);--bg:var(--surface);--bg-alt:var(--surface-alt);--panel:var(--surface-raised);--text:var(--ink);--muted:var(--ink-muted);--border:var(--line);--soft:var(--line-subtle);--max:1200px;color-scheme:light}[data-theme="dark"]{color-scheme:dark}
-    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.site-header{position:sticky;top:0;z-index:20;background:var(--header-bg,rgba(255,255,255,.96));border-bottom:1px solid var(--soft);backdrop-filter:blur(12px)}.header-inner{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;color:var(--ink)}.brand img{display:block;height:24px;width:auto}.nav{display:flex;align-items:center;gap:22px;font-size:14px;font-weight:700}.nav-toggle{display:none;position:relative}.nav-toggle>summary{list-style:none;cursor:pointer;font-size:20px;line-height:1;padding:9px 12px;border:1px solid var(--border);border-radius:9px;color:var(--ink);background:var(--panel)}.nav-toggle>summary::-webkit-details-marker{display:none}.nav-toggle[open]>summary{background:var(--bg-alt)}.mobile-nav{position:absolute;right:0;top:calc(100% + 8px);display:flex;flex-direction:column;gap:2px;min-width:210px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:8px;box-shadow:0 12px 32px rgba(11,41,69,.14);z-index:40}.mobile-nav a{text-decoration:none;color:var(--ink);font-weight:700;font-size:14px;padding:11px 12px;border-radius:8px}.mobile-nav a:hover{background:var(--bg-alt)}.nav a{text-decoration:none;color:var(--ink-secondary)}.nav a:hover{text-decoration:underline;text-underline-offset:4px}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:var(--link);font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:var(--ink-secondary)}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .bs-metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .bs-metric:first-child{border-top-width:3px;border-top-color:var(--ink)}.hero-aside .bs-metric__value{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.bs-metric:hover .bs-metric__value{color:var(--accent)}.bs-metric__value{font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05}.freshness{max-width:820px;margin:18px 0 0;flex-wrap:nowrap;align-items:flex-start}.freshness>span{flex:1;min-width:0}.freshness>.bs-icon{margin-top:1px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:var(--ink-secondary)}.text-link{font-weight:800;color:var(--link);text-underline-offset:4px;white-space:nowrap}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:var(--ink);font-size:16px}.market-card p{margin:5px 0 0;color:var(--ink-secondary);font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:var(--ink-muted);font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:13px}.rank-copy small,.rank-value small{display:block;color:var(--ink-muted);font-size:11px;font-weight:600}.rank-value{text-align:right;color:var(--ink);font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:var(--ink);font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:var(--ink-secondary);font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid var(--ink);padding:4px 0 4px 18px;color:var(--ink-secondary)}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}.trust-meta dd{margin:4px 0 0;font-weight:750;color:var(--ink)}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:var(--ink)}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:var(--ink-secondary)}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:var(--ink-secondary)}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:var(--brand-navy);color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:var(--brand-navy);font-weight:850;text-decoration:none;white-space:nowrap}.site-footer{padding:30px 0 42px}.footer-inner{display:flex;justify-content:space-between;gap:24px;align-items:start}.footer-brand{font-weight:850;color:var(--ink)}.footer-nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px 18px;font-size:13px}.footer-nav a{color:var(--ink-secondary);text-underline-offset:3px}
-    @media(max-width:780px){.nav{display:none}.nav-toggle{display:block}.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form .bs-btn{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.footer-inner{display:block}.footer-nav{justify-content:flex-start;margin-top:16px}.task{min-height:auto}.rank-copy strong{white-space:normal}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:80px}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);line-height:1.55}a{color:inherit}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}button,input{font:inherit}.container{width:min(var(--max),calc(100% - 32px));margin:0 auto}.hero{padding:40px 0 32px;border-bottom:1px solid var(--soft)}.eyebrow,.section-kicker{margin:0 0 10px;color:var(--link);font-size:12px;line-height:1.2;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.hero h1{max-width:850px;margin:0;color:var(--primary);font-size:clamp(2.2rem,5.4vw,3.6rem);line-height:1;letter-spacing:-.04em;text-wrap:balance}.hero-copy{max-width:710px;margin:20px 0 0;font-size:clamp(1rem,2.5vw,1.18rem);color:var(--ink-secondary)}.search-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;max-width:820px;margin-top:28px}.search-form label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.hero-subactions{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:14px;font-weight:750}.hero-subactions a{text-underline-offset:4px}.hero-grid{display:grid;gap:8px}.hero-aside{margin-top:6px}.metric-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:24px;max-width:820px}@media(min-width:960px){.hero-grid{grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:56px;align-items:start}.hero-aside{margin-top:6px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--bg-alt)}.hero-aside .metric-strip{grid-template-columns:1fr;gap:18px;margin-top:0;max-width:none}.hero-aside .bs-metric{border-top-width:1px;border-top-color:var(--border);padding-top:14px}.hero-aside .bs-metric:first-child{border-top-width:3px;border-top-color:var(--ink)}.hero-aside .bs-metric__value{font-size:2rem}.hero-aside .freshness{margin-top:18px;padding-top:14px;border-top:1px solid var(--soft)}}.bs-metric:hover .bs-metric__value{color:var(--accent)}.bs-metric__value{font-size:clamp(1.25rem,5vw,1.85rem);line-height:1.05}.freshness{max-width:820px;margin:18px 0 0;flex-wrap:nowrap;align-items:flex-start}.freshness>span{flex:1;min-width:0}.freshness>.bs-icon{margin-top:1px}.freshness a{font-weight:750;text-underline-offset:3px}.section{padding:52px 0;border-bottom:1px solid var(--soft)}.section.alt{background:var(--bg-alt)}.section-head{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:22px}.section h2{margin:0;color:var(--primary);font-size:clamp(1.75rem,5vw,2.6rem);line-height:1.05;letter-spacing:-.035em}.section-deck{max-width:680px;margin:8px 0 0;color:var(--ink-secondary)}.text-link{font-weight:800;color:var(--link);text-underline-offset:4px;white-space:nowrap}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.market-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}.market-card header{padding:18px 18px 14px;border-bottom:1px solid var(--soft)}.market-card h3{margin:0;color:var(--ink);font-size:16px}.market-card p{margin:5px 0 0;color:var(--ink-secondary);font-size:12px}.rank-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--soft);text-decoration:none}.rank-row:last-child{border-bottom:0}.rank-row:hover strong{text-decoration:underline;text-underline-offset:3px}.rank-index{color:var(--ink-muted);font-size:12px;font-weight:800}.rank-copy{min-width:0}.rank-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:13px}.rank-copy small,.rank-value small{display:block;color:var(--ink-muted);font-size:11px;font-weight:600}.rank-value{text-align:right;color:var(--ink);font-size:12px;font-weight:800}.tasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border);border-left:1px solid var(--border)}.task{min-height:146px;padding:22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-decoration:none;background:var(--panel)}.task:hover{background:var(--bg-alt)}.task strong{display:flex;justify-content:space-between;gap:16px;color:var(--ink);font-size:18px}.task p{max-width:48ch;margin:9px 0 0;color:var(--ink-secondary);font-size:14px}.trust{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:28px;align-items:start}.trust-copy{font-size:16px}.trust-copy p{max-width:70ch}.trust-note{border-left:4px solid var(--ink);padding:4px 0 4px 18px;color:var(--ink-secondary)}.trust-meta{border:1px solid var(--border);border-radius:12px;padding:20px;background:var(--panel)}.trust-meta dl{margin:0}.trust-meta div+div{border-top:1px solid var(--soft);margin-top:12px;padding-top:12px}.trust-meta dt{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-muted)}.trust-meta dd{margin:4px 0 0;font-weight:750;color:var(--ink)}.faq{border-top:1px solid var(--border)}details{border-bottom:1px solid var(--border)}summary{list-style:none;cursor:pointer;padding:18px 2px;font-weight:800;color:var(--ink)}summary::-webkit-details-marker{display:none}summary::after{content:"+";float:right;color:var(--ink-secondary)}details[open] summary::after{content:"−"}.answer{max-width:760px;padding:0 36px 20px 2px;color:var(--ink-secondary)}.alert-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:28px;border-radius:14px;background:var(--brand-navy);color:#fff}.alert-panel h2{color:#fff}.alert-panel p{max-width:680px;margin:9px 0 0;color:#CBD3DD}.alert-button{display:inline-flex;min-height:48px;align-items:center;justify-content:center;padding:0 20px;border-radius:8px;background:#fff;color:var(--brand-navy);font-weight:850;text-decoration:none;white-space:nowrap}
+    @media(max-width:780px){.hero{padding-top:40px}.search-form{grid-template-columns:1fr}.search-form .bs-btn{width:100%}.section{padding:44px 0}.section-head{display:block}.section-head .text-link{display:inline-block;margin-top:12px}.market-grid{grid-template-columns:1fr}.tasks{grid-template-columns:1fr}.trust{grid-template-columns:1fr}.alert-panel{grid-template-columns:1fr}.alert-button{width:100%}.task{min-height:auto}.rank-copy strong{white-space:normal}}
     @media(max-width:360px){.container{width:min(var(--max),calc(100% - 24px))}.metric-strip{gap:6px}.bs-metric__value{font-size:1.16rem}.bs-metric__label{font-size:11px}.hero h1{font-size:2.05rem}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-    [data-theme="dark"] .site-header{--header-bg:rgba(8,24,42,.96)}
     [data-theme="dark"] .alert-panel{box-shadow:inset 0 0 0 1px var(--line)}
-    .header-end{display:flex;align-items:center;gap:12px;flex:0 0 auto}.brand{min-width:0;flex:0 1 auto}.brand img{max-width:100%;height:auto;max-height:24px}@media(max-width:380px){.header-inner,.header-end{gap:8px}}
-    ${themeToggleStyles()}
   </style>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <header class="site-header">
-    <div class="container header-inner">
-      <a class="brand" href="/" aria-label="Building Seattle home">${themedLockup("")}</a>
-      <div class="header-end">
-      <nav class="nav" aria-label="Primary navigation">
-        <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a>
-      </nav>
-      ${themeToggleButton()}
-      <details class="nav-toggle">
-        <summary aria-label="Open navigation menu">&#9776;</summary>
-        <nav class="mobile-nav" aria-label="Mobile navigation">
-          <a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/insights">Insights</a><a href="/data">Data</a><a href="/api-docs">API</a>
-        </nav>
-      </details>
-      </div>
-    </div>
-  </header>
+  ${renderNav("home")}
+  <div class="global-nav-spacer"></div>
   <main id="main-content">
     <section class="hero">
       <div class="container hero-grid">
@@ -1622,7 +1626,7 @@ export function renderHomepage(snapshot) {
         <div class="metric-strip" aria-label="Current database metrics">
           <a class="bs-metric" href="/permits?status=active"><span class="bs-metric__value">${escapeHtml(stats.active_permits.toLocaleString("en-US"))}</span><span class="bs-metric__label">active permits</span></a>
           <a class="bs-metric" href="/contractors"><span class="bs-metric__value">${escapeHtml(stats.contractors.toLocaleString("en-US"))}</span><span class="bs-metric__label">contractors linked to permits</span></a>
-          <a class="bs-metric" href="/permits"><span class="bs-metric__value">${escapeHtml(compactMetricMoney(stats.total_value))}</span><span class="bs-metric__label">declared permit value</span></a>
+          <a class="bs-metric" href="/methodology#value"><span class="bs-metric__value">${escapeHtml(compactMetricMoney(stats.total_value))}</span><span class="bs-metric__label">counted permit value</span></a>
         </div>
         <p class="bs-source freshness">${bsIcon("source", 14)}<span>Seattle SDCI Open Data · Scheduled daily ingest · Last successful ingest <strong>${escapeHtml(ingestLabel)}</strong> · Latest permit event <strong>${escapeHtml(recordLabel)}</strong> · <a href="/methodology">Methodology</a></span></p>
         </aside>
@@ -1638,7 +1642,7 @@ export function renderHomepage(snapshot) {
 
     <section class="section alt" aria-labelledby="market-heading">
       <div class="container">
-        <div class="section-head"><div><p class="section-kicker">Market activity</p><h2 id="market-heading">Seattle construction activity</h2><p class="section-deck">Explicit rankings with the metric and timeframe shown. Declared values are source-reported permit values, not verified total project costs.</p></div></div>
+        <div class="section-head"><div><p class="section-kicker">Market activity</p><h2 id="market-heading">Seattle construction activity</h2><p class="section-deck">Explicit rankings with the metric and timeframe shown. Permit values are source-reported declared values, with a demolition valuation SDCI repeats at one address counted once. They are not verified total project costs.</p></div></div>
         <div class="market-grid">
           <article class="market-card"><header><h3>Most active addresses</h3><p>Current active permit count · all active records</p></header>${renderRanking(addresses, "address")}</article>
           <article class="market-card"><header><h3>Contractors with new active work</h3><p>Active permits applied or issued · past 30 days</p></header>${renderRanking(contractors30d, "contractor")}</article>
@@ -1667,7 +1671,7 @@ export function renderHomepage(snapshot) {
 
     <section class="section alt" aria-labelledby="trust-heading">
       <div class="container trust">
-        <div class="trust-copy"><p class="section-kicker">Source &amp; methodology</p><h2 id="trust-heading">Built from Seattle public records</h2><p>Building Seattle organizes Seattle Department of Construction and Inspections records into searchable permits, addresses, projects, contractors, and neighborhoods.</p><p class="trust-note">Permit values are <strong>declared permit values</strong>, not verified total project costs. Some project and entity relationships are inferred from source records and should be read with the methodology in mind.</p><p><a class="text-link" href="/methodology">Read the methodology →</a> &nbsp; <a class="text-link" href="/data">Explore the dataset →</a></p></div>
+        <div class="trust-copy"><p class="section-kicker">Source &amp; methodology</p><h2 id="trust-heading">Built from Seattle public records</h2><p>Building Seattle organizes Seattle Department of Construction and Inspections records into searchable permits, addresses, projects, contractors, and neighborhoods.</p><p class="trust-note">Permit values are <strong>declared permit values</strong>, not verified total project costs. Site totals count a demolition valuation SDCI repeats at one address once. Some project and entity relationships are inferred from source records and should be read with the methodology in mind.</p><p><a class="text-link" href="/methodology">Read the methodology →</a> &nbsp; <a class="text-link" href="/data">Explore the dataset →</a></p></div>
         <section class="trust-meta" aria-label="Data freshness"><dl><div><dt>Source</dt><dd>Seattle SDCI Open Data</dd></div><div><dt>Ingest cadence</dt><dd>Scheduled daily</dd></div><div><dt>Last successful ingest</dt><dd>${escapeHtml(ingestLabel)}</dd></div><div><dt>Latest permit event</dt><dd>${escapeHtml(recordLabel)}</dd></div></dl></section>
       </div>
     </section>
@@ -1681,9 +1685,9 @@ export function renderHomepage(snapshot) {
       </div></div>
     </section>
 
-    <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:var(--brand-sky)">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Building Seattle already supports free per-permit alerts with confirmation and one-click unsubscribe.</p></div><a class="alert-button" href="/permits">Find a permit to watch</a></div></div></section>
+    <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:var(--brand-sky)">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Alerts are free, start only after you confirm your email, and every message has a one-click unsubscribe.</p></div><a class="alert-button" href="/alerts">How permit alerts work</a></div></div></section>
   </main>
-  <footer class="site-footer"><div class="container footer-inner"><div><div class="footer-brand">Building Seattle</div><div style="margin-top:4px;color:var(--ink-muted);font-size:12px">Seattle construction intelligence</div></div><nav class="footer-nav" aria-label="Footer navigation"><a href="/permits">Permits</a><a href="/contractors">Contractors</a><a href="/neighborhoods">Neighborhoods</a><a href="/projects">Projects</a><a href="/addresses">Addresses</a><a href="/insights">Insights</a><a href="/data">Dataset</a><a href="/methodology">Methodology</a><a href="/about">About</a><a href="/api-docs">API</a><a href="https://buildingseattle.gumroad.com/l/seattle-permits?utm_source=buildingseattle&utm_medium=site&utm_campaign=footer" rel="noopener">Buy the dataset</a></nav></div></footer>
+  ${renderFooter()}
 </body>
 </html>`;
 }
@@ -1696,7 +1700,7 @@ function renderHomeMarkdown(snapshot) {
     "",
     `- ${stats.active_permits.toLocaleString("en-US")} active permits`,
     `- ${stats.contractors.toLocaleString("en-US")} contractors linked to permits`,
-    `- ${compactMetricMoney(stats.total_value)} declared permit value`,
+    `- ${compactMetricMoney(stats.total_value)} counted permit value (repeated demolition valuations counted once)`,
     `- Scheduled daily ingest; last successful ingest: ${stats.last_ingest_at ? formatDate(stats.last_ingest_at, true) : "Unavailable"}`,
     `- Latest permit event in the dataset: ${stats.latest_record_date ? formatDate(stats.latest_record_date) : "Unavailable"}`,
     "",
@@ -2653,13 +2657,13 @@ async function renderPermitBrowser(request, env) {
   const typeOptions = types
     .map(
       (item) =>
-        `<option value="${escapeHtml(item.type)}"${item.type === type ? " selected" : ""}>${escapeHtml(item.type)}</option>`,
+        `<option value="${escapeHtml(item.type)}"${item.type === type ? " selected" : ""}>${escapeHtml(permitTypeLabel(item.type))}</option>`,
     )
     .join("");
   const statusOptions = statuses
     .map(
       (item) =>
-        `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}</option>`,
+        `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(statusLabel(item.status))}</option>`,
     )
     .join("");
   const isFilteredView = Boolean(q || neighborhood || type || status);
@@ -2699,13 +2703,11 @@ async function renderPermitBrowser(request, env) {
   const cards = permits
     .map((permit) => {
       const value = permit.value ? `$${Number(permit.value).toLocaleString("en-US")}` : "Value not reported";
-      const issued = permit.issued_date
-        ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-        : "Date pending";
+      const issued = permit.issued_date ? formatCalendarDate(permit.issued_date) || "Date pending" : "Date pending";
       const contractor = permit.contractor_slug
-        ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name || "View contractor")}</a>`
+        ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(displayName(permit.contractor_name) || "View contractor")}</a>`
         : `<span style="color:var(--text-muted);">Contractor not linked yet</span>`;
-      const address = escapeHtml(permit.address_display || permit.address || "Unknown address");
+      const address = escapeHtml(displayName(permit.address_display || permit.address) || "Unknown address");
       const addressLink = permit.address_slug
         ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-size:0.78rem;font-weight:650;">Property history &rarr;</a>`
         : "";
@@ -2721,7 +2723,7 @@ async function renderPermitBrowser(request, env) {
             ${addressLink}
             <div class="permit-meta">${neighborhoodLabel} &bull; ${typeLabel} &bull; ${issued}</div>
           </div>
-          ${bsStatusPill(permit.status, humanize(permit.status || "new"))}
+          ${bsStatusPill(permit.status, statusLabel(permit.status || "new"))}
         </div>
         <p class="permit-description">${description}</p>
         <div class="permit-footer">
@@ -3253,6 +3255,17 @@ async function renderPermitDetail(permitNumber, env, request) {
       `
     : "";
   const primaryLeadLabel = "Email Me Permit Updates";
+  const alertsOpen = !isClosedPermitStatus(permit.status);
+  const permitAlertCard = alertsOpen
+    ? `<div class="bs-card card-full" id="permit-alerts">
+                    <div class="card-label">Status alerts</div>
+                    <p style="margin:0.5rem 0 0.75rem;font-size:0.9rem;color:var(--text-muted);">Get a free email when this permit changes status. You confirm your address first, and every email has a one-click unsubscribe. <a href="/alerts" style="color:var(--accent);">How alerts work</a> &middot; <a href="/privacy" style="color:var(--accent);">Privacy</a></p>
+                    <button type="button" class="bs-btn bs-btn--primary" data-open-lead-modal>${primaryLeadLabel}</button>
+                </div>`
+    : `<div class="bs-card card-full" id="permit-alerts">
+                    <div class="card-label">Status alerts</div>
+                    <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--text-muted);">This permit is ${escapeHtml(statusLabel(permit.status).toLowerCase())}, so it has no status changes left to email about. <a href="/alerts" style="color:var(--accent);">How permit alerts work</a></p>
+                </div>`;
   const timelineCard = renderPermitTimeline(permit);
 
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
@@ -3284,17 +3297,20 @@ async function renderPermitDetail(permitNumber, env, request) {
     .replace(/[.,\s]+$/, "");
   const streetOnly = permit.address ? entStreet(permit.address) : "";
   const titleLocation = streetOnly ? `${smartTitleCase(streetOnly)}, Seattle` : "Seattle";
-  const rawTitleHighlight =
-    permitDescriptor || rawWorkText || `${permitType} (${permit.status || "Unknown"})`;
+  const rawTitleHighlight = permitDescriptor || rawWorkText || `${permitType} permit`;
   // Keep the <title> reasonably tight so it isn't truncated in SERPs: the
   // work highlight absorbs the overflow, but the brand suffix always ships —
   // Google truncates long titles for display on its own, so a missing brand
   // suffix is worse than a slightly long title.
-  const PERMIT_TITLE_MAX = 90;
+  // The permit number always ships too: several permits at one address (a
+  // multi-unit site, a building with many tenant improvements) otherwise share
+  // the same address + work-type title and H1.
+  const PERMIT_TITLE_MAX = 100;
   const brandSuffix = " | Building Seattle";
   const titlePrefix = `${titleLocation} — `;
-  const highlightBudget = Math.max(20, PERMIT_TITLE_MAX - titlePrefix.length - brandSuffix.length);
-  const pageTitle = `${titlePrefix}${truncateMetaDescription(rawTitleHighlight, highlightBudget)}${brandSuffix}`;
+  const permitSuffix = permit.permit_number ? ` (#${permit.permit_number})` : "";
+  const highlightBudget = Math.max(20, PERMIT_TITLE_MAX - titlePrefix.length - permitSuffix.length - brandSuffix.length);
+  const pageTitle = `${titlePrefix}${truncateMetaDescription(rawTitleHighlight, highlightBudget)}${permitSuffix}${brandSuffix}`;
   const safeTitle = escapeHtml(pageTitle);
 
   // Build the meta description with the required facts (permit number/status)
@@ -3302,8 +3318,8 @@ async function renderPermitDetail(permitNumber, env, request) {
   // truncate the tail mid-name. Only the leading work/address snippet, which
   // is already word-boundary truncated, absorbs any remaining length overflow.
   const META_MAX = 165;
-  const permitCore = `Permit ${permit.permit_number} (${permit.status || "status unknown"}).`;
-  const contractorSuffix = permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : "";
+  const permitCore = `Permit ${permit.permit_number} (${permit.status ? statusLabel(permit.status).toLowerCase() : "status unknown"}).`;
+  const contractorSuffix = permit.contractor_name ? ` Contractor: ${displayName(permit.contractor_name)}.` : "";
   const coreWithContractor = `${permitCore}${contractorSuffix}`;
   const metaCore = coreWithContractor.length <= META_MAX - 30 ? coreWithContractor : permitCore;
   const metaLeadBudget = Math.max(20, META_MAX - metaCore.length - 1);
@@ -3323,14 +3339,16 @@ async function renderPermitDetail(permitNumber, env, request) {
   const summaryAddressHtml = permit.address_slug
     ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${safeAddress}</a>`
     : safeAddress;
+  const permitClosed = isClosedPermitStatus(permit.status);
+  const workVerb = permitClosed ? "Work was performed by" : "Work is being performed by";
   const summaryContractorHtml = permit.contractor_name
-    ? ` Work is being performed by ${
+    ? ` ${workVerb} ${
         permit.contractor_slug
-          ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name)}</a>`
-          : escapeHtml(permit.contractor_name)
+          ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(displayName(permit.contractor_name))}</a>`
+          : escapeHtml(displayName(permit.contractor_name))
       }.`
     : permit.work_performed_by === "Owner/Lessee"
-      ? " Work is being performed by the property owner/lessee."
+      ? ` ${workVerb} the property owner/lessee.`
       : "";
   // Cap the lead clause so an unusually long scraped description can't turn
   // this "concise summary below the H1" into a duplicate of the full Project
@@ -3339,7 +3357,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   const summaryLeadText = summaryWorkSnippet
     ? summaryWorkSnippet.charAt(0).toUpperCase() + summaryWorkSnippet.slice(1)
     : `A ${permitType.toLowerCase()} project`;
-  const permitSummaryHtml = `${escapeHtml(summaryLeadText)} at ${summaryAddressHtml}${neighborhoodPhrase}. Permit ${safePermitNumber} is ${escapeHtml((permit.status || "under review").toLowerCase())}${valueFormatted !== "N/A" ? `, valued at ${valueFormatted}` : ""}.${summaryContractorHtml}`;
+  const permitSummaryHtml = `${escapeHtml(summaryLeadText)} at ${summaryAddressHtml}${neighborhoodPhrase}. Permit ${safePermitNumber} is ${escapeHtml(permit.status ? statusLabel(permit.status).toLowerCase() : "under review")}${valueFormatted !== "N/A" ? `, valued at ${valueFormatted}` : ""}.${summaryContractorHtml}`;
   const permitJsonLd = JSON.stringify({
     "@context": "https://schema.org",
     "@graph": [
@@ -3500,6 +3518,13 @@ async function renderPermitDetail(permitNumber, env, request) {
             margin-bottom: 1rem;
             line-height: 1.2;
         }
+        .permit-title-id {
+            display: block;
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
         .permit-summary {
             font-size: 1.0625rem;
             line-height: 1.65;
@@ -3609,15 +3634,16 @@ async function renderPermitDetail(permitNumber, env, request) {
     <main id="main-content">
         <div class="container">
             <div class="permit-header">
-	                <div class="permit-number">PERMIT #<span class="bs-id">${safePermitNumber}</span></div>
-	                <h1 class="permit-title">${safeAddress}</h1>
-	                ${bsStatusPill(permit.status, humanize(permit.status, "Unknown"))}
+	                <div class="permit-number">${safePermitType} permit</div>
+	                <h1 class="permit-title">${safeAddress} <span class="permit-title-id">Permit <span class="bs-id">${safePermitNumber}</span></span></h1>
+	                ${bsStatusPill(permit.status, statusLabel(permit.status))}
                 <p class="permit-summary">${permitSummaryHtml}</p>
 	                ${firstScreenLinks ? `<nav aria-label="Related permit records" style="display:flex;flex-wrap:wrap;gap:0.5rem 0.9rem;margin:1rem 0 0;font-size:0.84rem;">${firstScreenLinks}</nav>` : ""}
             </div>
             <div class="detail-grid">
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Permit Timeline &amp; Status</h2>
                 ${timelineCard}
+                ${permitAlertCard}
                 ${entityLinksCard}
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Project Overview</h2>
                 <div class="bs-card">
@@ -3645,7 +3671,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                         : `
 	                        <div class="bs-card__title" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
 	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
-	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" data-open-lead-modal style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
+	                        ${permit.work_performed_by === "Owner/Lessee" || !alertsOpen ? "" : `<button type="button" data-open-lead-modal style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
                     `
                     }
                     ${peopleCards}
@@ -3670,7 +3696,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             </div>
 
             <div class="actions">
-                <button type="button" class="bs-btn bs-btn--primary" data-open-lead-modal>${primaryLeadLabel}</button>
+                ${alertsOpen ? `<button type="button" class="bs-btn bs-btn--primary" data-open-lead-modal>${primaryLeadLabel}</button>` : ""}
                 ${
                   permit.contractor_slug
                     ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="bs-btn bs-btn--secondary">View Contractor</a>`
@@ -3681,7 +3707,7 @@ async function renderPermitDetail(permitNumber, env, request) {
         </div>
     </main>
 
-    <dialog id="leadModal" class="modal" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
+    ${alertsOpen ? `<dialog id="leadModal" class="modal" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
         <div class="modal-content">
             <button type="button" class="modal-close" data-close-lead-modal aria-label="Close dialog">&times;</button>
             <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
@@ -3703,12 +3729,13 @@ async function renderPermitDetail(permitNumber, env, request) {
                 <h4 id="formSuccessTitle" tabindex="-1">Check your inbox to confirm</h4>
                 <p style="color:var(--text-muted);">The alert starts after you confirm your email address.</p>
             </div>
+            <p style="margin:1rem 0 0;font-size:0.8rem;color:var(--text-muted);">We store your email and this permit number only to send these alerts. <a href="/privacy" style="color:var(--accent);">Privacy notice</a></p>
         </div>
-    </dialog>
+    </dialog>` : ""}
 
     ${renderFooter()}
-    ${turnstileSiteKey ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ""}
-    <script src="/brand/permit-alert.js" defer></script>
+    ${alertsOpen && turnstileSiteKey ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ""}
+    ${alertsOpen ? '<script src="/brand/permit-alert.js" defer></script>' : ""}
 </body>
 </html>`;
 
@@ -4068,7 +4095,9 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
           <p style="margin:1rem 0 0;font-size:0.75rem;color:var(--text-muted)">Verified via WA Labor &amp; Industries</p>
         </div>`
     : "";
-  const contractorDisplayName = smartTitleCase(contractor.name);
+  // displayName also turns SDCI shorthand backslashes ("DSN\\CNST") into
+  // slashes (audit G8).
+  const contractorDisplayName = displayName(contractor.name) || smartTitleCase(contractor.name);
   const safeContractorName = escapeHtml(contractor.name);
   const safeContractorDisplayName = escapeHtml(contractorDisplayName);
   const fullContractorTitle = `${contractorDisplayName} — ${contractor.specialty || "Contractor"} | Building Seattle`;
@@ -4110,7 +4139,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
     "@graph": [
       {
         "@type": "LocalBusiness",
-        name: contractor.name,
+        name: contractorDisplayName,
         description: contractor.specialty || "Construction contractor in Seattle",
         url: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
         address: {
@@ -4125,11 +4154,11 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+          { "@type": "ListItem", position: 2, name: "Contractors", item: `${BASE_URL}/contractors` },
           {
             "@type": "ListItem",
             position: 3,
-            name: contractor.name,
+            name: contractorDisplayName,
             item: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
           },
         ],
@@ -4160,7 +4189,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
     <meta name="twitter:card" content="summary_large_image">
     <meta property="og:image" content="${BASE_URL}/social/contractor.png">
     <meta property="og:image:type" content="image/png">
-    <meta property="og:image:alt" content="${safeContractorName} | Building Seattle">
+    <meta property="og:image:alt" content="${safeContractorDisplayName} | Building Seattle">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:image" content="${BASE_URL}/social/contractor.png">
@@ -4190,7 +4219,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
     <div class="seo-hero">
         <div class="container">
             <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:#94a3b8;margin-bottom:1rem;">
-                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:#94a3b8;text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${safeContractorDisplayName}</span>
+                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/contractors" style="color:#94a3b8;text-decoration:none;">Contractors</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${safeContractorDisplayName}</span>
             </nav>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:2rem;">
                 <div style="max-width:600px;min-width:0">
@@ -4198,16 +4227,16 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
                     <h1 style="font-size:clamp(2rem,8vw,3rem);font-weight:800;line-height:1.1;letter-spacing:-0.02em;overflow-wrap:anywhere;margin:0 0 1rem 0">${safeContractorDisplayName}</h1>
                     <p style="font-size:1.25rem;color:#94a3b8;margin:0">${escapeHtml(heroSummary)}</p>
                 </div>
-                <div style="display:flex; gap:1.5rem;">
-                    <div style="text-align:right">
+                ${typeof permitDays === "number" || typeof buildDays === "number" ? `<div style="display:flex; gap:1.5rem;">
+                    ${typeof permitDays === "number" ? `<div style="text-align:right">
                         <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase; margin-bottom:0.25rem">Permit Speed</div>
                         <div style="font-size:1.5rem; font-weight:700;">${permitDays}${dayUnit(permitDays)}</div>
-                    </div>
-                    <div style="text-align:right">
+                    </div>` : ""}
+                    ${typeof buildDays === "number" ? `<div style="text-align:right">
                         <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase; margin-bottom:0.25rem">Build Speed</div>
                         <div style="font-size:1.5rem; font-weight:700;">${buildDays}${dayUnit(buildDays)}</div>
-                    </div>
-                </div>
+                    </div>` : ""}
+                </div>` : ""}
             </div>
         </div>
     </div>
@@ -4235,12 +4264,13 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
                       .map(
                         (p) => `
                         <div class="permit-row" style="padding:1rem 0;border-bottom:1px solid var(--border)">
-                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(p.address)}</a></div>
-                            <div style="font-size:0.875rem;color:var(--text-muted)">${escapeHtml(p.type || "Unknown")} &bull; ${p.value ? `$${Number(p.value).toLocaleString("en-US")}` : "Value not reported"} &bull; ${escapeHtml(p.status)}</div>
+                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(displayName(p.address) || `Permit ${p.permit_number}`)}</a></div>
+                            <div style="font-size:0.875rem;color:var(--text-muted)">${escapeHtml(permitTypeLabel(p.type))} &bull; ${p.value ? `$${Number(p.value).toLocaleString("en-US")}` : "Value not reported"} &bull; ${escapeHtml(statusLabel(p.status))} &bull; Permit ${escapeHtml(p.permit_number)}</div>
                         </div>
                     `,
                       )
                       .join("")}
+                    ${totalPermits > shownPermits ? `<p style="margin:1rem 0 0;font-size:0.9rem;"><a href="/permits?q=${encodeURIComponent(contractor.name)}" style="color:var(--accent);text-decoration:none;font-weight:600;">Search permits for ${safeContractorDisplayName} &rarr;</a></p>` : ""}
                 </div>
                 ${
                   graphAddresses.length || graphProjects.length
@@ -4254,7 +4284,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
                             ? graphAddresses
                                 .map(
                                   (a) =>
-                                    `<div style="font-size:0.9rem;"><a href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">· ${countLabel(a.permits, "permit", "permits")}</span></div>`,
+                                    `<div style="font-size:0.9rem;"><a href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="color:var(--text-muted);font-size:0.8rem;">· ${countLabel(a.permits, "permit", "permits")}</span></div>`,
                                 )
                                 .join("")
                             : '<div style="color:var(--text-muted);font-size:0.85rem;">No linked addresses yet.</div>'
@@ -4279,6 +4309,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
                 }
             </div>
             <div>
+                ${renderAlertCta({ permits: permits.results || [], subject: contractorDisplayName })}
                 ${credentialsCard}
                 <div class="bs-card">
                     <h3>Market Specialization</h3>
@@ -4288,7 +4319,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
                           .map(
                             (f) => `
                             <div style="display:flex; justify-content:space-between; gap:1rem; margin-bottom:0.5rem; font-size:0.9375rem">
-                                <span style="font-weight:600">${escapeHtml(f.neighborhood)}</span>
+                                <a href="/neighborhood/${encodeURIComponent(makeSlug(f.neighborhood))}" style="font-weight:600;color:var(--accent);text-decoration:none;">${escapeHtml(f.neighborhood)}</a>
                                 <span style="color:var(--text-muted);white-space:nowrap">${countLabel(f.count, "permit", "permits")}</span>
                             </div>
                         `,
@@ -4301,7 +4332,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
                             ${projectTypes.results
                               .map(
                                 (t) => `
-                                <span style="background:var(--accent-soft); color:var(--link); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
+                                <span style="background:var(--accent-soft); color:var(--link); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600">${escapeHtml(permitTypeLabel(t.type))} &middot; ${formatCount(t.count)}</span>
                             `,
                               )
                               .join("")}
@@ -4344,6 +4375,7 @@ async function renderCuratedContractorPage(contractor, slug, env, request) {
                         ${contractorWebsite ? `<p style="margin:0.5rem 0">Web <a href="${escapeHtml(contractorWebsite)}" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:none">${escapeHtml(contractorWebsite.replace("https://", "").replace("http://", ""))}</a></p>` : ""}
                     </div>
                 </div>
+                ${renderDatasetCta({ context: "contractor", subject: `${contractorDisplayName}'s permits`, count: totalPermits })}
             </div>
         </div>
     </div>
@@ -4967,10 +4999,7 @@ function entMoney(n) {
 
 function entDate(d) {
   if (!d) return "N/A";
-  const dt = new Date(d);
-  return Number.isNaN(dt.getTime())
-    ? String(d)
-    : dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  return formatCalendarDate(d) || String(d);
 }
 
 function entStreet(displayAddress) {
@@ -5016,7 +5045,9 @@ function entBreadcrumb(items) {
 }
 
 function entStat(label, value) {
-  return `<div class="bs-metric"><span class="bs-metric__value">${value}</span><span class="bs-metric__label">${escapeHtml(label)}</span></div>`;
+  // Bare counts get thousands separators (audit E18); preformatted values
+  // ("$1.2M", dates) pass through unchanged.
+  return `<div class="bs-metric"><span class="bs-metric__value">${formatCount(value)}</span><span class="bs-metric__label">${escapeHtml(label)}</span></div>`;
 }
 
 // Aggregates plan-review metrics across a project's clustered permits into a
@@ -5218,9 +5249,9 @@ function entPermitRows(permits) {
     .map(
       (p) => `<tr>
         <td><a class="ent-link" href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(p.permit_number)}</a></td>
-        <td>${escapeHtml(p.type || "—")}</td>
+        <td>${p.type ? escapeHtml(permitTypeLabel(p.type)) : "—"}</td>
         <td>${entMoney(p.value)}</td>
-        <td>${p.status ? bsStatusPill(p.status, humanize(p.status)) : "—"}</td>
+        <td>${p.status ? bsStatusPill(p.status, statusLabel(p.status)) : "—"}</td>
         <td>${entDate(p.issued_date || p.applied_date)}</td>
       </tr>`,
     )
@@ -5228,12 +5259,10 @@ function entPermitRows(permits) {
   return `<div class="table-scroll" role="region" aria-label="Permits" tabindex="0"><table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+// Newest SDCI source event (applied/issued/completed) among an entity's
+// permits. Row-touch timestamps are ignored: every upsert bumps them.
 export function latestPermitActivity(permits) {
-  return (permits || [])
-    .flatMap((permit) => [permit.updated_at, permit.issued_date, permit.applied_date, permit.created_at])
-    .filter(Boolean)
-    .sort()
-    .at(-1) || null;
+  return latestSourceEventDate(permits);
 }
 
 const ENTITY_HUB_PAGE_SIZE = 48;
@@ -5275,6 +5304,19 @@ function buildEntityHubState(type, request) {
   const hasInvalidPage = rawPage !== null && rawPage !== String(page);
   const hasFilters = hasNonPaginationParams || hasInvalidPage;
   return { url, page, sort, activity, view, permitType, neighborhood, minValue, minPermits, hasFilters };
+}
+
+// The contractors hub selects people_orgs.type_guess as its detail line, a
+// raw enum ("organization", "person"). Show what the card is instead
+// (audit E16/E17); other hubs already select readable text.
+function hubDetailLabel(type, detail) {
+  if (type === "contractors") {
+    const kind = String(detail || "").trim().toLowerCase();
+    if (kind === "person") return "Contractor (individual)";
+    if (!kind || kind === "organization" || kind === "contractor") return "Contractor";
+    return displayName(detail);
+  }
+  return detail ? displayName(detail) : "Seattle construction activity";
 }
 
 function buildEntityHubQuery(type, state) {
@@ -5365,6 +5407,7 @@ async function renderEntityHubPage(type, env, request) {
 
   const state = buildEntityHubState(type, request);
   const query = buildEntityHubQuery(type, state);
+  const freshnessPromise = getDataFreshness(env);
   let items = [];
   try {
     const result = await env.DB.prepare(query.sql).bind(...query.binds).all();
@@ -5386,11 +5429,9 @@ async function renderEntityHubPage(type, env, request) {
 
   const hasNext = items.length > ENTITY_HUB_PAGE_SIZE;
   items = items.slice(0, ENTITY_HUB_PAGE_SIZE);
-  const updatedThrough = items
-    .map((item) => item.latest_activity)
-    .filter(Boolean)
-    .sort()
-    .at(-1);
+  // Site-wide source freshness, the same value every hub and insight page
+  // shows, instead of the newest item on this page (which differed per page).
+  const updatedThrough = (await freshnessPromise)?.updated_through || null;
   const canonicalPath = state.hasFilters ? `/${type}` : hubUrl(type, state, state.page);
   const canonical = `${BASE_URL}${canonicalPath}`;
   const itemList = items.map((item, index) => ({
@@ -5417,9 +5458,9 @@ async function renderEntityHubPage(type, env, request) {
     .map((item) => {
       const value = Number(item.total_value) > 0 ? entMoney(item.total_value) : "Value not reported";
       return `<article class="bs-card">
-        <h2 style="font-size:1.05rem;margin:0 0 0.4rem;"><a class="ent-link" href="${config.pathPrefix}${encodeURIComponent(item.slug)}">${escapeHtml(item.label)}</a></h2>
-        <p style="margin:0 0 0.75rem;color:var(--text-muted);font-size:0.875rem;">${escapeHtml(item.detail || "Seattle construction activity")}</p>
-        <div style="display:flex;gap:1rem;font-size:0.8rem;font-weight:650;"><span>${Number(item.permit_count || 0).toLocaleString()} permits</span><span>${value}</span></div>
+        <h2 style="font-size:1.05rem;margin:0 0 0.4rem;"><a class="ent-link" href="${config.pathPrefix}${encodeURIComponent(item.slug)}">${escapeHtml(displayName(item.label) || item.label)}</a></h2>
+        <p style="margin:0 0 0.75rem;color:var(--text-muted);font-size:0.875rem;">${escapeHtml(hubDetailLabel(type, item.detail))}</p>
+        <div style="display:flex;gap:1rem;font-size:0.8rem;font-weight:650;"><span>${countLabel(item.permit_count, "permit")}</span><span>${value}</span></div>
       </article>`;
     })
     .join("");
@@ -5493,10 +5534,14 @@ export function summarizePlanReview(values) {
     .sort((a, b) => a - b);
   const count = sorted.length;
   const mean = count ? sorted.reduce((s, v) => s + v, 0) / count : 0;
-  const histogram = PLAN_REVIEW_DAY_BUCKETS.map((b) => ({
-    label: b.label,
-    count: sorted.filter((v) => v >= b.min && v <= b.max).length,
-  }));
+  // Bucket by upper bound so fractional values (30.5 days) land in the next
+  // bucket instead of falling between 0–30 and 31–60; the bars then always
+  // add up to the "based on N" count (audit G7).
+  const histogram = PLAN_REVIEW_DAY_BUCKETS.map((b) => ({ label: b.label, count: 0 }));
+  for (const v of sorted) {
+    const index = PLAN_REVIEW_DAY_BUCKETS.findIndex((b) => v <= b.max);
+    histogram[index].count += 1;
+  }
   return {
     count,
     mean: Math.round(mean),
@@ -5561,11 +5606,13 @@ async function getPlanReviewData(env) {
        FROM permits WHERE ${reviewedWhere}
        GROUP BY label HAVING cnt >= 3 ORDER BY avg_days DESC LIMIT 12`,
     ),
+    // Cycle figures use the same reviewed population as the headline count
+    // (audit G7), with 10 or more cycles grouped so no tail is cut off.
     safeAll(
       env,
-      `SELECT number_review_cycles AS cycles, COUNT(*) AS cnt
-       FROM permits WHERE number_review_cycles IS NOT NULL AND number_review_cycles >= 0
-       GROUP BY cycles ORDER BY cycles ASC LIMIT 15`,
+      `SELECT CASE WHEN number_review_cycles >= 10 THEN 10 ELSE CAST(number_review_cycles AS INTEGER) END AS cycles, COUNT(*) AS cnt
+       FROM permits WHERE ${reviewedWhere} AND number_review_cycles IS NOT NULL AND number_review_cycles >= 0
+       GROUP BY cycles ORDER BY cycles ASC`,
     ),
     safeAll(
       env,
@@ -5576,7 +5623,7 @@ async function getPlanReviewData(env) {
     safeFirst(
       env,
       `SELECT AVG(number_review_cycles) AS avg_cycles, AVG(days_out_corrections) AS avg_corrections
-       FROM permits WHERE number_review_cycles IS NOT NULL AND number_review_cycles >= 0`,
+       FROM permits WHERE ${reviewedWhere} AND number_review_cycles IS NOT NULL AND number_review_cycles >= 0`,
     ),
   ]);
 
@@ -5743,31 +5790,33 @@ async function renderPlanReviewPage(env) {
   }));
 
   const typeRows = data.by_type.map((t) => ({
-    label: t.label,
+    label: t.label === "unknown" ? "Type not reported" : permitTypeLabel(t.label),
     value: t.avg_days,
-    display: `${t.avg_days} days`,
-    sub: `${t.count.toLocaleString()} permits`,
+    display: countLabel(t.avg_days, "day"),
+    sub: countLabel(t.count, "permit"),
   }));
 
   const neighborhoodRows = data.by_neighborhood.map((n) => ({
     label: n.label,
     href: n.slug ? `/neighborhood/${encodeURIComponent(n.slug)}` : null,
     value: n.avg_days,
-    display: `${n.avg_days} days`,
-    sub: `${n.count.toLocaleString()} permits`,
+    display: countLabel(n.avg_days, "day"),
+    sub: countLabel(n.count, "permit"),
   }));
 
+  const cycleTotal = data.by_cycles.reduce((sum, c) => sum + c.count, 0);
   const cycleRows = data.by_cycles.map((c) => ({
-    label: c.cycles === 1 ? "1 cycle" : `${c.cycles} cycles`,
+    label: c.cycles >= 10 ? "10+ cycles" : countLabel(c.cycles, "cycle"),
     value: c.count,
-    display: c.count.toLocaleString(),
+    display: formatCount(c.count),
+    sub: cycleTotal ? `${Math.round((c.count / cycleTotal) * 100)}%` : "",
   }));
 
   const reviewLevelRows = data.by_review_level.map((r) => ({
     label: r.label,
     value: r.avg_days,
-    display: `${r.avg_days} days`,
-    sub: `${r.count.toLocaleString()} permits`,
+    display: countLabel(r.avg_days, "day"),
+    sub: countLabel(r.count, "permit"),
   }));
 
   const body = `
@@ -5777,7 +5826,7 @@ async function renderPlanReviewPage(env) {
     <div class="ent-hero">
       <div class="ent-kicker">Insights</div>
       <h1>How long does Seattle permit plan review take?</h1>
-      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Based on ${s.count.toLocaleString()} permits with recorded SDCI plan-review timing. "Plan review" is the time spent in review cycles before a permit is issued.</p>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Based on ${countLabel(s.count, "permit")} with recorded SDCI plan-review timing. "Plan review" is the time spent in review cycles before a permit is issued.</p>
     </div>
     ${
       hasData
@@ -5807,6 +5856,7 @@ async function renderPlanReviewPage(env) {
       </div>
       <div class="bs-card">
         <h2>Review cycles per permit</h2>
+        ${cycleTotal ? `<p style="color:var(--text-muted);margin-top:0;font-size:0.85rem;">${formatCount(cycleTotal)} of the ${formatCount(s.count)} reviewed permits also report a cycle count.</p>` : ""}
         ${prBarChart(cycleRows, "var(--success)")}
         <p class="pr-note">Each correction cycle adds a round-trip with reviewers. ${
           data.avg_days_out_corrections != null
@@ -6346,7 +6396,7 @@ async function getAduDaduData(env) {
              SUM(COALESCE(housing_units_added, 0)) AS units_added,
              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
              SUM(CASE WHEN lower(COALESCE(status, '')) IN ('active', 'pending', 'new', 'in review', 'under review') THEN 1 ELSE 0 END) AS active,
-             MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS data_updated_through
+             ${LATEST_SOURCE_EVENT_SQL} AS data_updated_through
       FROM permits
       WHERE adu_type IN ('ADU', 'DADU')`,
     ).first(),
@@ -6831,16 +6881,22 @@ async function getDataFreshness(env) {
   return safeFirst(
     env,
     `/* data-freshness */
-     SELECT MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS updated_through,
+     SELECT ${LATEST_SOURCE_EVENT_SQL} AS updated_through,
             COUNT(*) AS permit_count
      FROM permits`,
   );
 }
 
-function renderDataTrustNote(updatedThrough, extra = "") {
-  const freshness = updatedThrough
-    ? `Source records updated through ${escapeHtml(entDate(updatedThrough))}.`
-    : "Freshness is shown when the source record provides a usable update date.";
+// scope "site": updatedThrough is the site-wide newest SDCI event
+// (getDataFreshness). scope "entity": the newest event among this page's own
+// permits, which is activity, not freshness, so it is labelled as such.
+function renderDataTrustNote(updatedThrough, extra = "", scope = "site") {
+  const label = formatCalendarDate(updatedThrough);
+  const freshness = !label
+    ? "Freshness is shown when the source record provides a usable date."
+    : scope === "entity"
+      ? `Latest permit activity on record here: ${escapeHtml(label)}.`
+      : `Source records updated through ${escapeHtml(label)} (newest SDCI permit event).`;
   return `<aside class="bs-card" aria-label="Data source and methodology" style="font-size:.82rem;color:var(--text-muted);">
       <strong style="color:var(--text);">Source and methodology.</strong>
       ${freshness} ${extra}
@@ -6859,7 +6915,7 @@ async function getMarketSegmentData(env, segment) {
        SELECT COUNT(*) AS total, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value,
               SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
               SUM(CASE WHEN ${ACTIVE_PERMIT_SQL} THEN 1 ELSE 0 END) AS active,
-              MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS updated_through
+              ${LATEST_SOURCE_EVENT_SQL} AS updated_through
        FROM permits p WHERE ${where}`,
     ),
     safeAll(
@@ -8011,7 +8067,7 @@ async function renderAddressPage(slug, env, request) {
   }
   if (valueStr) description += `; ${valueStr} declared value`;
   description += ".";
-  const contractorSentence = latestContractor ? ` Contractor: ${smartTitleCase(latestContractor)}.` : "";
+  const contractorSentence = latestContractor ? ` Contractor: ${displayName(latestContractor)}.` : "";
   if (description.length + contractorSentence.length <= META_MAX) description += contractorSentence;
   const descriptorBudget = META_MAX - description.length - 1;
   if (featuredDescriptor && descriptorBudget >= 20) {
@@ -8040,13 +8096,18 @@ async function renderAddressPage(slug, env, request) {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
-          { "@type": "ListItem", position: 3, name: display, item: canonical },
+          { "@type": "ListItem", position: 2, name: "Addresses", item: `${BASE_URL}/addresses` },
+          ...(neighborhood
+            ? [{ "@type": "ListItem", position: 3, name: neighborhood.name, item: `${BASE_URL}/neighborhood/${encodeURIComponent(neighborhood.slug)}` }]
+            : []),
+          { "@type": "ListItem", position: neighborhood ? 4 : 3, name: display, item: canonical },
         ],
       },
     ],
   }).replace(/</g, "\\u003c");
 
+  // Empty side lists are left off the page instead of rendering placeholder
+  // copy (audit E15/E21).
   const projectsHtml = projects.length
     ? `<ul class="ent-list">${projects
         .map(
@@ -8056,36 +8117,45 @@ async function renderAddressPage(slug, env, request) {
           </li>`,
         )
         .join("")}</ul>`
-    : `<p style="color:var(--text-muted);">No inferred projects yet.</p>`;
+    : "";
 
   const participantsHtml = participants.length
     ? `<ul class="ent-list">${participants
         .map(
           (o) => `<li>
-            <a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(o.name)}</a>
-            <span class="pill" style="margin-left:0.4rem;">${escapeHtml(o.role)}</span>
-            <span style="font-size:0.8rem;color:var(--text-muted);"> · ${o.cnt} permit${o.cnt > 1 ? "s" : ""}</span>
+            <a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(displayName(o.name))}</a>
+            <span class="pill" style="margin-left:0.4rem;">${escapeHtml(roleLabel(o.role))}</span>
+            <span style="font-size:0.8rem;color:var(--text-muted);"> · ${countLabel(o.cnt, "permit")}</span>
           </li>`,
-        )
-        .join("")}</ul>`
-    : `<p style="color:var(--text-muted);">No participants on record.</p>`;
-
-  const relatedHtml = related.length
-    ? `<ul class="ent-list">${related
-        .map(
-          (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
         )
         .join("")}</ul>`
     : "";
 
+  const relatedHtml = related.length
+    ? `<ul class="ent-list">${related
+        .map(
+          (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(a.permits, "permit")}</span></li>`,
+        )
+        .join("")}</ul>`
+    : "";
+  const firstMonth = formatMonthYear(firstDate);
+  const lastMonth = formatMonthYear(lastDate);
+  const activitySpan = firstMonth && lastMonth && firstMonth !== lastMonth
+    ? `Permit activity at this address runs from ${firstMonth} to ${lastMonth}`
+    : firstMonth
+      ? `Permit activity at this address dates to ${firstMonth}`
+      : "";
+  const guideSentence = `Each permit below links to its own record with status, dates, and the work description${relatedHtml ? ", and nearby addresses in the same neighborhood are listed alongside" : ""}.`;
+
   const body = `
     ${entBreadcrumb([
       { label: "Home", href: "/" },
-      ...(neighborhood ? [{ label: neighborhood.name, href: `/neighborhood/${encodeURIComponent(neighborhood.slug)}` }] : [{ label: "Permits", href: "/permits" }]),
+      { label: "Addresses", href: "/addresses" },
+      ...(neighborhood ? [{ label: neighborhood.name, href: `/neighborhood/${encodeURIComponent(neighborhood.slug)}` }] : []),
       { label: display },
     ])}
     <div class="ent-hero">
-      <div class="ent-kicker">Property / Address</div>
+      <div class="ent-kicker">Address</div>
       <h1>${escapeHtml(display)}</h1>
       ${featuredDescriptor ? `<p style="margin:0.75rem 0 0;max-width:760px;font-size:1.05rem;line-height:1.6;color:var(--text);"><strong>${escapeHtml(featuredDescriptor)}</strong>${featuredPermit?.permit_number ? ` <span style="color:var(--text-muted);">· <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">Permit ${escapeHtml(featuredPermit.permit_number)}</a></span>` : ""}</p>` : ""}
       ${neighborhood ? `<a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
@@ -8094,8 +8164,8 @@ async function renderAddressPage(slug, env, request) {
       <div class="bs-card" style="margin-bottom:0;">
         <div style="font-size:1.05rem;line-height:1.85;color:var(--text-muted);">
           <p style="margin:0 0 1rem;">${escapeHtml(display)} is a property in Seattle${neighborhood ? `'s <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a> neighborhood` : ""} with <strong style="color:var(--text);">${permitCount} construction permit${permitCount !== 1 ? "s" : ""}</strong> on record with the Seattle Department of Construction and Inspections${activePermits.length > 0 ? `, <strong style="color:var(--text);">${activePermits.length} of which ${activePermits.length === 1 ? "is" : "are"} currently active</strong>` : ""}.${totalValue > 0 ? ` The combined estimated project value across all permits is <strong style="color:var(--text);">$${parseInt(totalValue).toLocaleString()}</strong>.` : ""}</p>
-          <p style="margin:0 0 1rem;">Permit activity at this address spans from ${firstDate ? new Date(firstDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the earliest record"} to ${lastDate ? new Date(lastDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the present"}${featuredPermit?.permit_number ? `, with the featured record filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">${escapeHtml(featuredPermit.permit_number)}</a>` : ""}.${latestContractor && permits[0]?.contractor_slug ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(permits[0].contractor_slug)}">${escapeHtml(latestContractor)}</a>.` : ""}</p>
-          <p style="margin:0;">Use the data below to review individual permit records, track project timelines, see which contractors and participants have been involved, and explore nearby construction activity. Each permit links to its own detail page with review cycles, status changes, and project descriptions.</p>
+          ${activitySpan ? `<p style="margin:0 0 1rem;">${activitySpan}${featuredPermit?.permit_number ? `, with the featured record filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">${escapeHtml(featuredPermit.permit_number)}</a>` : ""}.${latestContractor && permits[0]?.contractor_slug ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(permits[0].contractor_slug)}">${escapeHtml(displayName(latestContractor))}</a>.` : ""}</p>` : ""}
+          <p style="margin:0;">${guideSentence}</p>
         </div>
       </div>
     </div>
@@ -8106,26 +8176,22 @@ async function renderAddressPage(slug, env, request) {
           <div class="stat-row">
             ${entStat("Permits", permitCount)}
             ${entStat("Total value", entMoney(totalValue))}
-            ${entStat("Active / recent", activePermits.length)}
+            ${entStat("Active", activePermits.length)}
             ${entStat("Projects", projects.length)}
           </div>
-          <div style="font-size:0.85rem;color:var(--text-muted);">First permit ${entDate(firstDate)} · Latest permit ${entDate(lastDate)}</div>
+          <div style="font-size:0.85rem;color:var(--text-muted);">${firstDate === lastDate ? `Permit date ${entDate(firstDate)}` : `First permit ${entDate(firstDate)} · Latest permit ${entDate(lastDate)}`}</div>
         </div>
         <div class="bs-card">
-          <h2>Permit records (${permitCount})</h2>
+          <h2>Permit records (${formatCount(permitCount)})</h2>
           ${entPermitRows(permits)}
         </div>
       </div>
       <div>
-        <div class="bs-card">
-          <h3>Inferred projects</h3>
-          ${projectsHtml}
-        </div>
-        <div class="bs-card">
-          <h3>Contractors &amp; participants</h3>
-          ${participantsHtml}
-        </div>
-        ${relatedHtml ? `<div class="bs-card"><h3>Nearby &amp; related addresses</h3>${relatedHtml}</div>` : ""}
+        ${renderAlertCta({ permits, subject: display })}
+        ${projectsHtml ? `<div class="bs-card"><h3>Inferred projects</h3>${projectsHtml}</div>` : ""}
+        ${participantsHtml ? `<div class="bs-card"><h3>Contractors &amp; participants</h3>${participantsHtml}</div>` : ""}
+        ${relatedHtml ? `<div class="bs-card"><h3>Nearby addresses${neighborhood ? ` in ${escapeHtml(neighborhood.name)}` : ""}</h3>${relatedHtml}<p style="margin:0.75rem 0 0;font-size:0.85rem;"><a class="ent-link" href="/addresses${neighborhood ? `?neighborhood=${encodeURIComponent(neighborhood.name)}` : ""}">All addresses${neighborhood ? ` in ${escapeHtml(neighborhood.name)}` : ""} &rarr;</a></p></div>` : ""}
+        ${renderDatasetCta({ context: "address", subject: `the permits at ${entStreet(display) || display}`, count: permitCount })}
       </div>
     </div>`;
 
@@ -8137,7 +8203,7 @@ async function renderAddressPage(slug, env, request) {
       jsonLd,
       noindex,
       ogType: "place",
-      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Property totals aggregate public permit records; declared value is not verified project cost.")}`,
+      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Property totals aggregate public permit records; declared value is not verified project cost.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } },
   );
@@ -8229,17 +8295,12 @@ async function renderProjectPage(slug, env, request) {
   // "Prefix at Street" names repeat when an address has several clusters of
   // the same kind. Such pages are subsets of one address page and were the
   // next likely "duplicate, Google chose a different canonical" group, so
-  // their titles and descriptions carry the permit span and lead permit.
-  const permitDates = permits.map((p) => p.issued_date || p.applied_date).filter(Boolean).sort();
-  const spanYears = [...new Set(permitDates.map((d) => String(d).slice(0, 4)))];
-  const span = spanYears.length > 1 ? `${spanYears[0]}–${spanYears.at(-1)}` : spanYears[0] || "";
+  // their titles and descriptions carry the lead permit.
   const leadPermit = [...permits]
     .sort((a, b) => String(a.issued_date || a.applied_date || "").localeCompare(String(b.issued_date || b.applied_date || "")) || String(a.permit_number).localeCompare(String(b.permit_number)))[0]?.permit_number || "";
   const nameTwin = await safeFirst(env, `SELECT 1 AS taken FROM projects WHERE name = ? AND id != ? LIMIT 1`, [project.name, project.id]);
-  const title = nameTwin && leadPermit
-    ? `${project.name} — Permit ${leadPermit}`
-    : `${project.name} | Seattle Construction Activity`;
-  const description = `${countLabel(permits.length, "permit", "permits")}${span ? ` (${span})` : ""}${nameTwin && leadPermit ? ` led by permit ${leadPermit}` : ""}: track contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
+  const twinPermit = nameTwin && leadPermit ? leadPermit : "";
+  const title = twinPermit ? `${project.name} — Permit ${twinPermit}` : `${project.name} | Building Seattle`;
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -8256,10 +8317,8 @@ async function renderProjectPage(slug, env, request) {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          ...(project.address_slug
-            ? [{ "@type": "ListItem", position: 2, name: project.display_address, item: `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}` }]
-            : []),
-          { "@type": "ListItem", position: project.address_slug ? 3 : 2, name: project.name, item: selfUrl },
+          { "@type": "ListItem", position: 2, name: "Projects", item: `${BASE_URL}/projects` },
+          { "@type": "ListItem", position: 3, name: project.name, item: selfUrl },
         ],
       },
     ],
@@ -8285,26 +8344,35 @@ async function renderProjectPage(slug, env, request) {
   const repeatedValueNote = skippedByValue.size
     ? `<p style="font-size:0.8rem;color:var(--text-muted);margin:0.25rem 0 0;">${[...skippedByValue.entries()]
         .map(([value, extra]) => `SDCI repeats ${entMoney(value)} on ${countLabel(extra + 1, "permit", "permits")}; it is counted once.`)
-        .join(" ")} <a class="ent-link" href="/methodology">How values are counted</a></p>`
+        .join(" ")} <a class="ent-link" href="/methodology#value">How values are counted</a></p>`
     : "";
+  const projectAddress = displayName(project.display_address);
+  const firstMonth = formatMonthYear(project.first_seen_date);
+  const lastMonth = formatMonthYear(project.latest_activity_date);
+  const span = firstMonth && lastMonth && firstMonth !== lastMonth ? `${firstMonth} to ${lastMonth}` : firstMonth || lastMonth;
+  // Data-driven description (audit E19) instead of one sentence per template.
+  const description = truncateMetaDescription(
+    `${countLabel(permits.length, "Seattle building permit")} grouped as one project${twinPermit ? ` led by permit ${twinPermit}` : ""}${projectAddress ? ` at ${projectAddress}` : ""}${projectValue ? `, ${compactMetricMoney(projectValue)} counted value` : ""}${span ? `, ${span}` : ""}. Permit records, contractors and review timing.`,
+    160,
+  );
   const participantsHtml = participants.length
     ? `<ul class="ent-list">${participants
         .map(
-          (o) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(o.name)}</a> <span class="pill" style="margin-left:0.4rem;">${escapeHtml(o.role)}</span></li>`,
+          (o) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(displayName(o.name))}</a> <span class="pill" style="margin-left:0.4rem;">${escapeHtml(roleLabel(o.role))}</span></li>`,
         )
         .join("")}</ul>`
-    : `<p style="color:var(--text-muted);">No participants on record.</p>`;
+    : "";
 
   const body = `
     ${entBreadcrumb([
       { label: "Home", href: "/" },
-      ...(project.address_slug ? [{ label: project.display_address, href: `/address/${encodeURIComponent(project.address_slug)}` }] : [{ label: "Permits", href: "/permits" }]),
+      { label: "Projects", href: "/projects" },
       { label: project.name },
     ])}
     <div class="ent-hero">
-      <div class="ent-kicker">Inferred Project · confidence ${project.confidence_score}</div>
+      <div class="ent-kicker">Inferred project${project.confidence_score != null ? ` · match confidence ${escapeHtml(project.confidence_score)}/100` : ""}</div>
       <h1>${escapeHtml(project.name)}</h1>
-      ${project.address_slug ? `<a class="ent-link" href="/address/${encodeURIComponent(project.address_slug)}">${escapeHtml(project.display_address)}</a>` : ""}
+      ${project.address_slug ? `<a class="ent-link" href="/address/${encodeURIComponent(project.address_slug)}">${escapeHtml(projectAddress)}</a>` : ""}
       ${neighborhood ? ` · <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
     </div>
     <div class="ent-grid">
@@ -8313,7 +8381,7 @@ async function renderProjectPage(slug, env, request) {
           <h2>Summary</h2>
           <div class="stat-row">
             ${entStat("Permits", permits.length)}
-            ${entStat("Est. value", entMoney(projectValue))}
+            ${entStat("Total value", entMoney(projectValue))}
             ${entStat("First activity", entDate(project.first_seen_date))}
             ${entStat("Latest activity", entDate(project.latest_activity_date))}
           </div>
@@ -8327,14 +8395,13 @@ async function renderProjectPage(slug, env, request) {
         </div>
       </div>
       <div>
-        <div class="bs-card">
-          <h3>Participants</h3>
-          ${participantsHtml}
-        </div>
+        ${renderAlertCta({ permits, subject: project.name })}
+        ${participantsHtml ? `<div class="bs-card"><h3>Participants</h3>${participantsHtml}</div>` : ""}
         <div class="bs-card">
           <h3>About this project</h3>
-          <p style="font-size:0.85rem;color:var(--text-muted);margin:0;">This project was inferred by grouping related permits at the same address. Confidence score ${project.confidence_score}/100 reflects how strongly the permits appear to belong to a single effort.</p>
+          <p style="font-size:0.85rem;color:var(--text-muted);margin:0;">This project was inferred by grouping related permits at the same address.${project.confidence_score != null ? ` A match confidence of ${escapeHtml(project.confidence_score)}/100 reflects how strongly the permits appear to belong to a single effort.` : ""}${project.address_slug ? ` <a class="ent-link" href="/address/${encodeURIComponent(project.address_slug)}">Every permit at ${escapeHtml(projectAddress)}</a>.` : ""}</p>
         </div>
+        ${renderDatasetCta({ context: "project", subject: "this project's permits", count: permits.length })}
       </div>
     </div>`;
 
@@ -8346,7 +8413,7 @@ async function renderProjectPage(slug, env, request) {
       jsonLd,
       noindex,
       ogType: "article",
-      body: `${body}${renderDataTrustNote(project.latest_activity_date || latestPermitActivity(permits), "Projects are inferred permit groups, not verified completed developments.")}`,
+      body: `${body}${renderDataTrustNote(latestPermitActivity(permits) || project.latest_activity_date, "Projects are inferred permit groups, not verified completed developments.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
   );
@@ -8433,8 +8500,15 @@ async function renderNeighborhoodPage(slug, env, request) {
   // "Other Seattle" / "Other" are geocoder fallbacks, not places: reachable,
   // never indexed, and kept out of the sitemap, hub and rankings.
   const noindex = isPlaceholderNeighborhood(nb.name);
-  const title = `${nb.name} Construction Permits — Seattle`;
-  const description = `Recent permits, active projects, top contractors, estimated values, and the most active addresses in ${nb.name}, Seattle.`;
+  const title = `${nb.name} Building Permits, Seattle | Building Seattle`;
+  const latestActivity = latestPermitActivity(recentPermits);
+  // Data-driven description (audit E19): this neighborhood's own figures
+  // instead of one sentence shared by every neighborhood page.
+  const description = truncateMetaDescription(
+    `${countLabel(permitCount, "building permit")} in ${nb.name}, Seattle${totalValue ? ` worth ${compactMetricMoney(totalValue)} in counted value` : ""}${latestActivity ? `, latest ${formatCalendarDate(latestActivity)}` : ""}. Recent permits, contractors and the busiest addresses.`,
+    160,
+  );
+  const nbFilter = encodeURIComponent(nb.name);
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -8469,6 +8543,7 @@ async function renderNeighborhoodPage(slug, env, request) {
 
   const listOrEmpty = (rows, fn, empty) =>
     rows.length ? `<ul class="ent-list">${rows.map(fn).join("")}</ul>` : `<p style="color:var(--text-muted);">${empty}</p>`;
+  const viewAll = (href, label) => `<p style="margin:0.75rem 0 0;font-size:0.85rem;"><a class="ent-link" href="${href}">${label} &rarr;</a></p>`;
 
   const body = `
     ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Neighborhoods", href: "/neighborhoods" }, { label: nb.name }])}
@@ -8480,43 +8555,49 @@ async function renderNeighborhoodPage(slug, env, request) {
       <div class="stat-row">
         ${entStat("Permits", permitCount)}
         ${entStat("Total value", entMoney(totalValue))}
-        ${entStat("Active projects", projects.length)}
-        ${entStat("Top contractors", topContractors.length)}
+        ${entStat("Latest permit activity", latestActivity ? entDate(latestActivity) : "—")}
       </div>
+      <p style="margin:0;font-size:0.8rem;color:var(--text-muted);">Total value counts a valuation SDCI repeats across related demolition permits once. <a class="ent-link" href="/methodology#value">How values are counted</a></p>
     </div>
     <div class="ent-grid">
       <div>
         <div class="bs-card">
           <h2>Recent permits</h2>
           ${entPermitRows(recentPermits)}
+          ${permitCount > recentPermits.length ? viewAll(`/permits?neighborhood=${nbFilter}`, `All ${countLabel(permitCount, "permit")} in ${escapeHtml(nb.name)}`) : ""}
         </div>
-        <div class="bs-card">
-          <h2>Active projects</h2>
+        ${projects.length ? `<div class="bs-card">
+          <h2>Recent projects</h2>
           ${listOrEmpty(
             projects,
             (pr) =>
               `<li><a class="ent-link" href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${entMoney(pr.total_estimated_value)} · ${entDate(pr.latest_activity_date)}</span></li>`,
-            "No active projects yet.",
+            "",
           )}
-        </div>
+          ${viewAll("/projects", "Browse all projects")}
+        </div>` : ""}
       </div>
       <div>
+        ${renderAlertCta({ permits: recentPermits, subject: nb.name })}
         <div class="bs-card">
           <h3>Top contractors</h3>
           ${listOrEmpty(
             topContractors,
-            (c) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(c.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${c.cnt} permits</span></li>`,
+            (c) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(displayName(c.name))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(c.cnt, "permit")}</span></li>`,
             "No contractors on record.",
           )}
+          ${topContractors.length ? viewAll(`/contractors?neighborhood=${nbFilter}`, `All contractors in ${escapeHtml(nb.name)}`) : ""}
         </div>
         <div class="bs-card">
           <h3>Most active addresses</h3>
           ${listOrEmpty(
             topAddresses,
-            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
+            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(a.permits, "permit")}</span></li>`,
             "No addresses on record.",
           )}
+          ${topAddresses.length ? viewAll(`/addresses?neighborhood=${nbFilter}`, `All addresses in ${escapeHtml(nb.name)}`) : ""}
         </div>
+        ${renderDatasetCta({ context: "neighborhood", subject: `${nb.name} permits`, count: permitCount })}
       </div>
     </div>`;
 
@@ -8527,7 +8608,7 @@ async function renderNeighborhoodPage(slug, env, request) {
       canonical,
       jsonLd,
       noindex,
-      body: `${body}${renderDataTrustNote(latestPermitActivity(recentPermits), "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.")}`,
+      body: `${body}${renderDataTrustNote(latestActivity, "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
   );
@@ -8639,11 +8720,19 @@ async function renderOrgContractorPage(slug, env, request) {
   const permitListHeading = totalPermits > shownPermits
     ? `Recent permits (${shownPermits} of ${totalPermits.toLocaleString("en-US")})`
     : `Permits (${shownPermits})`;
-  const roleLabels = roles.map((r) => r.role).join(", ") || "participant";
+  const roleLabels = roleList(roles);
+  const isContractor = roles.some((r) => String(r.role || "").toLowerCase() === "contractor");
   const isOrg = org.type_guess === "organization";
+  const name = displayName(org.name) || org.name;
+  const latestActivity = latestPermitActivity(permits);
+  const parent = isContractor ? { label: "Contractors", href: "/contractors" } : { label: "Permits", href: "/permits" };
 
-  const title = `${org.name} Seattle Permit & Construction Activity`;
-  const description = `See permits, projects, addresses, estimated values, and recent construction activity associated with ${org.name} in Seattle.`;
+  const title = `${name}: Seattle Permits | Building Seattle`;
+  // Data-driven description (audit E19): this entity's own figures.
+  const description = truncateMetaDescription(
+    `${name}: ${countLabel(totalPermits, "Seattle building permit")} as ${roleLabels.toLowerCase()}${activeCount ? `, ${formatCount(activeCount)} active` : ""}${totalValue ? `, ${compactMetricMoney(totalValue)} counted value` : ""}. Permit records, addresses and neighborhoods.`,
+    160,
+  );
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -8651,17 +8740,17 @@ async function renderOrgContractorPage(slug, env, request) {
       isOrg
         ? {
             "@type": "Organization",
-            name: org.name,
+            name,
             url: canonical,
             address: { "@type": "PostalAddress", addressLocality: "Seattle", addressRegion: "WA", addressCountry: "US" },
           }
-        : { "@type": "Person", name: org.name, url: canonical },
+        : { "@type": "Person", name, url: canonical },
       {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
-          { "@type": "ListItem", position: 3, name: org.name, item: selfUrl },
+          { "@type": "ListItem", position: 2, name: parent.label, item: `${BASE_URL}${parent.href}` },
+          { "@type": "ListItem", position: 3, name, item: selfUrl },
         ],
       },
     ],
@@ -8671,17 +8760,17 @@ async function renderOrgContractorPage(slug, env, request) {
     rows.length ? `<ul class="ent-list">${rows.map(fn).join("")}</ul>` : `<p style="color:var(--text-muted);">${empty}</p>`;
 
   const body = `
-    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Permits", href: "/permits" }, { label: org.name }])}
+    ${entBreadcrumb([{ label: "Home", href: "/" }, parent, { label: name }])}
     <div class="ent-hero">
       <div class="ent-kicker">${escapeHtml(isOrg ? "Organization" : "Person")} · ${escapeHtml(roleLabels)}</div>
-      <h1>${escapeHtml(org.name)}</h1>
+      <h1>${escapeHtml(name)}</h1>
     </div>
     <div class="bs-card">
       <div class="stat-row">
-        ${entStat("Permits", totalPermits.toLocaleString("en-US"))}
-        ${entStat("Active / recent", activeCount)}
+        ${entStat("Permits", totalPermits)}
+        ${entStat("Active", activeCount)}
         ${entStat("Total value", entMoney(totalValue))}
-        ${entStat("Addresses", addresses.length)}
+        ${entStat("Latest permit activity", latestActivity ? entDate(latestActivity) : "—")}
       </div>
     </div>
     <div class="ent-grid">
@@ -8690,32 +8779,34 @@ async function renderOrgContractorPage(slug, env, request) {
           <h2>${escapeHtml(permitListHeading)}</h2>
           ${entPermitRows(permits)}
         </div>
-        <div class="bs-card">
+        ${projects.length ? `<div class="bs-card">
           <h2>Inferred projects</h2>
           ${listOrEmpty(
             projects,
             (pr) => `<li><a class="ent-link" href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${entMoney(pr.total_estimated_value)} · ${entDate(pr.latest_activity_date)}</span></li>`,
-            "No inferred projects yet.",
+            "",
           )}
-        </div>
+        </div>` : ""}
       </div>
       <div>
+        ${renderAlertCta({ permits, subject: name })}
         <div class="bs-card">
           <h3>Addresses worked on</h3>
           ${listOrEmpty(
             addresses,
-            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
+            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(a.permits, "permit")}</span></li>`,
             "No addresses on record.",
           )}
         </div>
-        <div class="bs-card">
+        ${neighborhoods.length ? `<div class="bs-card">
           <h3>Most common neighborhoods</h3>
           ${listOrEmpty(
             neighborhoods,
-            (n) => `<li><a class="ent-link" href="/neighborhood/${encodeURIComponent(n.slug)}">${escapeHtml(n.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${n.cnt} permits</span></li>`,
-            "No neighborhood data.",
+            (n) => `<li><a class="ent-link" href="/neighborhood/${encodeURIComponent(n.slug)}">${escapeHtml(n.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(n.cnt, "permit")}</span></li>`,
+            "",
           )}
-        </div>
+        </div>` : ""}
+        ${renderDatasetCta({ context: "contractor", subject: `${name}'s permits`, count: totalPermits })}
       </div>
     </div>`;
 
@@ -8727,7 +8818,7 @@ async function renderOrgContractorPage(slug, env, request) {
       jsonLd,
       noindex,
       ogType: "profile",
-      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Participant matching follows names in public permit records and may combine or separate similarly named entities.")}`,
+      body: `${body}${renderDataTrustNote(latestActivity, "Participant matching follows names in public permit records and may combine or separate similarly named entities.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
   );
@@ -10536,14 +10627,14 @@ async function renderMethodologyPage(env) {
     <section class="bs-card">
       <h2>Ingest and enrichment</h2>
       <p>A scheduled daily ingest upserts base permit fields. A separate enrichment job retrieves detail-page fields that are not consistently available in the open-data feed, including parcel number, review level, review milestones, contractor license details, housing-unit changes, and fuller descriptions.</p>
-      <p>Dates and statuses may change as SDCI reviewers update a record. Page-level “updated through” labels report the newest source-record timestamp included in that result, not the time a reader opened the page.</p>
+      <p>Dates and statuses may change as SDCI reviewers update a record. “Updated through” labels report the newest applied, issued or completed date in the SDCI records we hold, site-wide, so every page shows the same value. Property, project, neighborhood and participant pages also show the latest permit activity among their own records. Neither is the time a reader opened the page or the time we last re-saved a row.</p>
     </section>
     <section class="bs-card">
       <h2>Derived entities and matching confidence</h2>
       <p>Permits are the evidence records. Address pages come from normalized street addresses. Projects group permits that share an address and have related timing and work signals. Contractor and participant pages use names and license information published on permits.</p>
       <p>Entity grouping is deterministic but inferred. Similar names, shared addresses, incomplete licenses, or changed project descriptions can split one real-world entity into several pages or combine records that later need correction.</p>
     </section>
-    <section class="bs-card">
+    <section class="bs-card" id="value">
       <h2>Values, units, and completion</h2>
       <p><strong>Declared permit value is not verified project cost.</strong> It can omit land, design, financing, owner-provided work, later changes, or portions filed under related permits.</p>
       <p><strong>Repeated demolition valuations are counted once in totals.</strong> SDCI often attaches a redevelopment's whole valuation to each of its demolition permits; twelve demolition permits at 4747 30th Ave NE each declare $129,000,000. When a demolition permit's value matches another permit at the same address, totals, rankings and project values count it once. Each permit's own page keeps the value SDCI declared, and construction permits are never de-duplicated, since identical values there are usually separate buildings.</p>
@@ -10563,11 +10654,147 @@ async function renderMethodologyPage(env) {
   );
 }
 
+// GET /alerts: what the free per-permit alerts do and how to start one. The
+// subscribe/confirm/unsubscribe handlers live under /alerts/* and are
+// separate; this page only explains them and sends people to a permit.
+function renderAlertsLandingPage() {
+  const canonical = `${BASE_URL}/alerts`;
+  const title = "Seattle Permit Status Alerts | Building Seattle";
+  const description =
+    "Free email alerts when a Seattle building permit changes status in SDCI records. Confirm once, one email per change, one-click unsubscribe.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "WebPage", name: title, description, url: canonical },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Permit alerts", item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Permit alerts" }])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Free alerts</div>
+      <h1>Seattle permit status alerts</h1>
+      <p style="color:var(--text-muted);max-width:68ch;margin:0;">Follow a single permit and get an email when Seattle SDCI records a new status for it: applied to issued, issued to completed, or expired. Alerts are free.</p>
+    </div>
+    <div class="ent-grid">
+      <div>
+        <section class="bs-card">
+          <h2>How it works</h2>
+          <ol style="margin:0;padding-left:1.25rem;">
+            <li><strong>Find the permit.</strong> Search by address, permit number or contractor, or open a permit from any property, project, contractor or neighborhood page.</li>
+            <li><strong>Choose &ldquo;Email Me Permit Updates&rdquo;</strong> on the permit page and enter your email address.</li>
+            <li><strong>Confirm.</strong> We send one confirmation email. Nothing else is sent until you click its link.</li>
+            <li><strong>Get one email per status change.</strong> Changes are picked up by the daily ingest, so an email arrives within about a day of SDCI updating the record.</li>
+          </ol>
+          <form class="bs-search" action="/permits" method="get" role="search" style="margin-top:1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <label for="alerts-search" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">Find a permit to watch</label>
+            <input class="bs-input" id="alerts-search" name="q" type="search" placeholder="Address or permit number" style="flex:1;min-width:12rem;">
+            <input type="hidden" name="status" value="active">
+            <button class="bs-btn bs-btn--primary" type="submit">Find an active permit</button>
+          </form>
+        </section>
+        <section class="bs-card">
+          <h2>What you won't get</h2>
+          <ul style="margin:0;padding-left:1.25rem;">
+            <li>Alerts for completed, expired or canceled permits: there is no next status to report, so those pages don't offer one.</li>
+            <li>Marketing email. The address is used for the alerts you confirmed.</li>
+            <li>Alerts for a whole contractor, address or neighborhood. Alerts follow one permit at a time for now.</li>
+          </ul>
+        </section>
+      </div>
+      <div>
+        <section class="bs-card">
+          <h3>Stop any time</h3>
+          <p style="margin:0;font-size:0.9rem;color:var(--text-muted);">Every alert email has a one-click unsubscribe link that ends that permit's alerts.</p>
+        </section>
+        <section class="bs-card">
+          <h3>Your data</h3>
+          <p style="margin:0;font-size:0.9rem;color:var(--text-muted);">We store your email address, the permit you follow and the dates you confirmed or unsubscribed. See the <a class="ent-link" href="/privacy">privacy notice</a>.</p>
+        </section>
+        <section class="bs-card">
+          <h3>Need every permit at once?</h3>
+          <p style="margin:0 0 0.5rem;font-size:0.9rem;color:var(--text-muted);">The downloadable dataset has ${DATASET_RELEASE.records.toLocaleString("en-US")} permits in one CSV.</p>
+          <a class="ent-link" href="/data?utm_source=buildingseattle&amp;utm_medium=site&amp;utm_campaign=alerts_page">See the dataset &rarr;</a>
+        </section>
+      </div>
+    </div>`;
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "alerts" }),
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=86400" } },
+  );
+}
+
+// GET /privacy: what the site collects. Factual description of the code paths
+// (alerts, leads, page views, Cloudflare Web Analytics); the owner should
+// review the wording before launch.
+function renderPrivacyPage() {
+  const canonical = `${BASE_URL}/privacy`;
+  const title = "Privacy Notice | Building Seattle";
+  const description =
+    "What Building Seattle collects: alert email addresses, optional form fields, page-view logs and cookieless Cloudflare Web Analytics, and how to reach us.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "WebPage", name: title, description, url: canonical },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Privacy", item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+  const contact = `<a class="ent-link" href="mailto:${SITE_CONTACT_EMAIL}">${SITE_CONTACT_EMAIL}</a>`;
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Privacy" }])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Privacy</div>
+      <h1>Privacy notice</h1>
+      <p style="color:var(--text-muted);max-width:68ch;margin:0;">Building Seattle publishes public permit records. This page covers the information the site collects about visitors and subscribers.</p>
+    </div>
+    <section class="bs-card">
+      <h2>Permit alert subscriptions</h2>
+      <p>When you sign up for a permit alert we store your email address, the permit number, the subscription status, and when you confirmed, were last emailed, or unsubscribed. The address is used to send the confirmation email and the status-change alerts you confirmed. Each alert carries a one-click unsubscribe link; unsubscribing stops further alerts for that permit.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Forms</h2>
+      <p>If you send us a request through a site form, we store the fields you submit (such as email, company, interest and neighborhoods), the form's source and your browser's user-agent string, and use them to answer the request.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Server logs and analytics</h2>
+      <p>For pages we log the path, the referring page, the browser's user-agent string, the country Cloudflare reports for the request, and the time. Aggregate traffic is also measured with Cloudflare Web Analytics, which does not use cookies. Cloudflare hosts the site and processes requests, including IP addresses, as our infrastructure provider.</p>
+      <p>The site sets no cookies of its own. Your light/dark theme choice is kept in your browser's local storage and never sent to us.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Third parties</h2>
+      <p>Permit pages embed a Google Maps view, so your browser requests map tiles from Google when you open one. Dataset purchases are handled by Gumroad under its own privacy policy; we receive the order details Gumroad shares with sellers.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Permit records</h2>
+      <p>Names and addresses on permit, property and contractor pages come from public Seattle SDCI records. To report an error or ask about a record, contact us; the official record is maintained by SDCI.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Contact</h2>
+      <p>Questions or requests about your information, including deleting an alert subscription: ${contact}.</p>
+    </section>`;
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "privacy" }),
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=86400" } },
+  );
+}
+
 function renderAboutPage() {
   const canonical = `${BASE_URL}/about`;
   const title = "About Building Seattle — Construction Permit Intelligence";
   const description =
-    "Building Seattle turns public Seattle SDCI permit records into searchable property, contractor, project, and neighborhood views for the metro area.";
+    "Building Seattle turns public City of Seattle SDCI permit records into searchable property, contractor, project, and neighborhood pages.";
   const socialImage = `${BASE_URL}/social/insight.png`;
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -10664,13 +10891,13 @@ function renderAboutPage() {
         <section class="hero">
             <div class="container">
                 <h1>About Building Seattle</h1>
-                <p>Construction permit intelligence for the Seattle metro area — tracking who's building what, where, and with whom.</p>
+                <p>Construction permit intelligence for the City of Seattle — tracking who's building what, where, and with whom.</p>
             </div>
         </section>
         <section class="content">
             <div class="container">
                 <h2>What Building Seattle does</h2>
-                <p>Building Seattle collects, organizes, and publishes construction permit data from the <strong>Seattle Department of Construction and Inspections</strong>. Every permit — from tenant improvements and residential additions to major commercial projects — is ingested, enriched, and made searchable through a fast, modern web interface.</p>
+                <p>Building Seattle collects, organizes, and publishes construction permit data from the <strong>Seattle Department of Construction and Inspections</strong> (SDCI). Permits in the public feed — from tenant improvements and residential additions to major commercial projects — are ingested, enriched, and made searchable.</p>
                 <p>The site connects permits to their <strong>addresses, contractors, projects, and neighborhoods</strong>, turning raw city records into structured, linkable pages that help you understand Seattle's construction market at a glance.</p>
 
                 <h2>How the data works</h2>
@@ -10682,7 +10909,7 @@ function renderAboutPage() {
                     <li>Maps permits to Seattle neighborhoods</li>
                     <li>Tracks permit timelines, review cycles, and status changes</li>
                 </ul>
-                <p>Data is refreshed regularly to reflect new permit applications, issuances, and status updates from SDCI. The <a href="/methodology">methodology and sources page</a> documents refresh timing, entity matching, classifications, and known limitations.</p>
+                <p>A scheduled ingest runs daily to pick up new permit applications, issuances, and status updates from SDCI. The <a href="/methodology">methodology and sources page</a> documents refresh timing, entity matching, classifications, and known limitations.</p>
 
                 <h2>What you can do here</h2>
                 <ul>
@@ -10695,10 +10922,10 @@ function renderAboutPage() {
                 </ul>
 
                 <h2>Coverage</h2>
-                <p>Building Seattle covers construction permits within the city of Seattle, Washington, sourced from the Seattle Department of Construction and Inspections public records. The data includes permits across all permit types — commercial, residential, industrial, demolition, and more — spanning from historical records to the most recently filed applications.</p>
+                <p>Building Seattle covers building permits for addresses within the City of Seattle, sourced from SDCI's public open-data feed. It does not cover the rest of King County or other cities in the metro area. The site holds recent permit activity rather than the city's full historical archive; the current downloadable dataset (release ${escapeHtml(DATASET_RELEASE.version)}) covers applications dated ${escapeHtml(formatCalendarDate(DATASET_RELEASE.appliedFrom, { month: "long" }))} to ${escapeHtml(formatCalendarDate(DATASET_RELEASE.appliedThrough, { month: "long" }))}. Permit types include commercial, residential, industrial, demolition, and more.</p>
 
                 <h2>Get in touch</h2>
-                <p>Building Seattle is an independent project. For questions, corrections, or data inquiries, reach out via the site or file an issue on the project repository.</p>
+                <p>Building Seattle is an independent project. For questions, corrections, or data inquiries, email <a href="mailto:${SITE_CONTACT_EMAIL}">${SITE_CONTACT_EMAIL}</a>. The <a href="/privacy">privacy notice</a> explains what the site collects.</p>
 
                 <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
                     <a href="/permits" class="btn" style="display:inline-flex;align-items:center;justify-content:center;padding:0.75rem 1.5rem;border-radius:0.5rem;font-weight:600;text-decoration:none;background:var(--accent);color:var(--on-accent);">Browse Live Permits</a>
@@ -10719,33 +10946,23 @@ function renderAboutPage() {
 const GUMROAD_PRODUCT_URL = "https://buildingseattle.gumroad.com/l/seattle-permits";
 const GUMROAD_UTM = "utm_source=buildingseattle&utm_medium=site&utm_campaign=data_page";
 
+// /data sells the shipped release, so every figure here comes from
+// DATASET_RELEASE (site_content.js, mirrored from gumroad/VERSION.txt), not
+// live D1 counts, which drift from the file buyers download.
 async function renderDataPage(env) {
-  const datasetColumnCount = developmentSitesArePublic(env) ? 38 : 32;
+  const release = DATASET_RELEASE;
+  // With site context switched off, the development-site columns are withheld.
+  const datasetColumnCount = developmentSitesArePublic(env)
+    ? release.columns
+    : release.columns - DEVELOPMENT_SITE_FIELDS.length;
   const canonical = `${BASE_URL}/data`;
+  const coverage = `${formatCalendarDate(release.appliedFrom, { month: "long" })} to ${formatCalendarDate(release.appliedThrough, { month: "long" })}`;
+  const exportDate = formatCalendarDate(release.exportDate, { month: "long" });
+  const recordCount = release.records.toLocaleString("en-US");
+  const contractorCount = release.contractors.toLocaleString("en-US");
+  const valueLabel = compactMetricMoney(release.countedValue);
   const title = "Seattle Permit Dataset — CSV Download | Building Seattle";
-  const description =
-    "Every Seattle construction permit as a ready-to-use CSV, enriched with parcel numbers, review levels, and contractor licenses. Free 100-row sample.";
-
-  let stats = { permits: 0, contractors: 0, neighborhoods: 0, total_value: 0 };
-  try {
-    const row = await env.DB.prepare(
-      `
-      SELECT
-        COUNT(*) as permits,
-        SUM(${countedValueSql("permits")}) as total_value,
-        COUNT(DISTINCT neighborhood) as neighborhoods,
-        COUNT(DISTINCT contractor_id) as contractors
-      FROM permits
-    `,
-    ).first();
-    if (row) stats = row;
-  } catch (error) {
-    console.warn("Data page stats unavailable:", error.message);
-  }
-
-  const billions = stats.total_value ? `$${(stats.total_value / 1e9).toFixed(2)}B` : "$12B+";
-  const permitCount = stats.permits ? Number(stats.permits).toLocaleString() : "13,000+";
-  const contractorCount = stats.contractors ? Number(stats.contractors).toLocaleString() : "2,000+";
+  const description = `${recordCount} Seattle SDCI building permits applied ${formatMonthYear(release.appliedFrom)}–${formatMonthYear(release.appliedThrough)}, in one ${datasetColumnCount}-column CSV with contractor licenses and review timing. Free sample.`;
   const buyUrl = `${GUMROAD_PRODUCT_URL}?${GUMROAD_UTM}`;
   const socialImage = `${BASE_URL}/social/insight.png`;
   const jsonLd = JSON.stringify({
@@ -10756,6 +10973,9 @@ async function renderDataPage(env) {
         name: "Seattle construction permit dataset",
         description,
         url: canonical,
+        version: release.version,
+        dateModified: release.exportDate,
+        temporalCoverage: `${release.appliedFrom}/${release.appliedThrough}`,
         creator: { "@type": "Organization", name: "Building Seattle", url: `${BASE_URL}/` },
         spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
         isAccessibleForFree: false,
@@ -10786,6 +11006,16 @@ async function renderDataPage(env) {
       },
     ],
   }).replaceAll("<", "\\u003c");
+
+  const yes = `<span aria-label="Included">&#10003;</span>`;
+  const no = `<span aria-label="Not included" style="color:var(--text-muted);">&mdash;</span>`;
+  const tierRows = [
+    [`Permit CSV: ${recordCount} records, ${datasetColumnCount} columns`, yes, yes],
+    ["Data dictionary (every column documented)", yes, yes],
+    [`Contractor CSV: ${contractorCount} contractors with licenses, specialties, permit counts and values`, no, yes],
+    ["Python refresh script (standard library only) to pull newer records yourself", no, yes],
+    ["Later releases pushed to your Gumroad library", yes, yes],
+  ];
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -10838,16 +11068,21 @@ async function renderDataPage(env) {
         .content a.bs-btn { font-weight: 600; text-decoration: none; }
         .content a.bs-btn--primary { color: var(--on-accent); }
         .content a.bs-btn--secondary { color: var(--ink); }
-        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0 0.75rem; }
         .stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; text-align: center; }
         .stat-card .num { font-size: 2rem; font-weight: 800; color: var(--accent); }
         .stat-card .label { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .release-note { font-size: 0.9rem !important; }
         .tier-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin: 2rem 0; }
         .tier-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 2rem; }
         .tier-card.featured { border-color: var(--accent); box-shadow: 0 4px 24px rgba(0,0,0,0.06); }
         .tier-card h3 { font-size: 1.25rem; font-weight: 700; color: var(--primary); }
         .tier-card .price { font-size: 2.25rem; font-weight: 800; color: var(--text); margin: 0.5rem 0 1rem; }
         .tier-card ul { margin-left: 1.25rem; }
+        .tier-table { width: 100%; border-collapse: collapse; background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; font-size: 0.95rem; }
+        .tier-table th, .tier-table td { padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; color: var(--text); }
+        .tier-table th[scope="col"] { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+        .tier-table td.mark { text-align: center; width: 7rem; font-weight: 700; }
         a.bs-btn { text-decoration: none; }
     </style>
 </head>
@@ -10858,32 +11093,43 @@ async function renderDataPage(env) {
         <section class="hero">
             <div class="container">
                 <h1>The Seattle Permit Dataset</h1>
-                <p>Everything on this site — ${permitCount} enriched construction permits, ${billions} in project value — exported as a clean, ready-to-analyze CSV. Refreshed monthly, updates free for every buyer.</p>
+                <p>${recordCount} City of Seattle building permits, applied for ${escapeHtml(coverage)}, exported as one clean CSV. Release ${escapeHtml(release.version)}, built ${escapeHtml(exportDate)}.</p>
             </div>
         </section>
         <section class="content">
             <div class="container">
                 <div class="stat-grid">
-                    <div class="stat-card"><div class="num">${permitCount}</div><div class="label">Permits</div></div>
-                    <div class="stat-card"><div class="num">${billions}</div><div class="label">Construction value</div></div>
-                    <div class="stat-card"><div class="num">${contractorCount}</div><div class="label">Contractors</div></div>
+                    <div class="stat-card"><div class="num">${recordCount}</div><div class="label">Permits</div></div>
+                    <div class="stat-card"><div class="num">${escapeHtml(valueLabel)}</div><div class="label">Counted permit value</div></div>
+                    <div class="stat-card"><div class="num">${contractorCount}</div><div class="label">Contractors (Pro CSV)</div></div>
                     <div class="stat-card"><div class="num">${datasetColumnCount}</div><div class="label">Columns per record</div></div>
                 </div>
+                <p class="release-note">Figures describe the file you download (release ${escapeHtml(release.version)}, exported ${escapeHtml(exportDate)}), not the live site, which keeps updating daily. Value is SDCI's declared value with a demolition valuation repeated at one address counted once (${escapeHtml(compactMetricMoney(release.declaredValue))} before that rule); see the <a href="/methodology#value">methodology</a>.</p>
 
                 <h2>What's in it</h2>
-                <p>Every construction permit filed with Seattle SDCI, cleaned and deduplicated, then enriched with data the open data portal doesn't have: <strong>parcel numbers, review levels, full detail-page descriptions, contractor license numbers, review-cycle counts, and housing unit breakdowns</strong>. One UTF-8 CSV that opens in Excel, Google Sheets, pandas, or R — plus a full data dictionary.</p>
+                <p>Building permits filed with the Seattle Department of Construction and Inspections (SDCI) for addresses in the City of Seattle, with applications dated ${escapeHtml(coverage)}. Each record is cleaned, deduplicated by permit number, and enriched with fields the open-data feed doesn't carry: <strong>SDCI property and development-site references, review levels, full detail-page descriptions, contractor license numbers, review-cycle counts, and housing-unit changes</strong>. One UTF-8 CSV that opens in Excel, Google Sheets, pandas, or R, plus a full data dictionary.</p>
+                <p>It does not cover King County outside the city, and the site references are SDCI identifiers, not King County parcel numbers.</p>
 
                 <h2>Try before you buy</h2>
-                <p>A <strong>free 100-row sample</strong> with the same ${datasetColumnCount} columns and real enriched data is available on the product page. If it doesn't have what you need, don't buy the full version. If you do buy and it isn't useful, there's a 14-day no-questions refund.</p>
+                <p>A <strong>free ${release.sampleRows}-row sample</strong> with the same ${datasetColumnCount} columns and real enriched data is on the <a href="${GUMROAD_PRODUCT_URL}?${GUMROAD_UTM}&utm_content=sample" rel="noopener">Gumroad product page</a>. If it doesn't have what you need, don't buy the full version. If you do buy and it isn't useful, there's a 14-day no-questions refund.</p>
+
+                <h2>Foundation or Pro</h2>
+                <p>Both tiers include the same permit file. Pro adds the contractor table and a script to pull newer records yourself between releases.</p>
+                <div class="table-scroll" role="region" aria-label="Tier comparison" tabindex="0">
+                <table class="tier-table">
+                    <thead><tr><th scope="col">Included</th><th scope="col">Foundation $49</th><th scope="col">Pro $89</th></tr></thead>
+                    <tbody>${tierRows.map(([label, foundation, pro]) => `<tr><th scope="row" style="font-weight:500;">${escapeHtml(label)}</th><td class="mark">${foundation}</td><td class="mark">${pro}</td></tr>`).join("")}</tbody>
+                </table>
+                </div>
 
                 <div class="tier-grid">
                     <div class="tier-card">
                         <h3>Foundation</h3>
                         <div class="price">$49</div>
                         <ul>
-                            <li>Full CSV — every permit, ${datasetColumnCount} columns</li>
-                            <li>Complete data dictionary</li>
-                            <li>Free monthly updates via Gumroad</li>
+                            <li>Permit CSV: ${recordCount} records, ${datasetColumnCount} columns</li>
+                            <li>Data dictionary</li>
+                            <li>Later releases via Gumroad</li>
                         </ul>
                         <p style="margin-top:1.5rem;"><a class="bs-btn bs-btn--secondary bs-btn--lg" href="${buyUrl}&utm_content=foundation" rel="noopener">Get Foundation</a></p>
                     </div>
@@ -10892,13 +11138,13 @@ async function renderDataPage(env) {
                         <div class="price">$89</div>
                         <ul>
                             <li>Everything in Foundation</li>
+                            <li>Contractor CSV: ${contractorCount} contractors</li>
                             <li>Python refresh script (stdlib-only)</li>
-                            <li>Contractor CSV — licenses, specialties, permit counts, total values</li>
-                            <li>Free monthly updates via Gumroad</li>
                         </ul>
                         <p style="margin-top:1.5rem;"><a class="bs-btn bs-btn--primary bs-btn--lg" href="${buyUrl}&utm_content=pro" rel="noopener">Get Pro</a></p>
                     </div>
                 </div>
+                <p class="release-note">Choose the tier on the Gumroad checkout page. New releases are pushed to every buyer's Gumroad library as file updates; the <a href="/methodology">methodology</a> explains how records are built.</p>
 
                 <h2>Who it's for</h2>
                 <ul>
@@ -10909,12 +11155,13 @@ async function renderDataPage(env) {
                 </ul>
 
                 <h2>Why pay for public data?</h2>
-                <p>The raw records are public — the work isn't. The city publishes permits piecemeal through a clunky portal, without contractor licenses, parcel numbers, review levels, or detailed descriptions. Our pipeline scrapes, cleans, deduplicates, and enriches every record so you don't spend a weekend doing it yourself.</p>
+                <p>The raw records are public — the work isn't. The city publishes permits piecemeal, without contractor licenses, review levels, or detailed descriptions in the open-data feed. Our pipeline scrapes, cleans, deduplicates, and enriches every record so you don't spend a weekend doing it yourself.</p>
 
                 <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
                     <a href="${buyUrl}" class="bs-btn bs-btn--primary bs-btn--lg" rel="noopener">Get the Dataset</a>
                     <a href="/permits" class="bs-btn bs-btn--secondary bs-btn--lg">Browse the Data Live</a>
                 </div>
+                <p class="release-note" style="margin-top:1.5rem;">Questions about the data or a purchase: <a href="mailto:${SITE_CONTACT_EMAIL}">${SITE_CONTACT_EMAIL}</a>. Purchases are handled by Gumroad; see our <a href="/privacy">privacy notice</a>.</p>
             </div>
         </section>
     </main>

@@ -481,8 +481,9 @@ test("homepage rankings leave out placeholder neighborhoods and city-only addres
   const addresses = snapshot.addresses.map((row) => row.label);
   assert.ok(neighborhoods.includes("Ballard"), neighborhoods.join());
   assert.ok(!neighborhoods.includes("Other Seattle"), neighborhoods.join());
-  assert.ok(addresses.includes("400 OAK ST"), addresses.join());
-  assert.ok(!addresses.includes("Seattle, WA"), addresses.join());
+  // Labels prefer the graph's display address ("400 OAK ST, Seattle, WA").
+  assert.ok(addresses.some((label) => label.startsWith("400 OAK ST")), addresses.join());
+  assert.ok(!addresses.some((label) => /^seattle\b/i.test(label)), addresses.join());
 });
 
 // In production the [assets] layer answers files in public/ before the worker runs.

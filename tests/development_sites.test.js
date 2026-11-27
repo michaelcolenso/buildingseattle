@@ -159,7 +159,7 @@ test("permit pages render the outline and unavailable state, and MCP inherits fi
     assert.match(html, /Development-site boundary for DV0025961/);
     assert.match(html, /maps.google.com\/maps/);
     const unmatched = await (await fetch("/permits/P-3")).text();
-    assert.match(unmatched, /Development-site information unavailable/);
+    assert.doesNotMatch(unmatched, /Development-site information unavailable|card-label">Development site</);
     const response = await fetch("/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search_permits", arguments: { q: "P-1" } } }) });
     const result = await response.json();
     assert.equal(result.result.structuredContent.results[0].development_site_sqft, 5000);

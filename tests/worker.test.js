@@ -1033,8 +1033,11 @@ test("GET /sitemaps/permits-1.xml returns canonical URLs with accurate lastmod v
   assert.doesNotMatch(xml, /<priority>|<changefreq>/);
 });
 
-test("GET /data renders the dataset landing page with live stats", async () => {
+test("GET /data describes the shipped release, not live D1 counts (audit F6/E12/G11)", async () => {
   const env = createEnv();
+  const queries = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => { queries.push(sql); return prepare(sql); };
   const response = await worker.fetch(new Request("http://example.com/data"), env, createCtx());
   const html = await response.text();
 
@@ -1044,8 +1047,25 @@ test("GET /data renders the dataset landing page with live stats", async () => {
   assert.match(html, /utm_source=buildingseattle/);
   assert.match(html, /\$49/);
   assert.match(html, /\$89/);
-  // stats come from the mock DB: 2 permits totalling $63.8M
-  assert.match(html, /\$0\.06B/);
+  // Counts, coverage and version come from the release constants. The mock
+  // DB holds 2 permits; none of its figures may leak onto the sales page.
+  assert.equal(queries.filter((sql) => /FROM permits/i.test(sql)).length, 0, "the /data page reads no live counts");
+  assert.match(html, /15,581/);
+  assert.match(html, /2,367/);
+  assert.match(html, /\$11\.3B/);
+  assert.match(html, /applied for May 15, 2024 to November 6, 2026/);
+  assert.match(html, /Release 2026-11, built November 8, 2026/);
+  assert.doesNotMatch(html, /\$0\.06B|\$12B\+|13,000\+|2,000\+/);
+  // No coverage overclaims or the old "parcel numbers" claim.
+  assert.doesNotMatch(html, /Every construction permit|Every Seattle construction permit|Everything on this site/i);
+  assert.doesNotMatch(html, /parcel numbers,/i);
+  assert.match(html, /City of Seattle/);
+  // Tier differences are explicit.
+  assert.match(html, /<table class="tier-table">/);
+  assert.match(html, /Contractor CSV: 2,367 contractors/);
+  assert.match(html, /"version":"2026-11"/);
+  assert.match(html, /"temporalCoverage":"2024-05-15\/2026-11-06"/);
+  assert.match(html, /href="\/privacy"/);
 });
 
 test("trust, dataset, API, and error pages ship complete metadata and schema", async () => {
@@ -1999,11 +2019,15 @@ test("GET /insights/plan-review renders the insights page", async () => {
   assert.match(html, /Insights/);
 });
 
-test("latestPermitActivity selects the freshest available source timestamp", () => {
+test("latestPermitActivity selects the newest SDCI source event, not row-touch timestamps", () => {
+  // updated_at/created_at are bumped by every upsert, so they would report
+  // the ingest date rather than permit activity (audit E14).
   assert.equal(latestPermitActivity([
     { issued_date: "2026-06-01", updated_at: "2026-07-30" },
     { applied_date: "2026-07-01", created_at: "2026-07-02" },
-  ]), "2026-07-30");
+  ]), "2026-07-01");
+  assert.equal(latestPermitActivity([{ applied_date: "2026-05-01", completed_date: "2026-08-02T00:00:00" }]), "2026-08-02");
+  assert.equal(latestPermitActivity([{ updated_at: "2026-07-30" }]), null);
   assert.equal(latestPermitActivity([]), null);
 });
 
@@ -2021,7 +2045,7 @@ test("address detail renders record-level freshness and methodology context", as
           },
           async all() {
             if (sql.includes("FROM permits p LEFT JOIN contractors")) {
-              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, updated_at: "2026-07-30" }] };
+              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, issued_date: "2026-07-30", updated_at: "2026-11-27" }] };
             }
             return { results: [] };
           },
@@ -2033,7 +2057,8 @@ test("address detail renders record-level freshness and methodology context", as
   const html = await response.text();
 
   assert.equal(response.status, 200);
-  assert.match(html, /Source records updated through Jul 30, 2026/);
+  assert.match(html, /Latest permit activity on record here: Jul 30, 2026\./);
+  assert.doesNotMatch(html, /Nov 27, 2026/);
   assert.match(html, /declared value is not verified project cost/i);
   assert.match(html, /Read the full methodology and limitations/);
 });
@@ -2338,7 +2363,7 @@ test("GET /permits/:permit_number builds a specific title, meta description, and
   // to the verified address and contractor entity pages.
   const h1Matches = html.match(/<h1[^>]*>/g) || [];
   assert.equal(h1Matches.length, 1);
-  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>\s*<span class="bs-status"[^>]*>[^<]*<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA <span class="permit-title-id">Permit <span class="bs-id">PERM123<\/span><\/span><\/h1>\s*<span class="bs-status"[^>]*>[^<]*<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
   const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
   assert.ok(summaryMatch);
   const summaryHtml = summaryMatch[1];
@@ -2807,10 +2832,10 @@ test("permit and address pages promote source-backed project descriptors and ent
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/7120268-CN"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices \(#7120268-CN\) \| Building Seattle<\/title>/);
   assert.doesNotMatch(permitHtml, /<title>[^<]*MangoApps Tenant improvement for offices \(MangoApps\)/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*MangoApps[^>]*760 ALOHA ST/);
-  assert.match(permitHtml, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>[\s\S]*MangoApps/);
+  assert.match(permitHtml, /<h1 class="permit-title">760 Aloha St, Seattle, WA <span class="permit-title-id">Permit <span class="bs-id">7120268-CN<\/span><\/span><\/h1>[\s\S]*MangoApps/);
   assert.match(permitHtml, /href="\/address\/760-aloha-st"/);
   assert.match(permitHtml, /href="\/contractor\/d-p-inc-general-contractors"/);
   assert.match(permitHtml, /href="\/project\/tenant-improvement-at-760-aloha-st"/);
@@ -2930,8 +2955,8 @@ test("permit and address pages use safe, useful fallbacks for sparse records", a
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/SPARSE-1"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<h1 class="permit-title">Seattle<\/h1>/);
-  assert.match(permitHtml, /<title>Seattle — General Construction \(Unknown\) \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<h1 class="permit-title">Seattle <span class="permit-title-id">Permit <span class="bs-id">SPARSE-1<\/span><\/span><\/h1>/);
+  assert.match(permitHtml, /<title>Seattle — General Construction permit \(#SPARSE-1\) \| Building Seattle<\/title>/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*Permit SPARSE-1/);
   assert.doesNotMatch(permitHtml, /undefined|null|NaN/);
 
@@ -2981,7 +3006,9 @@ test("entity hub pages highlight their own nav item", async () => {
       },
     },
   };
-  const expected = { contractors: "Contractors", neighborhoods: "Neighborhoods", projects: null, addresses: null };
+  // Projects and Addresses are in the global nav now (audit E20), so their
+  // hubs highlight their own item too.
+  const expected = { contractors: "Contractors", neighborhoods: "Neighborhoods", projects: "Projects", addresses: "Addresses" };
   for (const [slug, label] of Object.entries(expected)) {
     const response = await worker.fetch(new Request(`http://example.com/${slug}`), env, createCtx());
     const html = await response.text();
@@ -3070,7 +3097,7 @@ test("GET /contractor/:slug reports the true permit total, not the capped list l
   assert.match(html, /is a General Contractor operating in Seattle/);
   assert.doesNotMatch(html, /Seattle area construction professional/);
   assert.match(html, /General Contractor · 27 Seattle permits · Downtown/);
-  assert.match(html, /Downtown<\/span>\s*<span[^>]*>1 permit<\/span>/);
+  assert.match(html, /href="\/neighborhood\/downtown"[^>]*>Downtown<\/a>\s*<span[^>]*>1 permit<\/span>/);
   assert.match(html, /· 1 permit<\/span>/);
   assert.match(html, /1 <span[^>]*>day<\/span>/);
   assert.match(html, /Value not reported/);
@@ -3255,7 +3282,7 @@ test("GET /project/:slug counts a valuation SDCI repeats on demolition permits o
   const response = await worker.fetch(new Request("http://example.com/project/demolition-at-4747-30th-ave-ne"), env, createCtx());
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /\$129,000,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /\$129,000,000<\/span><span class="bs-metric__label">Total value/);
   assert.doesNotMatch(html, /\$1,548,000,000/);
   assert.match(html, /SDCI repeats \$129,000,000 on 12 permits; it is counted once\./);
 });
@@ -3314,7 +3341,7 @@ test("GET /project/:slug judges repeats against every permit at the address", as
     all: (q) => (/project_permits jp/.test(q) ? projectPermits : /SELECT id, permit_number, address_id, value FROM permits WHERE address_id = \?/.test(q) ? addressPermits : []),
   });
   const html = await (await worker.fetch(new Request("http://example.com/project/demolition-at-10-elm-st"), env, createCtx())).text();
-  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Total value/);
   assert.match(html, /SDCI repeats \$13,000,000 on 2 permits; it is counted once\./);
 });
 
@@ -3349,4 +3376,43 @@ test("org contractor pages count every permit, not the 50-row list", async () =>
   assert.match(html, />118<\/span><span class="bs-metric__label">Permits/);
   assert.match(html, /Recent permits \(50 of 118\)/);
   assert.doesNotMatch(html, />50<\/span><span class="bs-metric__label">Permits/);
+});
+
+test("permit pages at one address get distinct titles and H1s (audit E6)", async () => {
+  const titles = new Set();
+  const h1s = new Set();
+  for (const permitNumber of ["UNIT-A", "UNIT-B"]) {
+    const env = createEnv();
+    Object.assign(env._state.permits[0], {
+      permit_number: permitNumber,
+      address: "4500 Rainier Ave S, Seattle, WA",
+      description: "Construct townhouse unit per plan.",
+      detailed_description: null,
+    });
+    const html = await (await worker.fetch(new Request(`http://example.com/permits/${permitNumber}`), env, createCtx())).text();
+    titles.add(html.match(/<title>([^<]*)<\/title>/)[1]);
+    h1s.add(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/)[1]);
+  }
+  assert.equal(titles.size, 2);
+  assert.equal(h1s.size, 2);
+});
+
+test("open permits offer alerts beside the timeline; closed permits do not (audit E5/G13)", async () => {
+  const openEnv = createEnv();
+  Object.assign(openEnv._state.permits[0], { status: "active", contractor_name: "ACME\\BUILD LLC", contractor_slug: "acme" });
+  const openHtml = await (await worker.fetch(new Request("http://example.com/permits/PERM123"), openEnv, createCtx())).text();
+  assert.match(openHtml, /id="permit-alerts"/);
+  assert.match(openHtml, /<dialog id="leadModal"/);
+  assert.match(openHtml, /Work is being performed by/);
+  assert.match(openHtml, /Acme\/Build LLC/);
+  assert.match(openHtml, /href="\/privacy"[^>]*>Privacy notice/);
+
+  const closedEnv = createEnv();
+  Object.assign(closedEnv._state.permits[0], { status: "completed", contractor_name: null, contractor_slug: null, work_performed_by: null });
+  const closedHtml = await (await worker.fetch(new Request("http://example.com/permits/PERM123"), closedEnv, createCtx())).text();
+  assert.match(closedHtml, /id="permit-alerts"[\s\S]*?has no status changes left/);
+  assert.doesNotMatch(closedHtml, /<dialog id="leadModal"/);
+  assert.doesNotMatch(closedHtml, /openModal\(\)/);
+  assert.doesNotMatch(closedHtml, /Get an email if a contractor is attached/);
+  assert.match(closedHtml, /<span class="bs-status"[^>]*>[^<]*Completed/);
 });
