@@ -1,11 +1,11 @@
 name = "buildingseattle"
 main = "worker.js"
 compatibility_date = "2026-03-14"
-# Serve only on buildingseattle.com (review S8): the *.workers.dev mirror and
-# per-version preview URLs sit outside the zone's protections and serve a
-# duplicate site. Set here because a dashboard toggle is reset by each deploy.
-# Nothing in the repo calls a workers.dev host (tests/wrangler_config.test.js).
-workers_dev = false
+# Preview URLs sit outside the zone's protections and serve a duplicate site,
+# so they are off (review S8). The *.workers.dev mirror stays on for now: the
+# enrichment job used it because the apex bot rule has blocked GitHub runners
+# (error 1010). Set workers_dev = false once enrich-daily has run green against
+# https://buildingseattle.com (docs/deploy-runbook.md).
 preview_urls = false
 
 [vars]

@@ -136,11 +136,14 @@ The database is `buildingseattle`. Run commands from a checkout of
 
 ## After merge
 
-15. **Confirm workers.dev and preview URLs are off. [reversible]**
-    `wrangler.toml` now sets `workers_dev = false` and `preview_urls = false`.
-    The dashboard should show no `*.workers.dev` route for the Worker. No
-    workflow or script calls a workers.dev host.
-
+15. **Turn off workers.dev once enrichment works on the apex. [reversible]**
+    `wrangler.toml` sets `preview_urls = false`; `workers_dev` is left on because
+    the apex bot rule has blocked GitHub runners with error 1010. After the merge,
+    run enrich-daily by hand (workflow_dispatch). If it is green, add
+    `workers_dev = false` to `wrangler.toml` in a follow-up commit. If it fails with
+    1010, add a WAF skip rule for `/ingest/permit/enrichment/batch` carrying the
+    ingest token, or set the repository variable `WORKER_URL` to the workers.dev
+    URL until you do.
 16. **Resubmit the sitemap in Search Console. [reversible]** Expect a large
     drop in submitted URLs, because thin pages are now noindex and left out of
     the sitemap. That is the policy working, not an indexing failure. Expect a

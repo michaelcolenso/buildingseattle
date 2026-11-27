@@ -8,12 +8,13 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
-test("wrangler.toml turns off the workers.dev mirror and preview URLs (S8)", () => {
+test("wrangler.toml turns off preview URLs; workers.dev waits on enrichment (S8)", () => {
   const toml = read("wrangler.toml");
   // Top-level keys: before the first [section].
   const topLevel = toml.split(/^\[/m)[0];
-  assert.match(topLevel, /^workers_dev\s*=\s*false\s*$/m);
   assert.match(topLevel, /^preview_urls\s*=\s*false\s*$/m);
+  // workers_dev goes to false only after enrich-daily is green on the apex.
+  assert.doesNotMatch(topLevel, /^workers_dev\s*=\s*true\s*$/m);
 });
 
 function walk(dir, out = []) {
