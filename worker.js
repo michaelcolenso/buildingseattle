@@ -4841,11 +4841,14 @@ const ENTITY_HUB_PAGE_SIZE = 48;
 const ACTIVE_PERMIT_SQL =
   "lower(COALESCE(p.status, '')) IN ('active', 'pending', 'new', 'in review', 'under review')";
 // A cluster of one permit is not a project: it repeats the record its address
-// page already publishes. Only multi-permit clusters are listed, linked, and
-// advertised as projects; single-permit cluster pages canonicalize onto the
-// address page instead. `pr` is the projects alias in every query using this.
+// page already publishes. Nor is a cluster that holds every permit at its
+// address and nothing else: its page lists exactly what the address page lists,
+// and Google picks the address page as canonical over it. Only clusters that
+// are neither are listed, linked, and advertised as projects; the duplicates
+// redirect to the address page instead (see renderProjectPage). `pr` is the
+// projects alias in every query using this.
 const MULTI_PERMIT_PROJECT_SQL =
-  "(SELECT COUNT(*) FROM project_permits mpp WHERE mpp.project_id = pr.id) > 1";
+  "((SELECT COUNT(*) FROM project_permits mpp WHERE mpp.project_id = pr.id) > 1 AND NOT (pr.address_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM project_permits dpp JOIN permits dp ON dp.id = dpp.permit_id WHERE dpp.project_id = pr.id AND dp.address_id IS NOT pr.address_id) AND (SELECT COUNT(*) FROM permits ap WHERE ap.address_id = pr.address_id) = (SELECT COUNT(*) FROM project_permits cpp WHERE cpp.project_id = pr.id)))";
 export { buildEntityHubQuery, buildEntityHubState };
 
 function boundedHubChoice(value, allowed, fallback) {
@@ -7744,6 +7747,31 @@ async function renderProjectPage(slug, env, request) {
       headers: { Location: addressUrl, "Cache-Control": "public, max-age=3600" },
     });
   }
+  // A multi-permit cluster that holds every permit at its address, and only
+  // those, lists exactly what the address page lists. Google chose the address
+  // page as canonical over these, so they redirect there too. Same guard as
+  // above: every permit is linked to the project's address, and a failed count
+  // read (null) leaves the page in place rather than redirect blind.
+  if (
+    permits.length > 1 &&
+    addressUrl &&
+    project.address_id != null &&
+    permits.every((permit) => Number(permit.address_id) === Number(project.address_id))
+  ) {
+    const addressPermits = await safeFirst(
+      env,
+      `SELECT COUNT(*) AS total FROM permits WHERE address_id = ?`,
+      [project.address_id],
+    );
+    if (addressPermits && Number(addressPermits.total) === permits.length) {
+      // Short-lived: the URL becomes a real page again if the address gains a
+      // permit outside this project.
+      return new Response(null, {
+        status: 301,
+        headers: { Location: addressUrl, "Cache-Control": "public, max-age=3600" },
+      });
+    }
+  }
   const canonical = duplicatesAddress ? addressUrl : selfUrl;
   const title = `${project.name} | Seattle Construction Activity`;
   const description = `Track permits, contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
@@ -9838,6 +9866,7 @@ const SITEMAP_SECTIONS = {
         FROM projects pr
         JOIN project_permits pp ON pp.project_id = pr.id
         JOIN permits p ON p.id = pp.permit_id
+        WHERE ${MULTI_PERMIT_PROJECT_SQL}
         GROUP BY pr.id
         HAVING COUNT(DISTINCT pp.permit_id) > 1
       )`,
@@ -9848,6 +9877,7 @@ const SITEMAP_SECTIONS = {
       FROM projects pr
       JOIN project_permits pp ON pp.project_id = pr.id
       JOIN permits p ON p.id = pp.permit_id
+      WHERE ${MULTI_PERMIT_PROJECT_SQL}
       GROUP BY pr.id, pr.slug
       HAVING COUNT(DISTINCT pp.permit_id) > 1
       ORDER BY pr.slug
