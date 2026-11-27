@@ -23,11 +23,18 @@ import {
   developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
   ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, developmentSitesArePublic,
 } from "./development_sites.js";
+import {
+  ALERT_CONFIRMATION_TTL_DAYS, ALERT_EMAIL_DAILY_LIMIT, ALERT_IP_HOURLY_LIMIT, ALERT_RESEND_COOLDOWN_MINUTES,
+  ALERT_SEND_BATCH_LIMIT, ANON_API_MAX_PAGE, FILTER_PARAM_MAX_LENGTH, LEAD_IP_HOURLY_LIMIT, LEAD_TEXT_MAX_LENGTH,
+  PERMIT_NUMBER_MAX_LENGTH, SEARCH_QUERY_MAX_LENGTH, THEME_BOOT_SCRIPT_SHA256,
+  apiLimits, clientIp, consumeRateLimit, isCrossSiteRequest, isJsonContentType, parseIntegerParam,
+  rateLimitKey, resolveApiAccess, slimPermitRow, timingSafeEqualString, turnstileEnabled, verifyTurnstile,
+} from "./security.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Ingest-Token",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Ingest-Token, X-API-Key",
 };
 const INGEST_TOKEN_HEADER = "X-Ingest-Token";
 const BASE_URL = "https://buildingseattle.com";
@@ -361,7 +368,9 @@ export default {
       if (path === "/api/admin/analytics") {
         const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
-        const days = parseInt(url.searchParams.get("days") || "7", 10);
+        const daysParam = parseIntegerParam(url.searchParams.get("days"), { fallback: 7, max: 3650 });
+        if (!daysParam.ok) return secure(badRequestResponse(path, "days must be a positive integer"));
+        const days = daysParam.value;
         const since = new Date();
         since.setDate(since.getDate() - days);
         const sinceStr = since.toISOString().split("T")[0];
@@ -574,19 +583,7 @@ export default {
 
       return secure(render404());
     } catch (error) {
-      console.error("Worker error:", error);
-      return secure(
-        new Response(
-          JSON.stringify({
-            error: "Internal Server Error",
-            details: error.message,
-          }),
-          {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          },
-        ),
-      );
+      return secure(renderUnhandledError(error, path));
     }
     });
   },
@@ -604,10 +601,90 @@ const DISCOVERY_LINKS = [
   `<${BASE_URL}/llms.txt>; rel="llms-txt"; type="text/plain"`,
 ].join(", ");
 
+// --- Request hardening helpers (audit A1/A4/A7/A8/A15/A21, F2/F11) --------
+
+// Same-origin POST endpoints: no CORS, JSON or form bodies only, Origin-checked.
+function isFormPostPath(path) {
+  return path === "/leads" || path.startsWith("/alerts/");
+}
+
+// Public read API + MCP: tiered caps and rate limits. Admin and the Access
+// identity endpoint keep their own auth and are excluded.
+function isPublicApiPath(path) {
+  if (path === "/mcp") return true;
+  return path.startsWith("/api/") && !path.startsWith("/api/admin") && path !== "/api/user";
+}
+
+function apiErrorResponse(message, status, extraHeaders = {}) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders },
+  });
+}
+
+// JSON for same-origin forms (leads, alerts): never Access-Control-Allow-Origin.
+function formJsonResponse(payload, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders },
+  });
+}
+
+// Uses the Workers Rate Limiting bindings when configured (wrangler.toml
+// [[ratelimits]]). Without a binding the API is not throttled here: a D1
+// counter on every API hit would cost more than it saves; the zone rate-limit
+// rule is the backstop.
+async function allowPublicApiRequest(request, env, access) {
+  const binding = access?.tier === "key" ? env.API_KEY_RATE_LIMITER : env.API_RATE_LIMITER;
+  if (!binding || typeof binding.limit !== "function") return true;
+  const key = access?.tier === "key" ? `api:${access.keyId}` : await rateLimitKey("api:ip", clientIp(request));
+  try {
+    const { success } = await binding.limit({ key });
+    return Boolean(success);
+  } catch (error) {
+    console.warn("API rate limiter failed open:", error?.message || error);
+    return true;
+  }
+}
+
+// Last-resort handler: log the detail server-side, never return it.
+function renderUnhandledError(error, path) {
+  if (error instanceof URIError) {
+    return badRequestResponse(path);
+  }
+  console.error(`Worker error on ${path}:`, error?.stack || error);
+  const json = path.startsWith("/api/") || path === "/mcp" || path.startsWith("/ingest/") || path.startsWith("/admin");
+  return new Response(json ? JSON.stringify({ error: "Internal Server Error" }) : "Internal Server Error", {
+    status: 500,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": json ? "application/json" : "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function badRequestResponse(path, message = "Bad request") {
+  const json = path.startsWith("/api/") || path === "/mcp";
+  return new Response(json ? JSON.stringify({ error: message }) : message, {
+    status: 400,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": json ? "application/json" : "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex",
+    },
+  });
+}
+
 function withSecurityHeaders(response) {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(name, value);
+  }
+  // Machine-readable JSON is for clients, not search results.
+  if ((headers.get("Content-Type") || "").includes("application/json") && !headers.has("X-Robots-Tag")) {
+    headers.set("X-Robots-Tag", "noindex");
   }
   // Advertise agent-discovery resources on every response (RFC 8288).
   headers.append("Link", DISCOVERY_LINKS);
@@ -890,8 +967,11 @@ function unauthorizedResponse(message, status = 401) {
   });
 }
 
-const ACCESS_CERTS_CACHE = { fetchedAt: 0, keys: null, promise: null };
+const ACCESS_CERTS_CACHE = { fetchedAt: 0, keys: null, promise: null, forcedRefreshAt: 0 };
 const ACCESS_CERTS_TTL_MS = 60 * 60 * 1000;
+// An unknown `kid` may force a certs refetch at most this often, so forged
+// JWT headers cannot turn every request into an outbound fetch.
+const ACCESS_CERTS_FORCED_REFRESH_MS = 60 * 1000;
 
 function base64UrlDecode(value) {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (value.length % 4)) % 4);
@@ -958,14 +1038,15 @@ async function verifyAccessJwt(token, env) {
   }
 
   if (typeof payload?.exp !== "number" || payload.exp * 1000 <= Date.now()) return null;
-  if (payload.iss && payload.iss !== `https://${teamDomain}`) return null;
+  if (payload.iss !== `https://${teamDomain}`) return null;
   const audMatches = audience === payload.aud || (Array.isArray(payload.aud) && payload.aud.includes(audience));
   if (!audMatches) return null;
 
   let keys = await fetchAccessCertKeys(env);
   let key = (keys || []).find((candidate) => candidate.kid === header.kid);
-  if (!key) {
-    // One stale-cache refresh attempt before rejecting an unknown key id.
+  if (!key && Date.now() - ACCESS_CERTS_CACHE.forcedRefreshAt >= ACCESS_CERTS_FORCED_REFRESH_MS) {
+    // One stale-cache refresh attempt (rate-limited) before rejecting an unknown key id.
+    ACCESS_CERTS_CACHE.forcedRefreshAt = Date.now();
     ACCESS_CERTS_CACHE.keys = null;
     ACCESS_CERTS_CACHE.fetchedAt = 0;
     keys = await fetchAccessCertKeys(env);
@@ -995,6 +1076,16 @@ async function verifyAccessJwt(token, env) {
 }
 
 async function requireAdminAuth(request, env) {
+  // State-changing admin requests (A21): only the X-Admin-Token header counts
+  // (never the Access cookie/JWT a browser attaches on its own), and a
+  // cross-site Origin is refused outright.
+  if (!["GET", "HEAD"].includes(request.method)) {
+    if (isCrossSiteRequest(request)) return unauthorizedResponse("Cross-site admin request refused", 403);
+    const configured = env.ADMIN_API_TOKEN;
+    if (configured && (await timingSafeEqualString(request.headers.get(ADMIN_TOKEN_HEADER), configured))) return null;
+    return unauthorizedResponse("Unauthorized admin request");
+  }
+
   const jwt = request.headers.get("CF-Access-Jwt-Assertion");
   if (jwt && (await verifyAccessJwt(jwt, env))) {
     return null;
@@ -1006,27 +1097,6 @@ async function requireAdminAuth(request, env) {
   }
 
   return unauthorizedResponse("Unauthorized admin request");
-}
-
-async function timingSafeEqualString(provided, expected) {
-  if (!provided || !expected) {
-    return false;
-  }
-  const encoder = new TextEncoder();
-  const providedBytes = encoder.encode(provided);
-  const expectedBytes = encoder.encode(expected);
-  if (providedBytes.length !== expectedBytes.length) {
-    return false;
-  }
-  const providedDigest = await crypto.subtle.digest("SHA-256", providedBytes);
-  const expectedDigest = await crypto.subtle.digest("SHA-256", expectedBytes);
-  const providedHash = new Uint8Array(providedDigest);
-  const expectedHash = new Uint8Array(expectedDigest);
-  let diff = 0;
-  for (let i = 0; i < providedHash.length; i++) {
-    diff |= providedHash[i] ^ expectedHash[i];
-  }
-  return diff === 0;
 }
 
 async function requireIngestAuth(request, env) {
@@ -2171,7 +2241,10 @@ async function renderPermitBrowser(request, env) {
   const type = url.searchParams.get("type");
   const status = url.searchParams.get("status");
   const q = url.searchParams.get("q");
-  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  // Junk page= values from crawlers used to reach SQL as OFFSET NaN (A4).
+  const pageParam = parseIntegerParam(url.searchParams.get("page"), { fallback: 1, max: 1000 });
+  if (!pageParam.ok || (q && q.length > SEARCH_QUERY_MAX_LENGTH)) return badRequestResponse("/permits");
+  const page = pageParam.value;
   const perPage = 50;
   const offset = (page - 1) * perPage;
 
@@ -10070,7 +10143,8 @@ async function renderChildSitemapXml(path, env, request) {
     return renderSitemapUrlSet(entries);
   }
 
-  const section = SITEMAP_SECTIONS[type];
+  // Own-property lookup: "constructor" & co. must not resolve (A4).
+  const section = Object.hasOwn(SITEMAP_SECTIONS, type) ? SITEMAP_SECTIONS[type] : null;
   if (!section) {
     return sitemapNotFound();
   }
