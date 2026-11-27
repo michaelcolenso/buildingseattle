@@ -23,7 +23,9 @@ Data sources (picked automatically, or force with --source):
         Requires CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN (D1 read scope);
         BUILDINGSEATTLE_D1_ID overrides the default database ID.
   api   Public /api/permits pagination at per_page=100. Fallback when no
-        Cloudflare credentials are available; dedupes by permit_number.
+        Cloudflare credentials are available; dedupes by permit_number and
+        fails unless the row count equals /api/stats `permits` (before and
+        after the pull). --allow-count-mismatch downgrades that to a warning.
 
 Usage:
   python3 gumroad/build_dataset.py                 # d1 if creds present, else api
@@ -68,6 +70,8 @@ D1_PAGE_SIZE = 1000
 API_PER_PAGE = 100
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
+# Base rows come from the Open Data feed; only enrichment comes from the portal.
+SOURCE_ATTRIBUTION = "Seattle Open Data k44w-2dcq + SDCI portal detail pages"
 
 PERMIT_SELECT = (
     "SELECT p.id, p.address_id, p.permit_number, p.address, p.neighborhood, p.type, p.value, p.status, "
@@ -160,6 +164,27 @@ def fetch_permits_api(base=API_BASE):
             return records
         page += 1
         time.sleep(0.15)
+
+
+def fetch_api_permit_count(base=API_BASE):
+    """Live permit count from the public /api/stats endpoint."""
+    data = http_json(f"{base}/api/stats")
+    count = data.get("permits") if isinstance(data, dict) else None
+    if not isinstance(count, int) or count < 0:
+        raise SystemExit(f"/api/stats returned no usable permit count: {count!r}")
+    return count
+
+
+def check_row_count(source, expected, actual, allow_mismatch=False):
+    """Fail the build when the export does not hold exactly the live row count."""
+    if expected is None or expected == actual:
+        return
+    label = "D1 counts" if source == "d1" else "/api/stats reports"
+    message = f"row drift: {label} {expected} permits but export has {actual}"
+    if allow_mismatch:
+        sys.stderr.write(f"WARNING: {message} (continuing: --allow-count-mismatch)\n")
+        return
+    raise SystemExit(message)
 
 
 def fetch_d1_permit_count(account_id, token, db_id):
@@ -369,7 +394,7 @@ def render_version_txt(stats, version, export_date, checksums):
         f"Total value: ${stats['total_value']:,} (repeated demolition valuations counted once)",
         f"Declared value (raw sum): ${stats.get('declared_value', stats['total_value']):,}",
         f"Neighborhoods: {stats['neighborhoods']}",
-        "Source: Seattle SDCI (services.seattle.gov/portal)",
+        f"Source: {SOURCE_ATTRIBUTION}",
         f"Export date: {export_date:%B %-d, %Y}",
         "",
         "SHA256:",
@@ -443,6 +468,9 @@ def main(argv=None):
                         help="Version label, default current YYYY-MM")
     parser.add_argument("--out-dir", default=str(GUMROAD_DIR),
                         help="Directory holding the tracked product files (default gumroad/)")
+    parser.add_argument("--allow-count-mismatch", action="store_true",
+                        help="Warn instead of failing when the export row count differs "
+                             "from the live count (D1 COUNT(*) or /api/stats)")
     parser.add_argument("--dist-dir", default=None,
                         help="Gitignored directory for the paid CSVs and ZIPs (default <out-dir>/dist)")
     args = parser.parse_args(argv)
@@ -469,14 +497,21 @@ def main(argv=None):
         expected = fetch_d1_permit_count(account_id, token, db_id)
         raw = fetch_permits_d1(account_id, token, db_id)
     else:
+        # The public API pages with LIMIT/OFFSET, so rows that move while the
+        # build runs can be skipped or duplicated. Compare against /api/stats
+        # before and after and refuse to ship a short or padded file.
+        expected = fetch_api_permit_count()
         raw = fetch_permits_api()
+        after = fetch_api_permit_count()
+        if after != expected and not args.allow_count_mismatch:
+            raise SystemExit(f"live permit count changed during the build ({expected} -> {after}); "
+                             "re-run outside the daily ingest window")
 
     if any("development_site_fetched_at" not in row for row in raw):
         raise SystemExit("Development-site API fields are unavailable. Complete the rollout before building the 38-column release.")
     records = [normalize_permit(r) for r in raw]
     records.sort(key=lambda r: r["permit_number"])
-    if expected is not None and len(records) != expected:
-        raise SystemExit(f"row drift: D1 counts {expected} permits but export has {len(records)}")
+    check_row_count(source, expected, len(records), args.allow_count_mismatch)
 
     stats = compute_stats(records, value_rows=raw)
     sample = build_sample(records)
@@ -520,7 +555,7 @@ def main(argv=None):
     print("=== Build manifest ===")
     print(f"version:        {version}")
     print(f"records:        {stats['records']:,}" +
-          (f" (D1 count: {expected:,})" if expected is not None else ""))
+          (f" ({source} count: {expected:,})" if expected is not None else ""))
     print(f"columns:        {stats['columns']}")
     print(f"total value:    ${stats['total_value']:,}")
     print(f"neighborhoods:  {stats['neighborhoods']}")

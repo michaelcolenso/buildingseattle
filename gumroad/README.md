@@ -2,7 +2,7 @@
 
 ## What You Get
 
-**15,581 building permits** — every construction project in Seattle, scraped from the city's SDCI portal and enriched with parcel numbers, review levels, detailed descriptions, and contractor license data.
+**15,581 building permits** — every construction project in Seattle, from the city's Open Data permit feed (`k44w-2dcq`), enriched from SDCI portal detail pages with parcel numbers, review levels, detailed descriptions, and contractor license data.
 
 This is the dataset powering [buildingseattle.com](https://buildingseattle.com), exported as a ready-to-use CSV.
 
@@ -55,7 +55,7 @@ Everything in Foundation, plus:
 
 ## Data Freshness & Update Policy
 
-Updated from the Seattle SDCI portal as of **November 8, 2026**. The included Python refresh script (Pro) pulls fresh data on demand.
+Built from Seattle Open Data (`k44w-2dcq`) plus SDCI portal detail pages as of **November 8, 2026**. The included Python refresh script (Pro) pulls fresh data on demand.
 
 **Monthly updates, free for every buyer:**
 
@@ -101,7 +101,7 @@ Total value counts a valuation SDCI repeats across a project's demolition permit
 ## FAQ
 
 **Q: Where does the data come from?**
-A: The Seattle SDCI (Seattle Department of Construction & Inspections) public portal at services.seattle.gov/portal. We scrape and structure it. The original source is public — we do the cleaning, deduplication, and enrichment.
+A: Base permit records come from the Seattle Open Data Portal's building permits dataset (data.seattle.gov, `k44w-2dcq`). We enrich them from the Seattle SDCI (Seattle Department of Construction & Inspections) portal detail pages at services.seattle.gov/portal and WA L&I contractor license data. The original sources are public — we do the cleaning, deduplication, and enrichment.
 
 **Q: Is this the same data as buildingseattle.com?**
 A: Yes. This is a direct export of the same database powering that site. The site shows the latest data; this CSV is an export as of November 8, 2026.

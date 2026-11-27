@@ -280,6 +280,7 @@ def test_build_writes_paid_artifacts_only_to_dist(tmp_path, monkeypatch):
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
     monkeypatch.setattr(build, "fetch_permits_api", lambda *a, **k: list(rows))
+    monkeypatch.setattr(build, "fetch_api_permit_count", lambda *a, **k: len(rows))
 
     assert build.main(["--source", "api", "--version", "2099-01", "--out-dir", str(out_dir)]) == 0
 
@@ -318,3 +319,70 @@ def test_paid_csvs_are_not_tracked_and_are_gitignored():
                  "gumroad/dist/buildingseattle_permits.csv", "gumroad/dist/x_pro.zip"):
         assert _git("check-ignore", "-q", "--no-index", path).returncode == 0, path
     assert _git("check-ignore", "-q", "--no-index", "gumroad/buildingseattle_sample.csv").returncode == 1
+
+
+def test_api_build_fails_when_row_count_differs_from_api_stats(tmp_path, monkeypatch):
+    rows = _api_rows(120)
+    out_dir = _stage_product_dir(tmp_path)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.setattr(build, "fetch_permits_api", lambda *a, **k: rows[:-3])  # pagination skipped rows
+    monkeypatch.setattr(build, "fetch_api_permit_count", lambda *a, **k: len(rows))
+    with pytest.raises(SystemExit, match="row drift: /api/stats reports 120 permits but export has 117"):
+        build.main(["--source", "api", "--out-dir", str(out_dir)])
+    assert not (out_dir / "dist" / "buildingseattle_permits.csv").exists()
+    # The escape hatch downgrades the mismatch to a warning.
+    assert build.main(["--source", "api", "--out-dir", str(out_dir), "--allow-count-mismatch"]) == 0
+
+
+def test_api_build_fails_when_live_count_moves_during_pull(tmp_path, monkeypatch):
+    rows = _api_rows(110)
+    out_dir = _stage_product_dir(tmp_path)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    counts = iter([110, 112])
+    monkeypatch.setattr(build, "fetch_permits_api", lambda *a, **k: list(rows))
+    monkeypatch.setattr(build, "fetch_api_permit_count", lambda *a, **k: next(counts))
+    with pytest.raises(SystemExit, match="changed during the build"):
+        build.main(["--source", "api", "--out-dir", str(out_dir)])
+
+
+def test_fetch_api_permit_count_reads_api_stats(monkeypatch):
+    seen = []
+    monkeypatch.setattr(build, "http_json", lambda url, **k: seen.append(url) or {"permits": 15814})
+    assert build.fetch_api_permit_count() == 15814
+    assert seen == ["https://buildingseattle.com/api/stats"]
+    monkeypatch.setattr(build, "http_json", lambda url, **k: {"error": "boom"})
+    with pytest.raises(SystemExit):
+        build.fetch_api_permit_count()
+
+
+def test_version_txt_attributes_both_sources():
+    from datetime import date
+    stats = {"records": 1, "columns": 38, "total_value": 1, "declared_value": 1, "neighborhoods": 1}
+    text = build.render_version_txt(stats, "2026-12", date(2026, 12, 1), {})
+    assert "Source: Seattle Open Data k44w-2dcq + SDCI portal detail pages" in text
+    assert "services.seattle.gov/portal)" not in text
+
+
+def test_refresh_exits_nonzero_and_keeps_output_when_a_page_fails(tmp_path, monkeypatch):
+    rows = [make_record(i) for i in range(refresh.PER_PAGE)]
+    for row in rows:
+        row["development_site_fetched_at"] = None
+    pages = {1: {"results": rows}, 2: None, 3: {"results": rows[:5]}}
+    output = tmp_path / "fresh.csv"
+    output.write_text("previous good file\n", encoding="utf-8")
+    monkeypatch.setattr(refresh, "fetch_json", lambda url: {"permits": len(rows)})
+    monkeypatch.setattr(refresh, "fetch_page", lambda page: pages.get(page, {"results": []}))
+    monkeypatch.setattr(refresh.time, "sleep", lambda s: None)
+    monkeypatch.setattr(sys, "argv", ["refresh.py", "--output", str(output)])
+    assert refresh.main() == 1
+    assert output.read_text(encoding="utf-8") == "previous good file\n"
+    partial = tmp_path / "fresh.partial.csv"
+    with open(partial, newline="", encoding="utf-8") as f:
+        assert len(list(csv.DictReader(f))) == refresh.PER_PAGE
+
+
+def test_refresh_partial_output_path():
+    assert refresh.partial_output_path("out/fresh.csv") == "out/fresh.partial.csv"
+    assert refresh.partial_output_path("fresh") == "fresh.partial.csv"
