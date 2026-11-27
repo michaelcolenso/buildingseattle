@@ -62,3 +62,100 @@ test("/about states City of Seattle scope and a real contact link (audit E12)", 
   assert.match(html, /applications dated May 15, 2024 to November 6, 2026/);
   assert.match(html, /href="mailto:alerts@buildingseattle\.com"/);
 });
+
+// Routes each query to canned rows by a distinctive SQL fragment. Unmatched
+// queries return nothing, which every entity page tolerates.
+function routedEnv(routes) {
+  const pick = (sql) => routes.find(([needle]) => sql.includes(needle))?.[1];
+  return {
+    DB: {
+      prepare(sql) {
+        return {
+          bind() { return this; },
+          async first() { const v = pick(sql); return Array.isArray(v) ? v[0] ?? null : v ?? null; },
+          async all() { const v = pick(sql); return { results: Array.isArray(v) ? v : v ? [v] : [] }; },
+          async run() { return {}; },
+        };
+      },
+    },
+  };
+}
+
+const openPermit = { id: 1, permit_number: "P-OPEN", type: "residential", status: "active", value: 50000, applied_date: "2026-03-02", issued_date: "2026-03-20", address_id: 7 };
+const donePermit = { id: 2, permit_number: "P-DONE", type: "commercial", status: "completed", value: 25000, applied_date: "2026-03-01", completed_date: "2026-03-28", address_id: 7 };
+
+test("neighborhood pages: data-driven meta, labelled rows, view-all links and CTAs (audit E5/E15/E17/E18/E19/G9)", async () => {
+  const env = routedEnv([
+    ["FROM neighborhoods WHERE slug", { id: 3, name: "Ballard", slug: "ballard" }],
+    ["COUNT(DISTINCT p.id) AS permits", { permits: 1276, total_value: 5200000 }],
+    ["pp.role = 'contractor'", [{ name: "ACME\\BUILD LLC", slug: "acme-build-llc", cnt: 1 }]],
+    ["FROM addresses a JOIN address_neighborhoods", [{ slug: "100-pine-st", display_address: "100 PINE ST, SEATTLE, WA", permits: 2 }]],
+    ["FROM projects pr", []],
+    ["ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 15", [openPermit, donePermit]],
+  ]);
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/neighborhood/ballard"), env, ctx())).text();
+  assert.match(html, /<title>Ballard Building Permits, Seattle \| Building Seattle<\/title>/);
+  assert.match(html, /<meta name="description" content="1,276 building permits in Ballard, Seattle worth \$5\.2M in counted value, latest Mar 28, 2026\./);
+  assert.match(html, /bs-metric__value">1,276</);
+  assert.match(html, /<td>Residential Construction<\/td>/);
+  assert.match(html, /bs-status[^>]*>[^<]*Active/);
+  assert.match(html, /Acme\/Build LLC<\/a> <span[^>]*>· 1 permit<\/span>/);
+  assert.match(html, /100 Pine St, Seattle, WA<\/a> <span[^>]*>· 2 permits<\/span>/);
+  assert.match(html, /href="\/permits\?neighborhood=Ballard">All 1,276 permits in Ballard/);
+  assert.match(html, /href="\/contractors\?neighborhood=Ballard"/);
+  assert.match(html, /href="\/addresses\?neighborhood=Ballard"/);
+  assert.doesNotMatch(html, /Active projects|No active projects yet/);
+  assert.match(html, /href="\/permits\/P-OPEN#permit-alerts"/);
+  assert.match(html, /utm_content=neighborhood/);
+});
+
+test("address pages: parent breadcrumb, no placeholder cards, single-month span, labelled roles (audit E5/E15/E16/E21/G13)", async () => {
+  const env = routedEnv([
+    ["FROM addresses WHERE slug", { id: 7, slug: "1-main-st", display_address: "1 MAIN ST, SEATTLE, WA" }],
+    ["FROM neighborhoods n JOIN address_neighborhoods", { id: 3, name: "Ballard", slug: "ballard" }],
+    ["FROM permit_participants pp", [{ name: "JANE DOE", slug: "jane-doe", role: "owner", cnt: 1 }]],
+    ["WHERE p.address_id = ? ORDER BY", [openPermit, donePermit]],
+  ]);
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/address/1-main-st"), env, ctx())).text();
+  assert.match(html, /<nav aria-label="breadcrumb"[^>]*><a href="\/"[^>]*>Home<\/a>[^]*?href="\/addresses"[^>]*>Addresses<\/a>[^]*?href="\/neighborhood\/ballard"/);
+  assert.match(html, /"name":"Addresses","item":"https:\/\/buildingseattle\.com\/addresses"/);
+  assert.match(html, /Permit activity at this address dates to March 2026/);
+  assert.doesNotMatch(html, /spans from|No inferred projects yet|No participants on record|explore nearby/);
+  assert.match(html, /<span class="pill"[^>]*>Owner<\/span>/);
+  assert.match(html, /Jane Doe<\/a>/);
+  assert.match(html, /href="\/permits\/P-OPEN#permit-alerts"/);
+  assert.match(html, /utm_content=address/);
+});
+
+test("project pages use the site brand and a data-driven description (audit E19/G9)", async () => {
+  const env = routedEnv([
+    ["FROM projects pr LEFT JOIN addresses", { id: 9, slug: "two-step", name: "Two-step remodel", address_id: null, confidence_score: 80, first_seen_date: "2026-03-01", latest_activity_date: "2026-05-02" }],
+    ["FROM project_permits jp", [openPermit, { ...donePermit, address_id: 8 }]],
+  ]);
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/project/two-step"), env, ctx())).text();
+  assert.match(html, /<title>Two-step remodel \| Building Seattle<\/title>/);
+  assert.doesNotMatch(html, /Seattle Construction Activity/);
+  assert.match(html, /<meta name="description" content="2 Seattle building permits grouped as one project, \$75K counted value, March 2026 to May 2026\./);
+  assert.match(html, /href="\/projects"[^>]*>Projects<\/a>/);
+  assert.match(html, /match confidence 80\/100/);
+  assert.match(html, /utm_content=project/);
+});
+
+test("people/org contractor pages: display name, role labels, Contractors parent (audit E16/E19/G8/G9)", async () => {
+  const env = routedEnv([
+    ["FROM contractors WHERE slug", null],
+    ["FROM people_orgs WHERE slug", { id: 4, slug: "belotti", name: "BELOTTI MCHUGH DSN\\\\CNST SR LLC", type_guess: "organization" }],
+    ["SELECT DISTINCT role FROM permit_participants", [{ role: "contractor" }, { role: "applicant" }]],
+    ["COUNT(DISTINCT p.id) AS permit_count", { permit_count: 2, active_count: 1 }],
+    ["SUM(counted)", { total: 75000 }],
+    ["ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 50", [openPermit, donePermit]],
+  ]);
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/contractor/belotti"), env, ctx())).text();
+  assert.match(html, /<title>Belotti Mchugh Dsn\/Cnst Sr LLC: Seattle Permits \| Building Seattle<\/title>/);
+  assert.doesNotMatch(html, /\\/);
+  assert.match(html, /Organization · Contractor, Applicant/);
+  assert.match(html, /<meta name="description" content="Belotti Mchugh Dsn\/Cnst Sr LLC: 2 Seattle building permits as contractor, applicant, 1 active, \$75K counted value\./);
+  assert.match(html, /href="\/contractors"[^>]*>Contractors<\/a>/);
+  assert.doesNotMatch(html, /No inferred projects yet|No neighborhood data/);
+  assert.match(html, /utm_content=contractor/);
+});

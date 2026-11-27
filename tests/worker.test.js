@@ -3217,7 +3217,7 @@ test("GET /project/:slug counts a valuation SDCI repeats on demolition permits o
   const response = await worker.fetch(new Request("http://example.com/project/demolition-at-4747-30th-ave-ne"), env, createCtx());
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /\$129,000,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /\$129,000,000<\/span><span class="bs-metric__label">Total value/);
   assert.doesNotMatch(html, /\$1,548,000,000/);
   assert.match(html, /SDCI repeats \$129,000,000 on 12 permits; it is counted once\./);
 });
@@ -3276,7 +3276,7 @@ test("GET /project/:slug judges repeats against every permit at the address", as
     all: (q) => (/project_permits jp/.test(q) ? projectPermits : /SELECT id, permit_number, address_id, value FROM permits WHERE address_id = \?/.test(q) ? addressPermits : []),
   });
   const html = await (await worker.fetch(new Request("http://example.com/project/demolition-at-10-elm-st"), env, createCtx())).text();
-  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Total value/);
   assert.match(html, /SDCI repeats \$13,000,000 on 2 permits; it is counted once\./);
 });
 

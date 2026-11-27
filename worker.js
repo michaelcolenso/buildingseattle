@@ -20,7 +20,7 @@ import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton,
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
 import {
   DATASET_RELEASE, SITE_CONTACT_EMAIL, FOOTER_LINKS,
-  countLabel, smartTitleCase, displayName, statusLabel, isClosedPermitStatus, roleLabel, roleList,
+  countLabel, formatCount, smartTitleCase, displayName, statusLabel, isClosedPermitStatus, roleLabel, roleList,
   formatCalendarDate, formatMonthYear, latestSourceEventDate, renderDatasetCta, renderAlertCta,
 } from "./site_content.js";
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadarBody } from "./basis_reset_routes.js";
@@ -4633,10 +4633,7 @@ function entMoney(n) {
 
 function entDate(d) {
   if (!d) return "N/A";
-  const dt = new Date(d);
-  return Number.isNaN(dt.getTime())
-    ? String(d)
-    : dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  return formatCalendarDate(d) || String(d);
 }
 
 function entStreet(displayAddress) {
@@ -4682,7 +4679,9 @@ function entBreadcrumb(items) {
 }
 
 function entStat(label, value) {
-  return `<div class="bs-metric"><span class="bs-metric__value">${value}</span><span class="bs-metric__label">${escapeHtml(label)}</span></div>`;
+  // Bare counts get thousands separators (audit E18); preformatted values
+  // ("$1.2M", dates) pass through unchanged.
+  return `<div class="bs-metric"><span class="bs-metric__value">${formatCount(value)}</span><span class="bs-metric__label">${escapeHtml(label)}</span></div>`;
 }
 
 // Aggregates plan-review metrics across a project's clustered permits into a
@@ -4848,9 +4847,9 @@ function entPermitRows(permits) {
     .map(
       (p) => `<tr>
         <td><a class="ent-link" href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(p.permit_number)}</a></td>
-        <td>${escapeHtml(p.type || "—")}</td>
+        <td>${p.type ? escapeHtml(permitTypeLabel(p.type)) : "—"}</td>
         <td>${entMoney(p.value)}</td>
-        <td>${p.status ? bsStatusPill(p.status, humanize(p.status)) : "—"}</td>
+        <td>${p.status ? bsStatusPill(p.status, statusLabel(p.status)) : "—"}</td>
         <td>${entDate(p.issued_date || p.applied_date)}</td>
       </tr>`,
     )
@@ -7593,7 +7592,7 @@ async function renderAddressPage(slug, env, request) {
   }
   if (valueStr) description += `; ${valueStr} declared value`;
   description += ".";
-  const contractorSentence = latestContractor ? ` Contractor: ${smartTitleCase(latestContractor)}.` : "";
+  const contractorSentence = latestContractor ? ` Contractor: ${displayName(latestContractor)}.` : "";
   if (description.length + contractorSentence.length <= META_MAX) description += contractorSentence;
   const descriptorBudget = META_MAX - description.length - 1;
   if (featuredDescriptor && descriptorBudget >= 20) {
@@ -7622,13 +7621,18 @@ async function renderAddressPage(slug, env, request) {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
-          { "@type": "ListItem", position: 3, name: display, item: canonical },
+          { "@type": "ListItem", position: 2, name: "Addresses", item: `${BASE_URL}/addresses` },
+          ...(neighborhood
+            ? [{ "@type": "ListItem", position: 3, name: neighborhood.name, item: `${BASE_URL}/neighborhood/${encodeURIComponent(neighborhood.slug)}` }]
+            : []),
+          { "@type": "ListItem", position: neighborhood ? 4 : 3, name: display, item: canonical },
         ],
       },
     ],
   }).replace(/</g, "\\u003c");
 
+  // Empty side lists are left off the page instead of rendering placeholder
+  // copy (audit E15/E21).
   const projectsHtml = projects.length
     ? `<ul class="ent-list">${projects
         .map(
@@ -7638,36 +7642,45 @@ async function renderAddressPage(slug, env, request) {
           </li>`,
         )
         .join("")}</ul>`
-    : `<p style="color:var(--text-muted);">No inferred projects yet.</p>`;
+    : "";
 
   const participantsHtml = participants.length
     ? `<ul class="ent-list">${participants
         .map(
           (o) => `<li>
-            <a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(o.name)}</a>
-            <span class="pill" style="margin-left:0.4rem;">${escapeHtml(o.role)}</span>
-            <span style="font-size:0.8rem;color:var(--text-muted);"> · ${o.cnt} permit${o.cnt > 1 ? "s" : ""}</span>
+            <a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(displayName(o.name))}</a>
+            <span class="pill" style="margin-left:0.4rem;">${escapeHtml(roleLabel(o.role))}</span>
+            <span style="font-size:0.8rem;color:var(--text-muted);"> · ${countLabel(o.cnt, "permit")}</span>
           </li>`,
-        )
-        .join("")}</ul>`
-    : `<p style="color:var(--text-muted);">No participants on record.</p>`;
-
-  const relatedHtml = related.length
-    ? `<ul class="ent-list">${related
-        .map(
-          (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
         )
         .join("")}</ul>`
     : "";
 
+  const relatedHtml = related.length
+    ? `<ul class="ent-list">${related
+        .map(
+          (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(a.permits, "permit")}</span></li>`,
+        )
+        .join("")}</ul>`
+    : "";
+  const firstMonth = formatMonthYear(firstDate);
+  const lastMonth = formatMonthYear(lastDate);
+  const activitySpan = firstMonth && lastMonth && firstMonth !== lastMonth
+    ? `Permit activity at this address runs from ${firstMonth} to ${lastMonth}`
+    : firstMonth
+      ? `Permit activity at this address dates to ${firstMonth}`
+      : "";
+  const guideSentence = `Each permit below links to its own record with status, dates, and the work description${relatedHtml ? ", and nearby addresses in the same neighborhood are listed alongside" : ""}.`;
+
   const body = `
     ${entBreadcrumb([
       { label: "Home", href: "/" },
-      ...(neighborhood ? [{ label: neighborhood.name, href: `/neighborhood/${encodeURIComponent(neighborhood.slug)}` }] : [{ label: "Permits", href: "/permits" }]),
+      { label: "Addresses", href: "/addresses" },
+      ...(neighborhood ? [{ label: neighborhood.name, href: `/neighborhood/${encodeURIComponent(neighborhood.slug)}` }] : []),
       { label: display },
     ])}
     <div class="ent-hero">
-      <div class="ent-kicker">Property / Address</div>
+      <div class="ent-kicker">Address</div>
       <h1>${escapeHtml(display)}</h1>
       ${featuredDescriptor ? `<p style="margin:0.75rem 0 0;max-width:760px;font-size:1.05rem;line-height:1.6;color:var(--text);"><strong>${escapeHtml(featuredDescriptor)}</strong>${featuredPermit?.permit_number ? ` <span style="color:var(--text-muted);">· <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">Permit ${escapeHtml(featuredPermit.permit_number)}</a></span>` : ""}</p>` : ""}
       ${neighborhood ? `<a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
@@ -7676,8 +7689,8 @@ async function renderAddressPage(slug, env, request) {
       <div class="bs-card" style="margin-bottom:0;">
         <div style="font-size:1.05rem;line-height:1.85;color:var(--text-muted);">
           <p style="margin:0 0 1rem;">${escapeHtml(display)} is a property in Seattle${neighborhood ? `'s <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a> neighborhood` : ""} with <strong style="color:var(--text);">${permitCount} construction permit${permitCount !== 1 ? "s" : ""}</strong> on record with the Seattle Department of Construction and Inspections${activePermits.length > 0 ? `, <strong style="color:var(--text);">${activePermits.length} of which ${activePermits.length === 1 ? "is" : "are"} currently active</strong>` : ""}.${totalValue > 0 ? ` The combined estimated project value across all permits is <strong style="color:var(--text);">$${parseInt(totalValue).toLocaleString()}</strong>.` : ""}</p>
-          <p style="margin:0 0 1rem;">Permit activity at this address spans from ${firstDate ? new Date(firstDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the earliest record"} to ${lastDate ? new Date(lastDate).toLocaleDateString("en-US", {year:"numeric",month:"long"}) : "the present"}${featuredPermit?.permit_number ? `, with the featured record filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">${escapeHtml(featuredPermit.permit_number)}</a>` : ""}.${latestContractor && permits[0]?.contractor_slug ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(permits[0].contractor_slug)}">${escapeHtml(latestContractor)}</a>.` : ""}</p>
-          <p style="margin:0;">Use the data below to review individual permit records, track project timelines, see which contractors and participants have been involved, and explore nearby construction activity. Each permit links to its own detail page with review cycles, status changes, and project descriptions.</p>
+          ${activitySpan ? `<p style="margin:0 0 1rem;">${activitySpan}${featuredPermit?.permit_number ? `, with the featured record filed under permit number <a class="ent-link" href="/permits/${encodeURIComponent(featuredPermit.permit_number)}">${escapeHtml(featuredPermit.permit_number)}</a>` : ""}.${latestContractor && permits[0]?.contractor_slug ? ` The latest contractor associated with this address is <a class="ent-link" href="/contractor/${encodeURIComponent(permits[0].contractor_slug)}">${escapeHtml(displayName(latestContractor))}</a>.` : ""}</p>` : ""}
+          <p style="margin:0;">${guideSentence}</p>
         </div>
       </div>
     </div>
@@ -7688,26 +7701,22 @@ async function renderAddressPage(slug, env, request) {
           <div class="stat-row">
             ${entStat("Permits", permitCount)}
             ${entStat("Total value", entMoney(totalValue))}
-            ${entStat("Active / recent", activePermits.length)}
+            ${entStat("Active", activePermits.length)}
             ${entStat("Projects", projects.length)}
           </div>
-          <div style="font-size:0.85rem;color:var(--text-muted);">First permit ${entDate(firstDate)} · Latest permit ${entDate(lastDate)}</div>
+          <div style="font-size:0.85rem;color:var(--text-muted);">${firstDate === lastDate ? `Permit date ${entDate(firstDate)}` : `First permit ${entDate(firstDate)} · Latest permit ${entDate(lastDate)}`}</div>
         </div>
         <div class="bs-card">
-          <h2>Permit records (${permitCount})</h2>
+          <h2>Permit records (${formatCount(permitCount)})</h2>
           ${entPermitRows(permits)}
         </div>
       </div>
       <div>
-        <div class="bs-card">
-          <h3>Inferred projects</h3>
-          ${projectsHtml}
-        </div>
-        <div class="bs-card">
-          <h3>Contractors &amp; participants</h3>
-          ${participantsHtml}
-        </div>
-        ${relatedHtml ? `<div class="bs-card"><h3>Nearby &amp; related addresses</h3>${relatedHtml}</div>` : ""}
+        ${renderAlertCta({ permits, subject: display })}
+        ${projectsHtml ? `<div class="bs-card"><h3>Inferred projects</h3>${projectsHtml}</div>` : ""}
+        ${participantsHtml ? `<div class="bs-card"><h3>Contractors &amp; participants</h3>${participantsHtml}</div>` : ""}
+        ${relatedHtml ? `<div class="bs-card"><h3>Nearby addresses${neighborhood ? ` in ${escapeHtml(neighborhood.name)}` : ""}</h3>${relatedHtml}<p style="margin:0.75rem 0 0;font-size:0.85rem;"><a class="ent-link" href="/addresses${neighborhood ? `?neighborhood=${encodeURIComponent(neighborhood.name)}` : ""}">All addresses${neighborhood ? ` in ${escapeHtml(neighborhood.name)}` : ""} &rarr;</a></p></div>` : ""}
+        ${renderDatasetCta({ context: "address", subject: `the permits at ${entStreet(display) || display}`, count: permitCount })}
       </div>
     </div>`;
 
@@ -7805,8 +7814,7 @@ async function renderProjectPage(slug, env, request) {
     }
   }
   const canonical = duplicatesAddress ? addressUrl : selfUrl;
-  const title = `${project.name} | Seattle Construction Activity`;
-  const description = `Track permits, contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
+  const title = `${project.name} | Building Seattle`;
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -7823,10 +7831,8 @@ async function renderProjectPage(slug, env, request) {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          ...(project.address_slug
-            ? [{ "@type": "ListItem", position: 2, name: project.display_address, item: `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}` }]
-            : []),
-          { "@type": "ListItem", position: project.address_slug ? 3 : 2, name: project.name, item: selfUrl },
+          { "@type": "ListItem", position: 2, name: "Projects", item: `${BASE_URL}/projects` },
+          { "@type": "ListItem", position: 3, name: project.name, item: selfUrl },
         ],
       },
     ],
@@ -7852,26 +7858,35 @@ async function renderProjectPage(slug, env, request) {
   const repeatedValueNote = skippedByValue.size
     ? `<p style="font-size:0.8rem;color:var(--text-muted);margin:0.25rem 0 0;">${[...skippedByValue.entries()]
         .map(([value, extra]) => `SDCI repeats ${entMoney(value)} on ${countLabel(extra + 1, "permit", "permits")}; it is counted once.`)
-        .join(" ")} <a class="ent-link" href="/methodology">How values are counted</a></p>`
+        .join(" ")} <a class="ent-link" href="/methodology#value">How values are counted</a></p>`
     : "";
+  const projectAddress = displayName(project.display_address);
+  const firstMonth = formatMonthYear(project.first_seen_date);
+  const lastMonth = formatMonthYear(project.latest_activity_date);
+  const span = firstMonth && lastMonth && firstMonth !== lastMonth ? `${firstMonth} to ${lastMonth}` : firstMonth || lastMonth;
+  // Data-driven description (audit E19) instead of one sentence per template.
+  const description = truncateMetaDescription(
+    `${countLabel(permits.length, "Seattle building permit")} grouped as one project${projectAddress ? ` at ${projectAddress}` : ""}${projectValue ? `, ${compactMetricMoney(projectValue)} counted value` : ""}${span ? `, ${span}` : ""}. Permit records, contractors and review timing.`,
+    160,
+  );
   const participantsHtml = participants.length
     ? `<ul class="ent-list">${participants
         .map(
-          (o) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(o.name)}</a> <span class="pill" style="margin-left:0.4rem;">${escapeHtml(o.role)}</span></li>`,
+          (o) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(o.slug)}">${escapeHtml(displayName(o.name))}</a> <span class="pill" style="margin-left:0.4rem;">${escapeHtml(roleLabel(o.role))}</span></li>`,
         )
         .join("")}</ul>`
-    : `<p style="color:var(--text-muted);">No participants on record.</p>`;
+    : "";
 
   const body = `
     ${entBreadcrumb([
       { label: "Home", href: "/" },
-      ...(project.address_slug ? [{ label: project.display_address, href: `/address/${encodeURIComponent(project.address_slug)}` }] : [{ label: "Permits", href: "/permits" }]),
+      { label: "Projects", href: "/projects" },
       { label: project.name },
     ])}
     <div class="ent-hero">
-      <div class="ent-kicker">Inferred Project · confidence ${project.confidence_score}</div>
+      <div class="ent-kicker">Inferred project${project.confidence_score != null ? ` · match confidence ${escapeHtml(project.confidence_score)}/100` : ""}</div>
       <h1>${escapeHtml(project.name)}</h1>
-      ${project.address_slug ? `<a class="ent-link" href="/address/${encodeURIComponent(project.address_slug)}">${escapeHtml(project.display_address)}</a>` : ""}
+      ${project.address_slug ? `<a class="ent-link" href="/address/${encodeURIComponent(project.address_slug)}">${escapeHtml(projectAddress)}</a>` : ""}
       ${neighborhood ? ` · <a class="ent-link" href="/neighborhood/${encodeURIComponent(neighborhood.slug)}">${escapeHtml(neighborhood.name)}</a>` : ""}
     </div>
     <div class="ent-grid">
@@ -7880,7 +7895,7 @@ async function renderProjectPage(slug, env, request) {
           <h2>Summary</h2>
           <div class="stat-row">
             ${entStat("Permits", permits.length)}
-            ${entStat("Est. value", entMoney(projectValue))}
+            ${entStat("Total value", entMoney(projectValue))}
             ${entStat("First activity", entDate(project.first_seen_date))}
             ${entStat("Latest activity", entDate(project.latest_activity_date))}
           </div>
@@ -7894,14 +7909,13 @@ async function renderProjectPage(slug, env, request) {
         </div>
       </div>
       <div>
-        <div class="bs-card">
-          <h3>Participants</h3>
-          ${participantsHtml}
-        </div>
+        ${renderAlertCta({ permits, subject: project.name })}
+        ${participantsHtml ? `<div class="bs-card"><h3>Participants</h3>${participantsHtml}</div>` : ""}
         <div class="bs-card">
           <h3>About this project</h3>
-          <p style="font-size:0.85rem;color:var(--text-muted);margin:0;">This project was inferred by grouping related permits at the same address. Confidence score ${project.confidence_score}/100 reflects how strongly the permits appear to belong to a single effort.</p>
+          <p style="font-size:0.85rem;color:var(--text-muted);margin:0;">This project was inferred by grouping related permits at the same address.${project.confidence_score != null ? ` A match confidence of ${escapeHtml(project.confidence_score)}/100 reflects how strongly the permits appear to belong to a single effort.` : ""}${project.address_slug ? ` <a class="ent-link" href="/address/${encodeURIComponent(project.address_slug)}">Every permit at ${escapeHtml(projectAddress)}</a>.` : ""}</p>
         </div>
+        ${renderDatasetCta({ context: "project", subject: "this project's permits", count: permits.length })}
       </div>
     </div>`;
 
@@ -7978,8 +7992,15 @@ async function renderNeighborhoodPage(slug, env, request) {
   const permitCount = Number(totals?.permits) || 0;
   const totalValue = Number(totals?.total_value) || 0;
   const noindex = permitCount === 0;
-  const title = `${nb.name} Construction Permits — Seattle`;
-  const description = `Recent permits, active projects, top contractors, estimated values, and the most active addresses in ${nb.name}, Seattle.`;
+  const title = `${nb.name} Building Permits, Seattle | Building Seattle`;
+  const latestActivity = latestPermitActivity(recentPermits);
+  // Data-driven description (audit E19): this neighborhood's own figures
+  // instead of one sentence shared by every neighborhood page.
+  const description = truncateMetaDescription(
+    `${countLabel(permitCount, "building permit")} in ${nb.name}, Seattle${totalValue ? ` worth ${compactMetricMoney(totalValue)} in counted value` : ""}${latestActivity ? `, latest ${formatCalendarDate(latestActivity)}` : ""}. Recent permits, contractors and the busiest addresses.`,
+    160,
+  );
+  const nbFilter = encodeURIComponent(nb.name);
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -8014,6 +8035,7 @@ async function renderNeighborhoodPage(slug, env, request) {
 
   const listOrEmpty = (rows, fn, empty) =>
     rows.length ? `<ul class="ent-list">${rows.map(fn).join("")}</ul>` : `<p style="color:var(--text-muted);">${empty}</p>`;
+  const viewAll = (href, label) => `<p style="margin:0.75rem 0 0;font-size:0.85rem;"><a class="ent-link" href="${href}">${label} &rarr;</a></p>`;
 
   const body = `
     ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Neighborhoods", href: "/neighborhoods" }, { label: nb.name }])}
@@ -8025,43 +8047,49 @@ async function renderNeighborhoodPage(slug, env, request) {
       <div class="stat-row">
         ${entStat("Permits", permitCount)}
         ${entStat("Total value", entMoney(totalValue))}
-        ${entStat("Active projects", projects.length)}
-        ${entStat("Top contractors", topContractors.length)}
+        ${entStat("Latest permit activity", latestActivity ? entDate(latestActivity) : "—")}
       </div>
+      <p style="margin:0;font-size:0.8rem;color:var(--text-muted);">Total value counts a valuation SDCI repeats across related demolition permits once. <a class="ent-link" href="/methodology#value">How values are counted</a></p>
     </div>
     <div class="ent-grid">
       <div>
         <div class="bs-card">
           <h2>Recent permits</h2>
           ${entPermitRows(recentPermits)}
+          ${permitCount > recentPermits.length ? viewAll(`/permits?neighborhood=${nbFilter}`, `All ${countLabel(permitCount, "permit")} in ${escapeHtml(nb.name)}`) : ""}
         </div>
-        <div class="bs-card">
-          <h2>Active projects</h2>
+        ${projects.length ? `<div class="bs-card">
+          <h2>Recent projects</h2>
           ${listOrEmpty(
             projects,
             (pr) =>
               `<li><a class="ent-link" href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${entMoney(pr.total_estimated_value)} · ${entDate(pr.latest_activity_date)}</span></li>`,
-            "No active projects yet.",
+            "",
           )}
-        </div>
+          ${viewAll("/projects", "Browse all projects")}
+        </div>` : ""}
       </div>
       <div>
+        ${renderAlertCta({ permits: recentPermits, subject: nb.name })}
         <div class="bs-card">
           <h3>Top contractors</h3>
           ${listOrEmpty(
             topContractors,
-            (c) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(c.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${c.cnt} permits</span></li>`,
+            (c) => `<li><a class="ent-link" href="/contractor/${encodeURIComponent(c.slug)}">${escapeHtml(displayName(c.name))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(c.cnt, "permit")}</span></li>`,
             "No contractors on record.",
           )}
+          ${topContractors.length ? viewAll(`/contractors?neighborhood=${nbFilter}`, `All contractors in ${escapeHtml(nb.name)}`) : ""}
         </div>
         <div class="bs-card">
           <h3>Most active addresses</h3>
           ${listOrEmpty(
             topAddresses,
-            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
+            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(a.permits, "permit")}</span></li>`,
             "No addresses on record.",
           )}
+          ${topAddresses.length ? viewAll(`/addresses?neighborhood=${nbFilter}`, `All addresses in ${escapeHtml(nb.name)}`) : ""}
         </div>
+        ${renderDatasetCta({ context: "neighborhood", subject: `${nb.name} permits`, count: permitCount })}
       </div>
     </div>`;
 
@@ -8072,7 +8100,7 @@ async function renderNeighborhoodPage(slug, env, request) {
       canonical,
       jsonLd,
       noindex,
-      body: `${body}${renderDataTrustNote(latestPermitActivity(recentPermits), "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.", "entity")}`,
+      body: `${body}${renderDataTrustNote(latestActivity, "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html" } },
   );
@@ -8155,12 +8183,20 @@ async function renderOrgContractorPage(slug, env, request) {
   const permitListHeading = totalPermits > shownPermits
     ? `Recent permits (${shownPermits} of ${totalPermits.toLocaleString("en-US")})`
     : `Permits (${shownPermits})`;
-  const roleLabels = roles.map((r) => r.role).join(", ") || "participant";
+  const roleLabels = roleList(roles);
+  const isContractor = roles.some((r) => String(r.role || "").toLowerCase() === "contractor");
   const noindex = permits.length === 0;
   const isOrg = org.type_guess === "organization";
+  const name = displayName(org.name) || org.name;
+  const latestActivity = latestPermitActivity(permits);
+  const parent = isContractor ? { label: "Contractors", href: "/contractors" } : { label: "Permits", href: "/permits" };
 
-  const title = `${org.name} Seattle Permit & Construction Activity`;
-  const description = `See permits, projects, addresses, estimated values, and recent construction activity associated with ${org.name} in Seattle.`;
+  const title = `${name}: Seattle Permits | Building Seattle`;
+  // Data-driven description (audit E19): this entity's own figures.
+  const description = truncateMetaDescription(
+    `${name}: ${countLabel(totalPermits, "Seattle building permit")} as ${roleLabels.toLowerCase()}${activeCount ? `, ${formatCount(activeCount)} active` : ""}${totalValue ? `, ${compactMetricMoney(totalValue)} counted value` : ""}. Permit records, addresses and neighborhoods.`,
+    160,
+  );
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -8168,17 +8204,17 @@ async function renderOrgContractorPage(slug, env, request) {
       isOrg
         ? {
             "@type": "Organization",
-            name: org.name,
+            name,
             url: canonical,
             address: { "@type": "PostalAddress", addressLocality: "Seattle", addressRegion: "WA", addressCountry: "US" },
           }
-        : { "@type": "Person", name: org.name, url: canonical },
+        : { "@type": "Person", name, url: canonical },
       {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
-          { "@type": "ListItem", position: 3, name: org.name, item: canonical },
+          { "@type": "ListItem", position: 2, name: parent.label, item: `${BASE_URL}${parent.href}` },
+          { "@type": "ListItem", position: 3, name, item: canonical },
         ],
       },
     ],
@@ -8188,17 +8224,17 @@ async function renderOrgContractorPage(slug, env, request) {
     rows.length ? `<ul class="ent-list">${rows.map(fn).join("")}</ul>` : `<p style="color:var(--text-muted);">${empty}</p>`;
 
   const body = `
-    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Permits", href: "/permits" }, { label: org.name }])}
+    ${entBreadcrumb([{ label: "Home", href: "/" }, parent, { label: name }])}
     <div class="ent-hero">
       <div class="ent-kicker">${escapeHtml(isOrg ? "Organization" : "Person")} · ${escapeHtml(roleLabels)}</div>
-      <h1>${escapeHtml(org.name)}</h1>
+      <h1>${escapeHtml(name)}</h1>
     </div>
     <div class="bs-card">
       <div class="stat-row">
-        ${entStat("Permits", totalPermits.toLocaleString("en-US"))}
-        ${entStat("Active / recent", activeCount)}
+        ${entStat("Permits", totalPermits)}
+        ${entStat("Active", activeCount)}
         ${entStat("Total value", entMoney(totalValue))}
-        ${entStat("Addresses", addresses.length)}
+        ${entStat("Latest permit activity", latestActivity ? entDate(latestActivity) : "—")}
       </div>
     </div>
     <div class="ent-grid">
@@ -8207,32 +8243,34 @@ async function renderOrgContractorPage(slug, env, request) {
           <h2>${escapeHtml(permitListHeading)}</h2>
           ${entPermitRows(permits)}
         </div>
-        <div class="bs-card">
+        ${projects.length ? `<div class="bs-card">
           <h2>Inferred projects</h2>
           ${listOrEmpty(
             projects,
             (pr) => `<li><a class="ent-link" href="/project/${encodeURIComponent(pr.slug)}">${escapeHtml(pr.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${entMoney(pr.total_estimated_value)} · ${entDate(pr.latest_activity_date)}</span></li>`,
-            "No inferred projects yet.",
+            "",
           )}
-        </div>
+        </div>` : ""}
       </div>
       <div>
+        ${renderAlertCta({ permits, subject: name })}
         <div class="bs-card">
           <h3>Addresses worked on</h3>
           ${listOrEmpty(
             addresses,
-            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${a.permits} permits</span></li>`,
+            (a) => `<li><a class="ent-link" href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(a.permits, "permit")}</span></li>`,
             "No addresses on record.",
           )}
         </div>
-        <div class="bs-card">
+        ${neighborhoods.length ? `<div class="bs-card">
           <h3>Most common neighborhoods</h3>
           ${listOrEmpty(
             neighborhoods,
-            (n) => `<li><a class="ent-link" href="/neighborhood/${encodeURIComponent(n.slug)}">${escapeHtml(n.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${n.cnt} permits</span></li>`,
-            "No neighborhood data.",
+            (n) => `<li><a class="ent-link" href="/neighborhood/${encodeURIComponent(n.slug)}">${escapeHtml(n.name)}</a> <span style="font-size:0.8rem;color:var(--text-muted);">· ${countLabel(n.cnt, "permit")}</span></li>`,
+            "",
           )}
-        </div>
+        </div>` : ""}
+        ${renderDatasetCta({ context: "contractor", subject: `${name}'s permits`, count: totalPermits })}
       </div>
     </div>`;
 
@@ -8244,7 +8282,7 @@ async function renderOrgContractorPage(slug, env, request) {
       jsonLd,
       noindex,
       ogType: "profile",
-      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Participant matching follows names in public permit records and may combine or separate similarly named entities.", "entity")}`,
+      body: `${body}${renderDataTrustNote(latestActivity, "Participant matching follows names in public permit records and may combine or separate similarly named entities.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html" } },
   );
