@@ -4916,6 +4916,19 @@ function buildEntityHubState(type, request) {
   return { url, page, sort, activity, view, permitType, neighborhood, minValue, minPermits, hasFilters };
 }
 
+// The contractors hub selects people_orgs.type_guess as its detail line, a
+// raw enum ("organization", "person"). Show what the card is instead
+// (audit E16/E17); other hubs already select readable text.
+function hubDetailLabel(type, detail) {
+  if (type === "contractors") {
+    const kind = String(detail || "").trim().toLowerCase();
+    if (kind === "person") return "Contractor (individual)";
+    if (!kind || kind === "organization" || kind === "contractor") return "Contractor";
+    return displayName(detail);
+  }
+  return detail ? displayName(detail) : "Seattle construction activity";
+}
+
 function buildEntityHubQuery(type, state) {
   const config = ENTITY_HUBS[type];
   const where = [];
@@ -5048,9 +5061,9 @@ async function renderEntityHubPage(type, env, request) {
     .map((item) => {
       const value = Number(item.total_value) > 0 ? entMoney(item.total_value) : "Value not reported";
       return `<article class="bs-card">
-        <h2 style="font-size:1.05rem;margin:0 0 0.4rem;"><a class="ent-link" href="${config.pathPrefix}${encodeURIComponent(item.slug)}">${escapeHtml(item.label)}</a></h2>
-        <p style="margin:0 0 0.75rem;color:var(--text-muted);font-size:0.875rem;">${escapeHtml(item.detail || "Seattle construction activity")}</p>
-        <div style="display:flex;gap:1rem;font-size:0.8rem;font-weight:650;"><span>${Number(item.permit_count || 0).toLocaleString()} permits</span><span>${value}</span></div>
+        <h2 style="font-size:1.05rem;margin:0 0 0.4rem;"><a class="ent-link" href="${config.pathPrefix}${encodeURIComponent(item.slug)}">${escapeHtml(displayName(item.label) || item.label)}</a></h2>
+        <p style="margin:0 0 0.75rem;color:var(--text-muted);font-size:0.875rem;">${escapeHtml(hubDetailLabel(type, item.detail))}</p>
+        <div style="display:flex;gap:1rem;font-size:0.8rem;font-weight:650;"><span>${countLabel(item.permit_count, "permit")}</span><span>${value}</span></div>
       </article>`;
     })
     .join("");

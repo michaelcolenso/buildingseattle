@@ -180,3 +180,16 @@ test("curated contractor pages: no backslashes, Contractors parent, labelled row
   assert.match(html, /Search permits for Belotti Mchugh Dsn\/Cnst Sr LLC/);
   assert.match(html, /utm_content=contractor/);
 });
+
+test("contractor hub cards show a readable type and pluralized counts (audit E16/E18)", async () => {
+  const env = routedEnv([
+    ["seo-hub:contractors", [
+      { slug: "one", label: "ONE PERSON", detail: "person", permit_count: 1, total_value: 0 },
+      { slug: "big", label: "BIG\\BUILD LLC", detail: "organization", permit_count: 1276, total_value: 5000 },
+    ]],
+  ]);
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/contractors"), env, ctx())).text();
+  assert.match(html, /One Person<\/a><\/h2>\s*<p[^>]*>Contractor \(individual\)<\/p>[\s\S]*?<span>1 permit<\/span>/);
+  assert.match(html, /Big\/Build LLC<\/a><\/h2>\s*<p[^>]*>Contractor<\/p>[\s\S]*?<span>1,276 permits<\/span>/);
+  assert.doesNotMatch(html, />organization<|>person</);
+});
