@@ -13,6 +13,7 @@ import {
   realAddressSql,
   realNeighborhoodSql,
 } from "../entity_hubs.js";
+import { runSeoHealthCheck } from "../scripts/check_seo_health.mjs";
 
 // Which entity URLs are published is decided in one place (entity_hubs.js)
 // and read by the page templates, the sitemaps and the hubs. These tests run
@@ -485,4 +486,33 @@ test("homepage rankings leave out placeholder neighborhoods and city-only addres
   assert.ok(!neighborhoods.includes("Other Seattle"), neighborhoods.join());
   assert.ok(addresses.includes("400 OAK ST"), addresses.join());
   assert.ok(!addresses.includes("Seattle, WA"), addresses.join());
+});
+
+async function monitor(env) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (url, init) => worker.fetch(new Request(url, init), env, ctx);
+  try {
+    return await runSeoHealthCheck(BASE, { seed: "2026-11-27" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+test("the production SEO monitor passes against the seeded worker (D5)", async () => {
+  const report = await monitor(createEnv(seedBasisReset(seededDatabase())));
+  assert.deepEqual(report.failures, []);
+  const sampled = report.checks.filter((check) => check.check === "sitemap-url-direct");
+  assert.ok(sampled.length >= 6, `${sampled.length} sitemap samples`);
+  for (const prefix of ["/address/", "/project/", "/contractor/", "/neighborhood/", "/permits/"]) {
+    assert.ok(sampled.some((check) => check.url.includes(prefix)), prefix);
+  }
+  assert.ok(report.checks.some((check) => check.check === "sitemap-lastmod-stable" && check.ok));
+  assert.ok(report.checks.some((check) => check.check === "robots-txt-directives" && check.ok));
+});
+
+test("the SEO monitor flags a sitemapped entity that stops answering 200 (D5)", async () => {
+  const report = await monitor(createEnv(seedBasisReset(seededDatabase()), { faults: ["FROM addresses WHERE slug"] }));
+  const flagged = report.failures.filter((check) => check.check === "sitemap-url-direct").map((check) => new URL(check.url).pathname);
+  assert.ok(flagged.length > 0);
+  assert.ok(flagged.every((path) => path.startsWith("/address/")), flagged.join());
 });
