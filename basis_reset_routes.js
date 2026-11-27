@@ -131,7 +131,12 @@ export async function materializeBasisResetScore(env, eventId) {
 
 export async function getBasisResetRadar(request, env) {
   const url = new URL(request.url);
-  const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 25)));
+  const rawLimit = url.searchParams.get("limit");
+  // Plain digits only: Number("abc") is NaN, which D1/SQLite rejects as a LIMIT.
+  if (rawLimit !== null && rawLimit !== "" && !/^\d{1,6}$/.test(rawLimit)) {
+    return json({ error: "limit must be a positive integer" }, 400);
+  }
+  const limit = Math.max(1, Math.min(100, Number(rawLimit || 25)));
   const { results } = await env.DB.prepare(`
     SELECT s.*, e.event_type, e.event_date, e.prior_basis, e.current_basis, e.asking_price,
       e.source_url, e.source_name, e.confidence,

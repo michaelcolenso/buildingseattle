@@ -23,11 +23,18 @@ import {
   developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
   ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, developmentSitesArePublic,
 } from "./development_sites.js";
+import {
+  ALERT_CONFIRMATION_TTL_DAYS, ALERT_EMAIL_DAILY_LIMIT, ALERT_IP_HOURLY_LIMIT, ALERT_RESEND_COOLDOWN_MINUTES,
+  ALERT_SEND_BATCH_LIMIT, ANON_API_MAX_PAGE, FILTER_PARAM_MAX_LENGTH, LEAD_IP_HOURLY_LIMIT, LEAD_TEXT_MAX_LENGTH,
+  PERMIT_NUMBER_MAX_LENGTH, SEARCH_QUERY_MAX_LENGTH, THEME_BOOT_SCRIPT_SHA256,
+  apiLimits, clientIp, consumeRateLimit, isCrossSiteRequest, isJsonContentType, parseIntegerParam,
+  rateLimitKey, resolveApiAccess, slimPermitRow, timingSafeEqualString, turnstileEnabled, verifyTurnstile,
+} from "./security.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Ingest-Token",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Ingest-Token, X-API-Key",
 };
 const INGEST_TOKEN_HEADER = "X-Ingest-Token";
 const BASE_URL = "https://buildingseattle.com";
@@ -40,11 +47,15 @@ const SECURITY_HEADERS = {
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
   "Content-Security-Policy": [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com",
+    // No 'unsafe-inline' for scripts: the only inline script is the theme
+    // boot script, allowed by hash (tests/security.test.js keeps it honest).
+    // Inline styles stay allowed: templates use style="" attributes widely.
+    `script-src 'self' '${THEME_BOOT_SCRIPT_SHA256}' https://static.cloudflareinsights.com https://challenges.cloudflare.com`,
+    "script-src-attr 'none'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",
     "connect-src 'self' https://cloudflareinsights.com https://*.cloudflareinsights.com",
-    "frame-src https://maps.google.com https://www.google.com",
+    "frame-src https://maps.google.com https://www.google.com https://challenges.cloudflare.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -145,6 +156,9 @@ export default {
     const secure = (response) => withSecurityHeaders(response);
 
     if (request.method === "OPTIONS") {
+      // Same-origin form endpoints never grant CORS, so other sites cannot
+      // preflight a JSON POST to them.
+      if (isFormPostPath(path)) return secure(new Response(null, { status: 204 }));
       return secure(new Response(null, { headers: corsHeaders }));
     }
 
@@ -181,7 +195,7 @@ export default {
         return secure(await handleAlertSubscription(request, env));
       }
 
-      if (path === "/alerts/confirm" && request.method === "GET") {
+      if (path === "/alerts/confirm" && (request.method === "GET" || request.method === "POST")) {
         return secure(await handleAlertConfirmation(request, env));
       }
 
@@ -189,8 +203,21 @@ export default {
         return secure(await handleAlertUnsubscribe(request, env));
       }
 
+      // Public JSON API and MCP: resolve the caller's tier once (anonymous or
+      // API key) and apply the per-tier rate limit before any D1 work.
+      let apiAccess = null;
+      if (isPublicApiPath(path)) {
+        apiAccess = await resolveApiAccess(request, env);
+        if (apiAccess.tier === "invalid") {
+          return secure(apiErrorResponse("Invalid API key", 401));
+        }
+        if (!(await allowPublicApiRequest(request, env, apiAccess))) {
+          return secure(apiErrorResponse("Too many requests. Slow down or use an API key.", 429, { "Retry-After": "60" }));
+        }
+      }
+
       if (path === "/api/permits") {
-        return secure(await getPermits(request, env));
+        return secure(await getPermits(request, env, { access: apiAccess }));
       }
 
       const siteGeometryMatch = path.match(/^\/api\/development-sites\/([^/]+)\/geometry$/);
@@ -202,7 +229,12 @@ export default {
       }
 
       if (path === "/mcp") {
-        return secure(await handleMcpRequest(request, (name, args) => executeMcpTool(name, args, env, request.url)));
+        return secure(
+          await handleMcpRequest(request, (name, args) => executeMcpTool(name, args, env, request.url, apiAccess), {
+            allowedOrigins: env.MCP_ALLOWED_ORIGINS,
+            access: apiAccess,
+          }),
+        );
       }
 
       if (path === "/permits" || path === "/permits/") {
@@ -361,7 +393,9 @@ export default {
       if (path === "/api/admin/analytics") {
         const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
-        const days = parseInt(url.searchParams.get("days") || "7", 10);
+        const daysParam = parseIntegerParam(url.searchParams.get("days"), { fallback: 7, max: 3650 });
+        if (!daysParam.ok) return secure(badRequestResponse(path, "days must be a positive integer"));
+        const days = daysParam.value;
         const since = new Date();
         since.setDate(since.getDate() - days);
         const sinceStr = since.toISOString().split("T")[0];
@@ -574,19 +608,7 @@ export default {
 
       return secure(render404());
     } catch (error) {
-      console.error("Worker error:", error);
-      return secure(
-        new Response(
-          JSON.stringify({
-            error: "Internal Server Error",
-            details: error.message,
-          }),
-          {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          },
-        ),
-      );
+      return secure(renderUnhandledError(error, path));
     }
     });
   },
@@ -604,10 +626,90 @@ const DISCOVERY_LINKS = [
   `<${BASE_URL}/llms.txt>; rel="llms-txt"; type="text/plain"`,
 ].join(", ");
 
+// --- Request hardening helpers (audit A1/A4/A7/A8/A15/A21, F2/F11) --------
+
+// Same-origin POST endpoints: no CORS, JSON or form bodies only, Origin-checked.
+function isFormPostPath(path) {
+  return path === "/leads" || path.startsWith("/alerts/");
+}
+
+// Public read API + MCP: tiered caps and rate limits. Admin and the Access
+// identity endpoint keep their own auth and are excluded.
+function isPublicApiPath(path) {
+  if (path === "/mcp") return true;
+  return path.startsWith("/api/") && !path.startsWith("/api/admin") && path !== "/api/user";
+}
+
+function apiErrorResponse(message, status, extraHeaders = {}) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders },
+  });
+}
+
+// JSON for same-origin forms (leads, alerts): never Access-Control-Allow-Origin.
+function formJsonResponse(payload, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders },
+  });
+}
+
+// Uses the Workers Rate Limiting bindings when configured (wrangler.toml
+// [[ratelimits]]). Without a binding the API is not throttled here: a D1
+// counter on every API hit would cost more than it saves; the zone rate-limit
+// rule is the backstop.
+async function allowPublicApiRequest(request, env, access) {
+  const binding = access?.tier === "key" ? env.API_KEY_RATE_LIMITER : env.API_RATE_LIMITER;
+  if (!binding || typeof binding.limit !== "function") return true;
+  const key = access?.tier === "key" ? `api:${access.keyId}` : await rateLimitKey("api:ip", clientIp(request));
+  try {
+    const { success } = await binding.limit({ key });
+    return Boolean(success);
+  } catch (error) {
+    console.warn("API rate limiter failed open:", error?.message || error);
+    return true;
+  }
+}
+
+// Last-resort handler: log the detail server-side, never return it.
+function renderUnhandledError(error, path) {
+  if (error instanceof URIError) {
+    return badRequestResponse(path);
+  }
+  console.error(`Worker error on ${path}:`, error?.stack || error);
+  const json = path.startsWith("/api/") || path === "/mcp" || path.startsWith("/ingest/") || path.startsWith("/admin");
+  return new Response(json ? JSON.stringify({ error: "Internal Server Error" }) : "Internal Server Error", {
+    status: 500,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": json ? "application/json" : "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function badRequestResponse(path, message = "Bad request") {
+  const json = path.startsWith("/api/") || path === "/mcp";
+  return new Response(json ? JSON.stringify({ error: message }) : message, {
+    status: 400,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": json ? "application/json" : "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex",
+    },
+  });
+}
+
 function withSecurityHeaders(response) {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(name, value);
+  }
+  // Machine-readable JSON is for clients, not search results.
+  if ((headers.get("Content-Type") || "").includes("application/json") && !headers.has("X-Robots-Tag")) {
+    headers.set("X-Robots-Tag", "noindex");
   }
   // Advertise agent-discovery resources on every response (RFC 8288).
   headers.append("Link", DISCOVERY_LINKS);
@@ -890,8 +992,11 @@ function unauthorizedResponse(message, status = 401) {
   });
 }
 
-const ACCESS_CERTS_CACHE = { fetchedAt: 0, keys: null, promise: null };
+const ACCESS_CERTS_CACHE = { fetchedAt: 0, keys: null, promise: null, forcedRefreshAt: 0 };
 const ACCESS_CERTS_TTL_MS = 60 * 60 * 1000;
+// An unknown `kid` may force a certs refetch at most this often, so forged
+// JWT headers cannot turn every request into an outbound fetch.
+const ACCESS_CERTS_FORCED_REFRESH_MS = 60 * 1000;
 
 function base64UrlDecode(value) {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (value.length % 4)) % 4);
@@ -958,14 +1063,15 @@ async function verifyAccessJwt(token, env) {
   }
 
   if (typeof payload?.exp !== "number" || payload.exp * 1000 <= Date.now()) return null;
-  if (payload.iss && payload.iss !== `https://${teamDomain}`) return null;
+  if (payload.iss !== `https://${teamDomain}`) return null;
   const audMatches = audience === payload.aud || (Array.isArray(payload.aud) && payload.aud.includes(audience));
   if (!audMatches) return null;
 
   let keys = await fetchAccessCertKeys(env);
   let key = (keys || []).find((candidate) => candidate.kid === header.kid);
-  if (!key) {
-    // One stale-cache refresh attempt before rejecting an unknown key id.
+  if (!key && Date.now() - ACCESS_CERTS_CACHE.forcedRefreshAt >= ACCESS_CERTS_FORCED_REFRESH_MS) {
+    // One stale-cache refresh attempt (rate-limited) before rejecting an unknown key id.
+    ACCESS_CERTS_CACHE.forcedRefreshAt = Date.now();
     ACCESS_CERTS_CACHE.keys = null;
     ACCESS_CERTS_CACHE.fetchedAt = 0;
     keys = await fetchAccessCertKeys(env);
@@ -995,6 +1101,16 @@ async function verifyAccessJwt(token, env) {
 }
 
 async function requireAdminAuth(request, env) {
+  // State-changing admin requests (A21): only the X-Admin-Token header counts
+  // (never the Access cookie/JWT a browser attaches on its own), and a
+  // cross-site Origin is refused outright.
+  if (!["GET", "HEAD"].includes(request.method)) {
+    if (isCrossSiteRequest(request)) return unauthorizedResponse("Cross-site admin request refused", 403);
+    const configured = env.ADMIN_API_TOKEN;
+    if (configured && (await timingSafeEqualString(request.headers.get(ADMIN_TOKEN_HEADER), configured))) return null;
+    return unauthorizedResponse("Unauthorized admin request");
+  }
+
   const jwt = request.headers.get("CF-Access-Jwt-Assertion");
   if (jwt && (await verifyAccessJwt(jwt, env))) {
     return null;
@@ -1006,27 +1122,6 @@ async function requireAdminAuth(request, env) {
   }
 
   return unauthorizedResponse("Unauthorized admin request");
-}
-
-async function timingSafeEqualString(provided, expected) {
-  if (!provided || !expected) {
-    return false;
-  }
-  const encoder = new TextEncoder();
-  const providedBytes = encoder.encode(provided);
-  const expectedBytes = encoder.encode(expected);
-  if (providedBytes.length !== expectedBytes.length) {
-    return false;
-  }
-  const providedDigest = await crypto.subtle.digest("SHA-256", providedBytes);
-  const expectedDigest = await crypto.subtle.digest("SHA-256", expectedBytes);
-  const providedHash = new Uint8Array(providedDigest);
-  const expectedHash = new Uint8Array(expectedDigest);
-  let diff = 0;
-  for (let i = 0; i < providedHash.length; i++) {
-    diff |= providedHash[i] ^ expectedHash[i];
-  }
-  return diff === 0;
 }
 
 async function requireIngestAuth(request, env) {
@@ -1114,7 +1209,7 @@ function renderNav(activePage) {
   ];
   const link = ({ href, label, keys }) =>
     `<a href="${href}"${keys.includes(activePage) ? ' class="active"' : ""}>${label}</a>`;
-  return `<nav class="global-nav" id="global-nav" onkeydown="if(event.key==='Escape'){var l=document.getElementById('global-nav-links');if(l.classList.contains('open')){l.classList.remove('open');var b=this.querySelector('.global-nav-hamburger');b.setAttribute('aria-expanded','false');b.focus();}}">
+  return `<nav class="global-nav" id="global-nav">
       <div class="container global-nav-row">
         <a href="/" class="logo">${themedLockup("Building Seattle")}</a>
         <div class="global-nav-end">
@@ -1122,7 +1217,7 @@ function renderNav(activePage) {
           ${items.map(link).join("\n          ")}
           </div>
           ${themeToggleButton()}
-          <button class="global-nav-hamburger" onclick="this.setAttribute('aria-expanded',String(document.getElementById('global-nav-links').classList.toggle('open')))" aria-label="Menu" aria-expanded="false" aria-controls="global-nav-links">&#9776;</button>
+          <button type="button" class="global-nav-hamburger" aria-label="Menu" aria-expanded="false" aria-controls="global-nav-links">&#9776;</button>
         </div>
       </div>
     </nav>`;
@@ -1603,27 +1698,65 @@ async function handleRoot(request, env) {
   });
 }
 
-async function handleLeadCapture(request, env) {
-  let data;
+// Shared front door for the public same-origin forms (leads, alert sign-up):
+// JSON only, same-site Origin only, then a per-IP throttle.
+async function checkPublicFormRequest(request, env, { scope, binding, hourlyLimit }) {
+  if (!isJsonContentType(request)) {
+    return formJsonResponse({ error: "Content-Type must be application/json" }, 415);
+  }
+  if (isCrossSiteRequest(request)) {
+    return formJsonResponse({ error: "Cross-site requests are not allowed" }, 403);
+  }
+  const allowed = await consumeRateLimit(env, {
+    binding,
+    key: await rateLimitKey(`${scope}:ip`, clientIp(request)),
+    limit: hourlyLimit,
+    windowSeconds: 3600,
+  });
+  if (!allowed) {
+    return formJsonResponse({ error: "Too many requests. Try again later." }, 429, { "Retry-After": "3600" });
+  }
+  return null;
+}
+
+async function readJsonObject(request) {
   try {
-    data = await request.json();
+    const data = await request.json();
+    return data && typeof data === "object" && !Array.isArray(data) ? data : null;
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return null;
+  }
+}
+
+async function handleLeadCapture(request, env) {
+  const rejected = await checkPublicFormRequest(request, env, {
+    scope: "leads",
+    binding: "LEADS_RATE_LIMITER",
+    hourlyLimit: LEAD_IP_HOURLY_LIMIT,
+  });
+  if (rejected) return rejected;
+
+  const data = await readJsonObject(request);
+  if (!data) {
+    return formJsonResponse({ error: "Invalid JSON" }, 400);
   }
 
   const email = String(data.email || "").trim().toLowerCase();
   const company = String(data.company || "").trim();
   const interest = String(data.interest || "").trim();
-  if (!isValidEmail(email) || !company || !interest) {
-    return new Response(JSON.stringify({ error: "A valid email, company, and interest are required" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  if (
+    !isValidEmail(email) ||
+    !company ||
+    !interest ||
+    company.length > LEAD_TEXT_MAX_LENGTH ||
+    interest.length > LEAD_TEXT_MAX_LENGTH
+  ) {
+    return formJsonResponse(
+      { error: `A valid email, company, and interest (up to ${LEAD_TEXT_MAX_LENGTH} characters each) are required` },
+      400,
+    );
   }
-  const neighborhoods = String(data.neighborhoods || "").trim().slice(0, 500) || null;
+  const neighborhoods = String(data.neighborhoods || "").trim().slice(0, LEAD_FIELD_MAX_LENGTH) || null;
   const source = String(data.source || "website").slice(0, 100);
   const userAgent = String(data.userAgent || "").slice(0, 300) || null;
 
@@ -1643,9 +1776,7 @@ async function handleLeadCapture(request, env) {
     )
     .run();
 
-  return new Response(JSON.stringify({ success: true, id: crypto.randomUUID() }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+  return formJsonResponse({ success: true, id: crypto.randomUUID() });
 }
 
 const LEAD_BATCH_MAX_ITEMS = 500;
@@ -1714,22 +1845,41 @@ async function handleLeadBatch(request, env) {
   });
 }
 
+// Every accepted sign-up gets this same answer, whether a confirmation was
+// sent, throttled, suppressed or the address already subscribes (A12): the
+// endpoint must not reveal who watches which permit.
+const ALERT_ACCEPTED = { success: true, status: "pending_confirmation" };
+
 async function handleAlertSubscription(request, env) {
   if (!env.EMAIL) {
-    return alertJsonResponse({ error: "Permit alerts are temporarily unavailable" }, 503);
+    return formJsonResponse({ error: "Permit alerts are temporarily unavailable" }, 503);
   }
 
-  let data;
-  try {
-    data = await request.json();
-  } catch {
-    return alertJsonResponse({ error: "Invalid JSON" }, 400);
+  const rejected = await checkPublicFormRequest(request, env, {
+    scope: "alerts",
+    binding: "ALERTS_RATE_LIMITER",
+    hourlyLimit: ALERT_IP_HOURLY_LIMIT,
+  });
+  if (rejected) return rejected;
+
+  const data = await readJsonObject(request);
+  if (!data) {
+    return formJsonResponse({ error: "Invalid JSON" }, 400);
   }
 
   const email = String(data.email || "").trim().toLowerCase();
   const permitNumber = String(data.permit_number || "").trim();
-  if (!isValidEmail(email) || !permitNumber) {
-    return alertJsonResponse({ error: "A valid email and permit number are required" }, 400);
+  if (!isValidEmail(email) || !permitNumber || permitNumber.length > PERMIT_NUMBER_MAX_LENGTH) {
+    return formJsonResponse({ error: "A valid email and permit number are required" }, 400);
+  }
+
+  // Turnstile is enforced only once TURNSTILE_SECRET_KEY is configured.
+  let humanVerified = false;
+  if (turnstileEnabled(env)) {
+    humanVerified = await verifyTurnstile(env, data.turnstile_token, clientIp(request));
+    if (!humanVerified) {
+      return formJsonResponse({ error: "Please complete the verification and try again" }, 403);
+    }
   }
 
   const permit = await env.DB.prepare(
@@ -1738,18 +1888,47 @@ async function handleAlertSubscription(request, env) {
     .bind(permitNumber)
     .first();
   if (!permit) {
-    return alertJsonResponse({ error: "Permit not found" }, 404);
+    return formJsonResponse({ error: "Permit not found" }, 404);
+  }
+
+  const suppressed = await env.DB.prepare("SELECT 1 AS suppressed FROM alert_email_suppressions WHERE email = ?")
+    .bind(email)
+    .first();
+  if (suppressed) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
   }
 
   const existing = await env.DB.prepare(`
-    SELECT *
+    SELECT
+      id,
+      status,
+      confirmation_sent_at,
+      confirmation_sent_at > datetime('now', ?) AS recently_sent
     FROM permit_alert_subscriptions
     WHERE lower(email) = ? AND permit_number = ?
   `)
-    .bind(email, permitNumber)
+    .bind(`-${ALERT_RESEND_COOLDOWN_MINUTES} minutes`, email, permitNumber)
     .first();
   if (existing?.status === "active") {
-    return alertJsonResponse({ success: true, status: "active" });
+    return formJsonResponse(ALERT_ACCEPTED, 202);
+  }
+  // An unsubscribed pair is only re-opened by a fresh, human-verified opt-in;
+  // without Turnstile configured it stays suppressed.
+  if (existing?.status === "unsubscribed" && !humanVerified) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
+  }
+  if (existing?.status === "pending" && Number(existing.recently_sent)) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
+  }
+
+  // Per-address cap across all permits, counted only when we would send.
+  const underEmailCap = await consumeRateLimit(env, {
+    key: await rateLimitKey("alerts:email", email),
+    limit: ALERT_EMAIL_DAILY_LIMIT,
+    windowSeconds: 86400,
+  });
+  if (!underEmailCap) {
+    return formJsonResponse(ALERT_ACCEPTED, 202);
   }
 
   const confirmationToken = createAlertToken();
@@ -1776,11 +1955,13 @@ async function handleAlertSubscription(request, env) {
       confirmed_at = NULL,
       unsubscribed_at = NULL,
       updated_at = datetime('now')
+    WHERE permit_alert_subscriptions.status != 'active'
   `)
     .bind(email, permitNumber, confirmationTokenHash, unsubscribeToken)
     .run();
 
   const confirmationUrl = `${BASE_URL}/alerts/confirm?token=${encodeURIComponent(confirmationToken)}`;
+  const blockUrl = `${BASE_URL}/alerts/unsubscribe?token=${encodeURIComponent(unsubscribeToken)}&scope=all`;
   try {
     await env.EMAIL.send({
       from: ALERT_EMAIL_FROM,
@@ -1793,15 +1974,19 @@ async function handleAlertSubscription(request, env) {
         `Current status: ${normalizeStoredStatus(permit.status)}`,
         "",
         `Confirm: ${confirmationUrl}`,
+        `This link expires in ${ALERT_CONFIRMATION_TTL_DAYS} days.`,
         "",
         "You will receive email only when this permit's recorded status changes.",
+        "",
+        `Didn't ask for this? Ignore this email, or stop all Building Seattle email to this address: ${blockUrl}`,
       ].join("\n"),
       html: `
         <h1>Confirm your permit alert</h1>
         <p><strong>${escapeHtml(permitNumber)}</strong>: ${escapeHtml(permit.address || "Seattle permit")}</p>
         <p>Current status: ${escapeHtml(normalizeStoredStatus(permit.status))}</p>
-        <p><a href="${escapeHtml(confirmationUrl)}">Confirm permit alerts</a></p>
+        <p><a href="${escapeHtml(confirmationUrl)}">Confirm permit alerts</a> (expires in ${ALERT_CONFIRMATION_TTL_DAYS} days)</p>
         <p>You will receive email only when this permit's recorded status changes.</p>
+        <p style="color:#666;font-size:0.9em;">Didn't ask for this? Ignore this email, or <a href="${escapeHtml(blockUrl)}">stop all Building Seattle email to this address</a>.</p>
       `,
     });
   } catch (error) {
@@ -1815,25 +2000,55 @@ async function handleAlertSubscription(request, env) {
       .bind(email, permitNumber, confirmationTokenHash)
       .run();
     console.error("Permit alert confirmation email failed:", error);
-    return alertJsonResponse({ error: "Confirmation email could not be sent" }, 503);
+    return formJsonResponse({ error: "Confirmation email could not be sent" }, 503);
   }
 
-  return alertJsonResponse({ success: true, status: "pending_confirmation" }, 202);
+  return formJsonResponse(ALERT_ACCEPTED, 202);
 }
 
+// Read a token from the query string or a POSTed form body. Mail providers'
+// RFC 8058 one-click POST keeps the token in the URL and sends
+// "List-Unsubscribe=One-Click" as the body.
+async function readAlertTokenAndScope(request) {
+  const url = new URL(request.url);
+  let token = url.searchParams.get("token") || "";
+  let scope = url.searchParams.get("scope") || "";
+  if (request.method === "POST") {
+    const type = (request.headers.get("Content-Type") || "").toLowerCase();
+    if (type.includes("application/x-www-form-urlencoded") || type.includes("multipart/form-data")) {
+      try {
+        const form = await request.formData();
+        token = String(form.get("token") || token);
+        scope = String(form.get("scope") || scope);
+      } catch {
+        // Fall back to the query string.
+      }
+    }
+  }
+  return { token: token.slice(0, 200), scope: scope === "all" ? "all" : "permit" };
+}
+
+// GET only shows a page; the state change needs the POST from its button
+// (A11), so link scanners and prefetchers cannot confirm or unsubscribe.
 async function handleAlertConfirmation(request, env) {
-  const token = new URL(request.url).searchParams.get("token") || "";
+  if (request.method === "POST" && isCrossSiteRequest(request)) {
+    return renderAlertResult("Request refused", "Confirm your alert from the link in your email.", 403);
+  }
+  const { token } = await readAlertTokenAndScope(request);
   if (!token) {
     return renderAlertResult("Invalid confirmation link", "This confirmation link is missing its token.", 400);
   }
 
   const tokenHash = await hashAlertToken(token);
+  const expiry = `-${ALERT_CONFIRMATION_TTL_DAYS} days`;
   const subscription = await env.DB.prepare(`
-    SELECT *
+    SELECT id, permit_number
     FROM permit_alert_subscriptions
-    WHERE confirmation_token_hash = ? AND status = 'pending'
+    WHERE confirmation_token_hash = ?
+      AND status = 'pending'
+      AND confirmation_sent_at > datetime('now', ?)
   `)
-    .bind(tokenHash)
+    .bind(tokenHash, expiry)
     .first();
   if (!subscription) {
     return renderAlertResult(
@@ -1843,7 +2058,16 @@ async function handleAlertConfirmation(request, env) {
     );
   }
 
-  await env.DB.prepare(`
+  if (request.method !== "POST") {
+    return renderAlertResult(
+      "Confirm your permit alert",
+      `Press the button to start email alerts for permit ${subscription.permit_number}.`,
+      200,
+      renderAlertActionForm("/alerts/confirm", token, [{ label: "Confirm permit alerts" }]),
+    );
+  }
+
+  const result = await env.DB.prepare(`
     UPDATE permit_alert_subscriptions
     SET
       status = 'active',
@@ -1856,10 +2080,13 @@ async function handleAlertConfirmation(request, env) {
         WHERE permit_number = permit_alert_subscriptions.permit_number
       ),
       updated_at = datetime('now')
-    WHERE id = ? AND status = 'pending'
+    WHERE id = ? AND status = 'pending' AND confirmation_token_hash = ?
   `)
-    .bind(subscription.id)
+    .bind(subscription.id, tokenHash)
     .run();
+  if (!Number(result?.meta?.changes)) {
+    return renderAlertResult("Confirmation link expired", "This link has already been used.", 404);
+  }
 
   return renderAlertResult(
     "Permit alert confirmed",
@@ -1868,10 +2095,10 @@ async function handleAlertConfirmation(request, env) {
 }
 
 async function handleAlertUnsubscribe(request, env) {
-  const token = new URL(request.url).searchParams.get("token") || "";
+  const { token, scope } = await readAlertTokenAndScope(request);
   const subscription = token
     ? await env.DB.prepare(`
-      SELECT *
+      SELECT id, email, permit_number
       FROM permit_alert_subscriptions
       WHERE unsubscribe_token = ?
     `)
@@ -1883,6 +2110,30 @@ async function handleAlertUnsubscribe(request, env) {
     return renderAlertResult("Invalid unsubscribe link", "This unsubscribe link is not valid.", 404);
   }
 
+  if (request.method !== "POST") {
+    const actions = [{ label: `Stop alerts for permit ${subscription.permit_number}` }];
+    actions.push({ label: "Stop all Building Seattle email to this address", scope: "all", secondary: true });
+    return renderAlertResult(
+      scope === "all" ? "Stop all email to this address?" : "Stop this permit alert?",
+      scope === "all"
+        ? "Press the button below and Building Seattle will not email this address again, for any permit."
+        : `Press the button to stop status alerts for permit ${subscription.permit_number}.`,
+      200,
+      renderAlertActionForm(`/alerts/unsubscribe?token=${encodeURIComponent(token)}`, token, scope === "all" ? actions.reverse() : actions),
+    );
+  }
+
+  const email = String(subscription.email || "").toLowerCase();
+  if (scope === "all") {
+    await env.DB.prepare(`
+      INSERT INTO alert_email_suppressions (email, reason, created_at)
+      VALUES (?, 'user_request', datetime('now'))
+      ON CONFLICT(email) DO NOTHING
+    `)
+      .bind(email)
+      .run();
+  }
+
   await env.DB.prepare(`
     UPDATE permit_alert_subscriptions
     SET
@@ -1890,21 +2141,27 @@ async function handleAlertUnsubscribe(request, env) {
       confirmation_token_hash = NULL,
       unsubscribed_at = datetime('now'),
       updated_at = datetime('now')
-    WHERE id = ?
+    WHERE ${scope === "all" ? "lower(email) = ?" : "id = ?"}
   `)
-    .bind(subscription.id)
+    .bind(scope === "all" ? email : subscription.id)
     .run();
 
   return renderAlertResult(
     "Permit alert stopped",
-    `You will no longer receive status alerts for permit ${subscription.permit_number}.`,
+    scope === "all"
+      ? "Building Seattle will not email this address again."
+      : `You will no longer receive status alerts for permit ${subscription.permit_number}.`,
   );
 }
 
-async function sendPendingPermitAlerts(env) {
+// A3: each (subscription, change) is claimed in permit_alert_deliveries
+// before the email goes out, so overlapping runs (per-batch ingest plus the
+// cron) cannot send one change twice. A failed send releases its claim for
+// the next run; a claim stuck in 'sending' for an hour is reclaimable.
+export async function sendPendingPermitAlerts(env) {
   if (!env.EMAIL) {
     console.warn("Permit alert delivery skipped because the EMAIL binding is unavailable.");
-    return { sent: 0, failed: 0 };
+    return { sent: 0, failed: 0, skipped: 0 };
   }
 
   const { results } = await env.DB.prepare(`
@@ -1924,12 +2181,35 @@ async function sendPendingPermitAlerts(env) {
       AND sc.id > COALESCE(s.last_notified_change_id, 0)
     LEFT JOIN permits p ON p.permit_number = s.permit_number
     WHERE s.status = 'active'
+      AND NOT EXISTS (SELECT 1 FROM alert_email_suppressions x WHERE x.email = lower(s.email))
+      AND NOT EXISTS (
+        SELECT 1 FROM permit_alert_deliveries d
+        WHERE d.subscription_id = s.id AND d.change_id = sc.id AND d.status = 'sent'
+      )
     ORDER BY sc.id ASC
+    LIMIT ${ALERT_SEND_BATCH_LIMIT}
   `).all();
 
   let sent = 0;
   let failed = 0;
+  let skipped = 0;
   for (const change of results || []) {
+    const claim = await env.DB.prepare(`
+      INSERT INTO permit_alert_deliveries (subscription_id, change_id, status, claimed_at)
+      VALUES (?, ?, 'sending', datetime('now'))
+      ON CONFLICT(subscription_id, change_id) DO UPDATE SET
+        status = 'sending',
+        claimed_at = datetime('now')
+      WHERE permit_alert_deliveries.status = 'failed'
+        OR (permit_alert_deliveries.status = 'sending' AND permit_alert_deliveries.claimed_at < datetime('now', '-1 hour'))
+    `)
+      .bind(change.subscription_id, change.change_id)
+      .run();
+    if (!Number(claim?.meta?.changes)) {
+      skipped++;
+      continue;
+    }
+
     const permitUrl = `${BASE_URL}/permits/${encodeURIComponent(change.permit_number)}`;
     const unsubscribeUrl = `${BASE_URL}/alerts/unsubscribe?token=${encodeURIComponent(change.unsubscribe_token)}`;
     const previousStatus = normalizeStoredStatus(change.previous_status);
@@ -1961,25 +2241,38 @@ async function sendPendingPermitAlerts(env) {
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         },
       });
-
-      await env.DB.prepare(`
-        UPDATE permit_alert_subscriptions
-        SET
-          last_notified_change_id = ?,
-          last_notified_at = ?,
-          updated_at = datetime('now')
-        WHERE id = ?
-      `)
-        .bind(change.change_id, change.changed_at, change.subscription_id)
-        .run();
-      sent++;
     } catch (error) {
       failed++;
       console.error(`Permit alert delivery failed for subscription ${change.subscription_id}:`, error);
+      await env.DB.prepare(`
+        UPDATE permit_alert_deliveries SET status = 'failed'
+        WHERE subscription_id = ? AND change_id = ? AND status = 'sending'
+      `)
+        .bind(change.subscription_id, change.change_id)
+        .run();
+      continue;
     }
+
+    await env.DB.prepare(`
+      UPDATE permit_alert_deliveries SET status = 'sent', notified_at = datetime('now')
+      WHERE subscription_id = ? AND change_id = ?
+    `)
+      .bind(change.subscription_id, change.change_id)
+      .run();
+    await env.DB.prepare(`
+      UPDATE permit_alert_subscriptions
+      SET
+        last_notified_change_id = MAX(COALESCE(last_notified_change_id, 0), ?),
+        last_notified_at = ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `)
+      .bind(change.change_id, change.changed_at, change.subscription_id)
+      .run();
+    sent++;
   }
 
-  return { sent, failed };
+  return { sent, failed, skipped };
 }
 
 function isValidEmail(value) {
@@ -1997,14 +2290,25 @@ async function hashAlertToken(token) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function alertJsonResponse(payload, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
-  });
+// POST form for the confirm/unsubscribe pages. Each action is a submit
+// button; `scope` rides along as the button's value.
+function renderAlertActionForm(action, token, actions) {
+  const buttons = actions
+    .map(({ label, scope, secondary }) => {
+      const style = secondary
+        ? "background:none;border:1px solid var(--border);color:var(--text);"
+        : "";
+      const scopeAttrs = scope ? ` name="scope" value="${escapeHtml(scope)}"` : "";
+      return `<button type="submit" class="bs-btn ${secondary ? "" : "bs-btn--primary"}"${scopeAttrs} style="margin:0 0.75rem 0.75rem 0;${style}">${escapeHtml(label)}</button>`;
+    })
+    .join("");
+  return `<form method="post" action="${escapeHtml(action)}" style="margin-bottom:2rem;">
+      <input type="hidden" name="token" value="${escapeHtml(token)}">
+      ${buttons}
+    </form>`;
 }
 
-function renderAlertResult(title, message, status = 200) {
+function renderAlertResult(title, message, status = 200, actionHtml = "") {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2027,6 +2331,7 @@ function renderAlertResult(title, message, status = 200) {
   <main class="container" style="padding-top:4rem;padding-bottom:6rem;max-width:720px;">
     <h1 style="font-size:2rem;margin-bottom:1rem;color:var(--primary);">${escapeHtml(title)}</h1>
     <p style="color:var(--text-muted);font-size:1.05rem;margin-bottom:2rem;">${escapeHtml(message)}</p>
+    ${actionHtml}
     <a href="/permits" style="color:var(--accent);font-weight:650;text-decoration:none;">Browse Seattle permits &rarr;</a>
   </main>
   ${renderFooter()}
@@ -2034,22 +2339,50 @@ function renderAlertResult(title, message, status = 200) {
 </html>`;
   return new Response(html, {
     status,
-    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex",
+    },
   });
 }
 
-async function getPermits(request, env) {
+// Public permit API (A4, A7, F2). Anonymous callers get a sample: at most
+// ANON_API_MAX_PER_PAGE slim rows per page and ANON_API_MAX_PAGE pages. An API
+// key (X-API-Key or Authorization: Bearer) unlocks full rows and depth.
+async function getPermits(request, env, { access = null } = {}) {
   const siteContext = developmentSitesArePublic(env);
   const url = new URL(request.url);
+  const tier = access?.tier === "key" ? "key" : "anonymous";
+  const limits = apiLimits(access);
   const permitNumber = url.searchParams.get("permit");
   const neighborhood = url.searchParams.get("neighborhood");
   const type = url.searchParams.get("type");
   const status = url.searchParams.get("status");
   const q = url.searchParams.get("q");
-  const requestedPage = Number.parseInt(url.searchParams.get("page") || "1", 10);
-  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.min(requestedPage, 1000) : 1;
-  const requestedPerPage = parseInt(url.searchParams.get("per_page") || "50", 10);
-  const perPage = Math.max(1, Math.min(100, Number.isFinite(requestedPerPage) ? requestedPerPage : 50));
+  const pageParam = parseIntegerParam(url.searchParams.get("page"), { fallback: 1 });
+  const perPageParam = parseIntegerParam(url.searchParams.get("per_page"), {
+    fallback: Math.min(50, limits.maxPerPage),
+    max: limits.maxPerPage,
+  });
+  if (!pageParam.ok) return apiErrorResponse("page must be a positive integer", 400);
+  if (!perPageParam.ok) return apiErrorResponse("per_page must be a positive integer", 400);
+  if (q && q.length > SEARCH_QUERY_MAX_LENGTH) {
+    return apiErrorResponse(`q must be at most ${SEARCH_QUERY_MAX_LENGTH} characters`, 400);
+  }
+  if ([neighborhood, type, status, permitNumber].some((value) => value && value.length > FILTER_PARAM_MAX_LENGTH)) {
+    return apiErrorResponse("Filter value too long", 400);
+  }
+  if (pageParam.value > limits.maxPage) {
+    return apiErrorResponse(
+      tier === "key"
+        ? `page must be at most ${limits.maxPage}`
+        : `Anonymous access is limited to the first ${ANON_API_MAX_PAGE} pages. Use an API key for full access, or see ${BASE_URL}/data for the full dataset.`,
+      403,
+    );
+  }
+  const page = pageParam.value;
+  const perPage = perPageParam.value;
   const offset = (page - 1) * perPage;
 
   if (permitNumber) {
@@ -2090,8 +2423,24 @@ async function getPermits(request, env) {
       .first(),
   ]);
 
-  return new Response(JSON.stringify({ total, page, per_page: perPage, results: (results || []).slice(0, perPage).map(row => siteContext ? withDevelopmentSiteFields(row) : row) }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=60" },
+  const rows = (results || []).slice(0, perPage).map((row) => (siteContext ? withDevelopmentSiteFields(row) : row));
+  const body = {
+    total,
+    page,
+    per_page: perPage,
+    access: tier,
+    max_page: limits.maxPage,
+    results: tier === "key" ? rows : rows.map(slimPermitRow),
+  };
+  if (tier !== "key") body.full_access = `${BASE_URL}/data`;
+  return new Response(JSON.stringify(body), {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+      // Keyed responses vary by caller, so they must not sit in a shared cache.
+      "Cache-Control": tier === "key" ? "private, no-store" : "public, max-age=60",
+      Vary: "X-API-Key, Authorization",
+    },
   });
 }
 
@@ -2171,7 +2520,10 @@ async function renderPermitBrowser(request, env) {
   const type = url.searchParams.get("type");
   const status = url.searchParams.get("status");
   const q = url.searchParams.get("q");
-  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  // Junk page= values from crawlers used to reach SQL as OFFSET NaN (A4).
+  const pageParam = parseIntegerParam(url.searchParams.get("page"), { fallback: 1, max: 1000 });
+  if (!pageParam.ok || (q && q.length > SEARCH_QUERY_MAX_LENGTH)) return badRequestResponse("/permits");
+  const page = pageParam.value;
   const perPage = 50;
   const offset = (page - 1) * perPage;
 
@@ -2870,7 +3222,8 @@ async function renderPermitDetail(permitNumber, env, request) {
   const addressLabel = cleanFeedText(permit.address) || "Seattle";
   const permitAddressLabel = entStreet(addressLabel) || "Seattle";
   const safePermitNumber = escapeHtml(permit.permit_number || "Unknown permit");
-  const serializedPermitNumber = JSON.stringify(String(permit.permit_number || "")).replace(/</g, "\\u003c");
+  // Rendered only when the site key is set; enforced only when the secret is.
+  const turnstileSiteKey = String(env?.TURNSTILE_SITE_KEY || "").trim();
   const safeAddress = escapeHtml(smartTitleCase(addressLabel) || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);
@@ -3248,7 +3601,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                         : `
 	                        <div class="bs-card__title" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
 	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
-	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" onclick="openModal()" style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
+	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" data-open-lead-modal style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
                     `
                     }
                     ${peopleCards}
@@ -3273,7 +3626,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             </div>
 
             <div class="actions">
-                <button class="bs-btn bs-btn--primary" onclick="openModal()">${primaryLeadLabel}</button>
+                <button type="button" class="bs-btn bs-btn--primary" data-open-lead-modal>${primaryLeadLabel}</button>
                 ${
                   permit.contractor_slug
                     ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="bs-btn bs-btn--secondary">View Contractor</a>`
@@ -3286,15 +3639,16 @@ async function renderPermitDetail(permitNumber, env, request) {
 
     <dialog id="leadModal" class="modal" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
         <div class="modal-content">
-            <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
+            <button type="button" class="modal-close" data-close-lead-modal aria-label="Close dialog">&times;</button>
             <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
             <p id="leadModalDescription" style="color:var(--text-muted);margin-bottom:1.5rem;font-size:0.9rem;">Get an email when permit ${safePermitNumber} changes status.</p>
-            <form id="leadForm" onsubmit="submitLead(event)">
+            <form id="leadForm" data-permit-number="${escapeHtml(String(permit.permit_number || ""))}">
                 <div class="form-group">
                     <label for="lead-email">Email *</label>
                     <input id="lead-email" type="email" name="email" required autocomplete="email" placeholder="you@example.com">
                     <p id="lead-error" class="lead-error hidden"></p>
                 </div>
+                ${turnstileSiteKey ? `<div class="cf-turnstile" data-sitekey="${escapeHtml(turnstileSiteKey)}" style="margin-bottom:1rem;"></div>` : ""}
                 <button type="submit" class="bs-btn bs-btn--primary" style="width:100%;">
                     <span id="submitText">Email Me Status Changes</span>
                     <span id="submitLoader" class="loader hidden"></span>
@@ -3309,54 +3663,8 @@ async function renderPermitDetail(permitNumber, env, request) {
     </dialog>
 
     ${renderFooter()}
-    <script>
-        var leadModal = document.getElementById('leadModal');
-        var leadTrigger;
-        function openModal() { leadTrigger = document.activeElement; leadModal.showModal(); var field = document.getElementById('lead-email'); if (field) field.focus(); }
-        function closeModal() { leadModal.close(); }
-        // Clicking the backdrop (the dialog box itself, outside .modal-content) closes it.
-        leadModal.addEventListener('click', function(e) { if (e.target === leadModal) closeModal(); });
-        leadModal.addEventListener('close', function() { if (leadTrigger && leadTrigger.focus) leadTrigger.focus(); });
-
-        async function submitLead(e) {
-            e.preventDefault();
-            var form = e.target;
-            var submitBtn = form.querySelector('button[type="submit"]');
-            var loader = document.getElementById('submitLoader');
-            var text = document.getElementById('submitText');
-            text.classList.add('hidden');
-            loader.classList.remove('hidden');
-            submitBtn.disabled = true;
-            var data = {
-                email: form.email.value,
-                permit_number: ${serializedPermitNumber}
-            };
-            try {
-                var response = await fetch('/alerts/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-                if (response.ok) {
-                    form.style.display = 'none';
-                    document.getElementById('formSuccess').classList.remove('hidden');
-                    document.getElementById('formSuccessTitle').focus();
-                } else {
-                    var result = await response.json().catch(function() { return {}; });
-                    var failure = new Error('Submission failed');
-                    failure.serverMessage = result.error;
-                    throw failure;
-                }
-            } catch (err) {
-                var errorEl = document.getElementById('lead-error');
-                var emailField = document.getElementById('lead-email');
-                errorEl.textContent = (err && err.serverMessage) || "We couldn't save your alert. Check your connection and try again.";
-                errorEl.classList.remove('hidden');
-                emailField.setAttribute('aria-invalid', 'true');
-                emailField.setAttribute('aria-describedby', 'lead-error');
-                emailField.focus();
-                text.classList.remove('hidden');
-                loader.classList.add('hidden');
-                submitBtn.disabled = false;
-            }
-        }
-    </script>
+    ${turnstileSiteKey ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ""}
+    <script src="/brand/permit-alert.js" defer></script>
 </body>
 </html>`;
 
@@ -9357,7 +9665,7 @@ function renderApiSpecObject() {
       title: "Building Seattle API",
       version: "1.0.0",
       description:
-        "Read-only access to aggregated Seattle construction permit and contractor data. No authentication required.",
+        "Read-only access to aggregated Seattle construction permit and contractor data. Anonymous access returns a sample (/api/permits: up to 25 summary rows per page, first 10 pages); send an X-API-Key header for full rows and paging.",
     },
     servers: [{ url: BASE_URL }],
     paths: {
@@ -9377,7 +9685,12 @@ function renderApiSpecObject() {
                 "Free-text search across address, description, permit number, neighborhood, and contractor name.",
             },
             { name: "page", in: "query", schema: { type: "integer", minimum: 1, default: 1 } },
-            { name: "per_page", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 50 } },
+            {
+              name: "per_page",
+              in: "query",
+              schema: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+              description: "Results per page. Anonymous callers are capped at 25 and the first 10 pages.",
+            },
           ],
           responses: {
             200: {
@@ -9554,7 +9867,7 @@ function renderApiDocs() {
         <h1>API Documentation</h1>
         <p class="lede">Read-only JSON access to aggregated Seattle construction permit and contractor data. No authentication required. Base URL <code>${BASE_URL}</code>.</p>
         <h2>Endpoints</h2>
-        ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1)."), param("per_page", "Results per page (1-100, default 50).")].join(""))}
+        ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1). Anonymous callers can read the first 10 pages."), param("per_page", "Results per page (1-100 with an API key, default 50; anonymous callers get at most 25 summary rows). Send an X-API-Key header for full rows.")].join(""))}
         <p>Permit results include six nullable development-site fields: <code>development_site_id</code>, <code>development_site_sqft</code>, <code>development_site_status</code>, <code>development_site_source_updated_at</code>, <code>development_site_fetched_at</code>, and <code>development_site_geometry_url</code>. Source dates may be unknown. The existing <code>parcel_number</code> is an SDCI property reference, usually a development-site ID.</p>
         ${endpoint("GET", "/api/development-sites/{id}/geometry", "Current boundary as a GeoJSON Feature with source attribution and UTC timestamps. Returns 404 without a usable boundary. Geometry links are live: they may change or disappear after refresh and do not freeze the boundary to a CSV export date.", param("id", "SDCI development-site ID, such as DV0025961."))}
         ${endpoint("GET", "/api/contractors", "List the top 20 contractors ranked by active project count. Each record includes an active_projects count.", "")}
@@ -9571,20 +9884,34 @@ function renderApiDocs() {
   return new Response(html, { headers: { "Content-Type": "text/html" } });
 }
 
-async function executeMcpTool(name, args, env, requestUrl) {
+// Thrown for failures whose message is safe to show an MCP client.
+function mcpToolError(message) {
+  const error = new Error(message);
+  error.expose = true;
+  return error;
+}
+
+async function executeMcpTool(name, args, env, requestUrl, access = null) {
   let response;
   if (name === "search_permits") {
     const url = new URL("/api/permits", requestUrl);
     for (const [key, value] of Object.entries(args)) {
       if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
     }
-    response = await getPermits(new Request(url), env);
+    response = await getPermits(new Request(url), env, { access });
   } else if (name === "list_contractors") {
     response = await getContractors(new Request(new URL("/api/contractors", requestUrl)), env);
   } else {
     response = await getStats(env);
   }
-  if (!response.ok) throw new Error(`request failed with status ${response.status}`);
+  if (!response.ok) {
+    // 400/403 bodies are our own validation text (no internals); surface them.
+    if (response.status === 400 || response.status === 403) {
+      const body = await response.json().catch(() => ({}));
+      throw mcpToolError(String(body.error || "Request not allowed"));
+    }
+    throw new Error(`request failed with status ${response.status}`);
+  }
   return response.json();
 }
 
@@ -10070,7 +10397,8 @@ async function renderChildSitemapXml(path, env, request) {
     return renderSitemapUrlSet(entries);
   }
 
-  const section = SITEMAP_SECTIONS[type];
+  // Own-property lookup: "constructor" & co. must not resolve (A4).
+  const section = Object.hasOwn(SITEMAP_SECTIONS, type) ? SITEMAP_SECTIONS[type] : null;
   if (!section) {
     return sitemapNotFound();
   }

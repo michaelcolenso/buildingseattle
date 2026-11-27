@@ -115,6 +115,49 @@ CREATE TABLE IF NOT EXISTS permit_alert_subscriptions (
     FOREIGN KEY (permit_number) REFERENCES permits(permit_number)
 );
 
+-- Security hardening tables (see migrations/20261127_security_hardening.sql).
+
+-- Fixed-window counters for the D1 rate-limit fallback (alerts, leads).
+-- bucket_key holds a scope plus a truncated sha256 of the IP or email, never
+-- the raw value. Rows older than two days are pruned opportunistically.
+CREATE TABLE IF NOT EXISTS request_rate_limits (
+    bucket_key TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket_key, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_request_rate_limits_window ON request_rate_limits(window_start);
+
+-- Addresses that asked for no email at all ("stop all emails" on the
+-- unsubscribe page, or the "didn't request this?" link in a confirmation).
+CREATE TABLE IF NOT EXISTS alert_email_suppressions (
+    email TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT 'user_request',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- One row per (subscription, status change). A sender claims the row before
+-- emailing, so overlapping alert runs cannot send the same change twice.
+CREATE TABLE IF NOT EXISTS permit_alert_deliveries (
+    subscription_id INTEGER NOT NULL,
+    change_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'sending'
+        CHECK (status IN ('sending', 'sent', 'failed')),
+    claimed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    notified_at DATETIME,
+    PRIMARY KEY (subscription_id, change_id)
+);
+
+-- Optional stored API keys for full /api/permits and MCP access. Store only
+-- the sha256 hex of the key; env.API_KEYS also works for a short list.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_hash TEXT NOT NULL UNIQUE,
+    label TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    revoked_at DATETIME
+);
+
 CREATE INDEX IF NOT EXISTS idx_contractors_slug ON contractors(slug);
 CREATE INDEX IF NOT EXISTS idx_contractors_specialty ON contractors(specialty);
 CREATE INDEX IF NOT EXISTS idx_contractors_license_number ON contractors(license_number);
@@ -132,6 +175,7 @@ CREATE INDEX IF NOT EXISTS idx_permit_status_changes_permit_number ON permit_sta
 CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_status ON permit_alert_subscriptions(status);
 CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_permit ON permit_alert_subscriptions(permit_number);
 CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_email ON permit_alert_subscriptions(email);
+CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_confirmation_sent ON permit_alert_subscriptions(confirmation_sent_at);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
 
