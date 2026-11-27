@@ -85,7 +85,7 @@ Seattle Open Data Portal (data.seattle.gov)
 
 ### worker.js Structure
 
-The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split into sibling modules: `entity_graph.js` (see Entity Graph), `adu.js` (ADU/DADU classification), `entity_hubs.js` (hub-page SEO config), `value_counting.js` (how permit values are summed: a valuation SDCI repeats across a project's demolition permits counts once; use `countedValueSql()` in any `SUM` of value), `brand_ui.js` (server-rendered design-system pieces: status pills, icons; styles in `public/brand/bundle.css`), `basis_reset.js` + `basis_reset_routes.js` (Basis Reset Radar, see `docs/basis-reset-radar.md`), and `mcp.js` (MCP server at `/mcp`, tests in `tests/mcp.test.js`). `worker.js` contains:
+The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split into sibling modules: `entity_graph.js` (see Entity Graph), `adu.js` (ADU/DADU classification), `entity_hubs.js` (hub-page SEO config), `value_counting.js` (how permit values are summed: a valuation SDCI repeats across a project's demolition permits counts once; use `countedValueSql()` in any `SUM` of value), `brand_ui.js` (server-rendered design-system pieces: status pills, icons; styles in `public/brand/bundle.css`), `basis_reset.js` + `basis_reset_routes.js` (Basis Reset Radar, see `docs/basis-reset-radar.md`), `mcp.js` (MCP server at `/mcp`, tests in `tests/mcp.test.js`), and `security.js` (rate limits, Origin checks, Turnstile, API-key tiers, strict param parsing; tests in `tests/security.test.js`). `worker.js` contains:
 
 - Path-based route dispatch at the top of `fetch()`
 - **All HTML pages are inlined as template literals** — there is no separate templating engine or frontend build step
@@ -172,10 +172,33 @@ opt-in, one-click unsubscribe) backed by `permit_alert_subscriptions` and
 `permit_status_changes`. `sendPendingPermitAlerts` runs after each scheduled
 ingest. This is the free top-of-funnel product; there is no paid alert tier yet.
 
+Abuse controls: sign-up is JSON-only, same-origin (no CORS), throttled per IP
+(`ALERTS_RATE_LIMITER` binding, else a D1 counter in `request_rate_limits`) and
+per address (daily cap), with a resend cooldown, a suppression list
+(`alert_email_suppressions`) and optional Turnstile (`TURNSTILE_SITE_KEY` renders
+the widget, `TURNSTILE_SECRET_KEY` enforces it). Every accepted sign-up answers
+the same 202. GET `/alerts/confirm` and `/alerts/unsubscribe` only render a page;
+the state change is the page's POST (RFC 8058 one-click POST still works).
+Confirmation links expire after 7 days. Each alert is claimed in
+`permit_alert_deliveries` before sending, so overlapping runs never double-send.
+Tables: `migrations/20261127_security_hardening.sql` (newer migrations live in
+`migrations/`).
+
+### Public API tiers
+
+`/api/permits` and the MCP `search_permits` tool give anonymous callers a sample
+(25 slim rows per page, first 10 pages; constants in `security.js`). An
+`X-API-Key` (or `Authorization: Bearer`) matching `env.API_KEYS` (comma list) or
+an unrevoked sha256 in `api_keys` unlocks full rows and paging. `API_RATE_LIMITER`
+/ `API_KEY_RATE_LIMITER` throttle `/api/*` and `/mcp` when bound. JSON responses
+carry `X-Robots-Tag: noindex`. The CSP forbids inline scripts except the theme
+boot script (allowed by hash, `THEME_BOOT_SCRIPT_SHA256`) and all inline `on*`
+handlers; page behaviour goes in static files under `public/brand/`.
+
 ## Key Constraints
 
 - `AGENTS.md` carries overlapping repo guidelines (style: 2-space indent, semicolons, double quotes in JS; snake_case Python). Keep the two files consistent. Design/brand direction for HTML pages is in `.impeccable.md`.
-- Admin endpoints use `X-Admin-Token` (`env.ADMIN_API_TOKEN`), separate from `X-Ingest-Token`.
+- Admin endpoints use `X-Admin-Token` (`env.ADMIN_API_TOKEN`), separate from `X-Ingest-Token`. Admin POSTs accept only that header (not Cloudflare Access) and refuse cross-site Origins.
 - **D1 database ID** is hardcoded in `wrangler.toml` — do not change without migrating data.
 - **Ingest endpoints require the `X-Ingest-Token` header** (checked against `env.INGEST_API_TOKEN`) — they are not open.
 - The Google Maps embed in permit detail pages requires a valid API key to render.
