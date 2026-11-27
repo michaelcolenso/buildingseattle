@@ -93,6 +93,8 @@ The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split int
 - CORS headers are added to every response
 - **Do not add non-function named exports to `worker.js`.** The Workers runtime rejects them and `wrangler dev` fails at startup. Constants/SQL fragments shared with tests go in a sibling module (this is why `adu.js` and `entity_hubs.js` exist).
 - A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`).
+- The base-feed ingest is incremental (`sdci_feed.js`): each run pulls records whose Socrata `:updated_at` moved since the last successful `scheduled` run (its start minus 2 h, keyset `:updated_at, permitnum`), then spends leftover page budget on a weekly full sweep (`run_type = 'full_sweep'`, keyset `permitnum`, applied dates since the earliest permit in D1). Both cap pages per run and resume from `ingest_logs.cursor`. Retries, a schema guard and a mapping guard fail a run loudly. The upsert (`permit_upsert.js`) only writes, and only bumps `updated_at`, when a tracked column changed, and never lets an older `source_updated_at` overwrite a newer row.
+- There is no wipe endpoint: `POST /ingest/refresh` and `direct_import.py --replace-all` were removed (they let the shared ingest token delete production). Upserts are idempotent, so a re-sync is the next full sweep. To recover from bad data, restore D1 with Time Travel (`npx wrangler d1 time-travel info buildingseattle`, then `npx wrangler d1 time-travel restore buildingseattle --timestamp=<ISO time before the damage>`), then rebuild the graph.
 
 Key routes:
 | Route | Purpose |
@@ -123,7 +125,7 @@ Key routes:
 
 ### Database Schema (schema.sql)
 
-Core source tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time. `schema.sql` is only the base; later columns/tables live in individual `migration_*.sql` files applied one at a time with `wrangler d1 execute buildingseattle --file migration_X.sql`. A new column usually needs both a migration and a `schema.sql` update.
+Core source tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time. `schema.sql` is only the base; later columns/tables live in individual `migration_*.sql` files applied one at a time with `wrangler d1 execute buildingseattle --file migration_X.sql`. A new column usually needs both a migration and a `schema.sql` update. Newer migrations live in `migrations/` with a date prefix (e.g. `migrations/20261127_data_permit_feed_fields.sql`).
 
 ### Entity Graph
 
@@ -149,7 +151,7 @@ tables are linked from `permits` via `permits.address_id` / `permits.project_id`
 
 ### Neighborhood & Type Detection
 
-Both `sdci_scraper.py` and `worker.js` contain hardcoded neighborhood name mappings and permit type classification logic. If you update one, check whether the other needs a matching update.
+SDCI status and neighborhood mappings live in one file, `data/sdci_mappings.json`, read by `sdci_mappings.js` (worker) and `sdci_mappings.py` (scraper); `tests/fixtures/sdci_mapping_cases.json` holds both test suites to the same answers. Statuses map by exact `statuscurrent` value (unknown values become `pending` and are logged in the run's `ingest_logs.error_message`); the raw value is kept in `permits.status_raw`, and `migrations/20261127_data_status_backfill.sql` recomputes statuses after a map edit. Neighborhood boxes are approximate rectangles tried smallest first (accurate assignment would need the City's neighborhood polygons). Permit type classification is still duplicated in `sdci_scraper.py` and `worker.js`; keep those in sync by hand.
 
 ### Gumroad Dataset (gumroad/)
 
