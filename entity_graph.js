@@ -46,18 +46,45 @@ function collapse(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
+// The first comma-separated segment of an address that is only a city/state
+// token (or empty) carries no street: SDCI sends no originaladdress1 and the
+// ingest falls back to "Seattle, WA". Such permits get no address or project
+// entity, instead of all collapsing into one fake "Seattle, Seattle, WA" page.
+const NON_STREET_TOKENS = ["", "SEATTLE", "WA", "WASHINGTON", "UNKNOWN LOCATION"];
+
+function firstSegment(raw) {
+  return collapse(String(raw ?? "").split(",")[0]).toUpperCase();
+}
+
+export function isUnaddressable(raw) {
+  return NON_STREET_TOKENS.includes(firstSegment(raw));
+}
+
+/**
+ * SQL mirror of isUnaddressable() for permits rows (`alias.address`), e.g. to
+ * tell an intentionally unlinked permit from one still waiting for a rebuild.
+ * Tested against the JS rule in tests/entity_graph.test.js.
+ */
+export function unaddressableAddressSql(alias = "p") {
+  const first = `UPPER(TRIM(CASE WHEN INSTR(${alias}.address, ',') > 0 THEN SUBSTR(${alias}.address, 1, INSTR(${alias}.address, ',') - 1) ELSE ${alias}.address END))`;
+  const tokens = NON_STREET_TOKENS.map((t) => `'${t}'`).join(", ");
+  return `(${alias}.address IS NULL OR ${first} IN (${tokens}))`;
+}
+
 // Parse a raw permit address string into structured parts.
 // Examples:
 //   "6737 6th AVE NW, Seattle, WA"
 //   "3703 14TH AVE S, SEATTLE, WA 98108"
 //   "Ballard Warehouse District"
+// A city-only or empty address ("Seattle, WA", "") returns street,
+// display_address and normalized_address as null (see isUnaddressable).
 export function parseAddress(raw) {
   const parts = collapse(raw)
     .split(",")
     .map((p) => collapse(p))
     .filter(Boolean);
 
-  const street = parts[0] || collapse(raw) || "Unknown location";
+  const street = isUnaddressable(raw) ? null : parts[0] || collapse(raw);
   let city = "Seattle";
   let state = "WA";
   let zip = null;
@@ -83,6 +110,9 @@ export function parseAddress(raw) {
     }
   }
 
+  if (!street) {
+    return { street: null, display_address: null, normalized_address: null, city, state, zip };
+  }
   const displayStreet = street;
   const display_address = `${displayStreet}, ${city}, ${state}`;
   // Normalized (dedup) key is uppercased + collapsed so case/spacing variants merge.
@@ -263,25 +293,57 @@ export function clusterPermits(permits) {
 // project naming
 // --------------------------------------------------------------------------
 
-export function projectNameFor(permits, street) {
-  const text = permits
-    .map((p) => `${p.type || ""} ${p.detailed_description || p.description || ""}`)
-    .join(" ")
-    .toLowerCase();
+// A demolition permit (SDCI "-DM" suffix, or type demolition). SDCI copies a
+// redevelopment's whole valuation onto its demolition permits, so they must
+// not name the project they belong to.
+export function isDemolitionPermit(permit) {
+  return /-DM$/i.test(String(permit?.permit_number || "")) || String(permit?.type || "").toLowerCase() === "demolition";
+}
 
-  let prefix;
+function permitText(permit) {
+  return `${permit.type || ""} ${permit.detailed_description || permit.description || ""}`.toLowerCase();
+}
+
+// "Construct a 7-story apartment building", "Construction of a residential
+// building", "construct high rise residential building": new construction
+// unless the words in between say it is an addition, alteration, etc.
+const CONSTRUCT_BUILDING_RE =
+  /\bconstruct(?:ion of)?\s+(?:a\s+|an\s+)?(?:(?!alteration|addition|improvement|repair|tenant|shoring|site)[\w&-]+\s+){0,4}(?:buildings?|tower|structure|residences?|dwellings?|townhouses?|apartments?|rowhouses?)\b/;
+
+// Prefix for one block of permit text, or null when nothing specific matches.
+function prefixFor(text, { allowDemolition }) {
+  if (/tenant improvement|tenant impr|\bt\.?i\.?\b/.test(text)) return "Tenant improvement at";
   // New construction is tested before demolition: SDCI descriptions for a
   // rebuild read "demolish existing ... construct new ...", and the project is
   // the new building, not the teardown.
-  if (/tenant improvement|tenant impr|\bt\.?i\.?\b/.test(text)) prefix = "Tenant improvement at";
-  else if (/new construction|construct new|new building|establish use|new .*(townhouse|residence|dwelling|building)/.test(text)) prefix = "New construction at";
-  else if (/demolition|demolish/.test(text)) prefix = "Demolition at";
-  else if (/electrical/.test(text)) prefix = "Electrical upgrade at";
-  else if (/mechanical|hvac/.test(text)) prefix = "Mechanical upgrade at";
-  else if (/\baddition\b/.test(text)) prefix = "Addition at";
-  else if (/alteration|renovat|remodel|substantial alter/.test(text)) prefix = "Renovation at";
-  else prefix = "Construction activity at";
+  if (/new construction|construct new|new building|establish use|new .*(townhouse|residence|dwelling|building)/.test(text)) return "New construction at";
+  if (CONSTRUCT_BUILDING_RE.test(text)) return "New construction at";
+  if (allowDemolition && /demolition|demolish/.test(text)) return "Demolition at";
+  if (/electrical/.test(text)) return "Electrical upgrade at";
+  if (/mechanical|hvac/.test(text)) return "Mechanical upgrade at";
+  if (/\baddition\b/.test(text)) return "Addition at";
+  if (/alteration|renovat|remodel|substantial alter/.test(text)) return "Renovation at";
+  return null;
+}
 
+/**
+ * Project label. The project is named for its highest-value non-demolition
+ * permit (a teardown's copied valuation is often the largest number in the
+ * cluster); then for all non-demolition permits together; only when neither
+ * says anything specific does the demolition text count ("Demolition at").
+ */
+export function projectNameFor(permits, street) {
+  const list = Array.isArray(permits) ? permits : [];
+  const work = list.filter((p) => !isDemolitionPermit(p));
+  let lead = null;
+  for (const p of work) {
+    if (!lead || (Number(p.value) || 0) > (Number(lead.value) || 0)) lead = p;
+  }
+  const prefix =
+    (lead && prefixFor(permitText(lead), { allowDemolition: false })) ||
+    (work.length && prefixFor(work.map(permitText).join(" "), { allowDemolition: false })) ||
+    prefixFor(list.map(permitText).join(" "), { allowDemolition: true }) ||
+    "Construction activity at";
   return `${prefix} ${street}`;
 }
 
@@ -342,6 +404,8 @@ export function buildEntityGraph(permits, options = {}) {
 
   for (const permit of permits) {
     const parsed = parseAddress(permit.address);
+    // No street: no address (and so no project). The permit keeps its own page.
+    if (!parsed.normalized_address) continue;
     let addr = addressByKey.get(parsed.normalized_address);
     if (!addr) {
       addressId += 1;
