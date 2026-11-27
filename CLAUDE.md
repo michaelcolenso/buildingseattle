@@ -93,7 +93,7 @@ The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split int
 - SQL queries are built inline with parameterized bindings via the D1 `prepare().bind()` API
 - CORS headers are added to every response
 - **Do not add non-function named exports to `worker.js`.** The Workers runtime rejects them and `wrangler dev` fails at startup. Constants/SQL fragments shared with tests go in a sibling module (this is why `adu.js` and `entity_hubs.js` exist).
-- A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`).
+- A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`): new permits plus a bounded rotation of stale ones (status changed since the last enrichment, or still open and enriched >30 days ago; queue SQL in `scripts/enrichment_queue.py`). It posts to `https://buildingseattle.com` (override with `WORKER_URL`), never workers.dev.
 
 Key routes:
 | Route | Purpose |
