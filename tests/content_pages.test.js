@@ -193,3 +193,42 @@ test("contractor hub cards show a readable type and pluralized counts (audit E16
   assert.match(html, /Big\/Build LLC<\/a><\/h2>\s*<p[^>]*>Contractor<\/p>[\s\S]*?<span>1,276 permits<\/span>/);
   assert.doesNotMatch(html, />organization<|>person</);
 });
+
+test("plan-review histogram always sums to the 'based on N' count, fractional days included (audit G7)", async () => {
+  const { summarizePlanReview } = await import("../worker.js");
+  const s = summarizePlanReview([0, 30, 30.5, 60.2, 90.9, 180.4, 365.5, 400]);
+  assert.equal(s.count, 8);
+  assert.equal(s.histogram.reduce((sum, b) => sum + b.count, 0), s.count);
+  assert.deepEqual(s.histogram.map((b) => b.count), [2, 1, 1, 1, 1, 2]);
+});
+
+test("plan-review cycle figures share the reviewed population (audit G7)", async () => {
+  const seen = [];
+  const env = {
+    DB: {
+      prepare(sql) {
+        seen.push(sql);
+        return {
+          bind() { return this; },
+          async all() {
+            if (sql.includes("SELECT total_days_plan_review AS d")) return { results: [{ d: 10 }, { d: 20 }, { d: 40 }] };
+            if (sql.includes("AS cycles")) return { results: [{ cycles: 1, cnt: 1 }, { cycles: 10, cnt: 1 }] };
+            if (sql.includes("COALESCE(NULLIF(type,''),'unknown')")) return { results: [{ label: "commercial", cnt: 1, avg_days: 1 }] };
+            return { results: [] };
+          },
+          async first() { return { avg_cycles: 2, avg_corrections: 12 }; },
+          async run() { return {}; },
+        };
+      },
+    },
+  };
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/insights/plan-review"), env, ctx())).text();
+  for (const sql of seen.filter((q) => /number_review_cycles\) AS avg_cycles, AVG\(days_out|AS cycles, COUNT/.test(q))) {
+    assert.match(sql, /total_days_plan_review IS NOT NULL/);
+  }
+  assert.match(html, /Based on 3 permits with recorded/);
+  assert.match(html, /2 of the 3 reviewed permits also report a cycle count/);
+  assert.match(html, /10\+ cycles/);
+  assert.match(html, /Commercial Construction/);
+  assert.match(html, /1 day<span class="pr-sub"> · 1 permit/);
+});

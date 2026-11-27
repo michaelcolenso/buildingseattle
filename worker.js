@@ -5133,10 +5133,14 @@ export function summarizePlanReview(values) {
     .sort((a, b) => a - b);
   const count = sorted.length;
   const mean = count ? sorted.reduce((s, v) => s + v, 0) / count : 0;
-  const histogram = PLAN_REVIEW_DAY_BUCKETS.map((b) => ({
-    label: b.label,
-    count: sorted.filter((v) => v >= b.min && v <= b.max).length,
-  }));
+  // Bucket by upper bound so fractional values (30.5 days) land in the next
+  // bucket instead of falling between 0–30 and 31–60; the bars then always
+  // add up to the "based on N" count (audit G7).
+  const histogram = PLAN_REVIEW_DAY_BUCKETS.map((b) => ({ label: b.label, count: 0 }));
+  for (const v of sorted) {
+    const index = PLAN_REVIEW_DAY_BUCKETS.findIndex((b) => v <= b.max);
+    histogram[index].count += 1;
+  }
   return {
     count,
     mean: Math.round(mean),
@@ -5201,11 +5205,13 @@ async function getPlanReviewData(env) {
        FROM permits WHERE ${reviewedWhere}
        GROUP BY label HAVING cnt >= 3 ORDER BY avg_days DESC LIMIT 12`,
     ),
+    // Cycle figures use the same reviewed population as the headline count
+    // (audit G7), with 10 or more cycles grouped so no tail is cut off.
     safeAll(
       env,
-      `SELECT number_review_cycles AS cycles, COUNT(*) AS cnt
-       FROM permits WHERE number_review_cycles IS NOT NULL AND number_review_cycles >= 0
-       GROUP BY cycles ORDER BY cycles ASC LIMIT 15`,
+      `SELECT CASE WHEN number_review_cycles >= 10 THEN 10 ELSE CAST(number_review_cycles AS INTEGER) END AS cycles, COUNT(*) AS cnt
+       FROM permits WHERE ${reviewedWhere} AND number_review_cycles IS NOT NULL AND number_review_cycles >= 0
+       GROUP BY cycles ORDER BY cycles ASC`,
     ),
     safeAll(
       env,
@@ -5216,7 +5222,7 @@ async function getPlanReviewData(env) {
     safeFirst(
       env,
       `SELECT AVG(number_review_cycles) AS avg_cycles, AVG(days_out_corrections) AS avg_corrections
-       FROM permits WHERE number_review_cycles IS NOT NULL AND number_review_cycles >= 0`,
+       FROM permits WHERE ${reviewedWhere} AND number_review_cycles IS NOT NULL AND number_review_cycles >= 0`,
     ),
   ]);
 
@@ -5383,31 +5389,33 @@ async function renderPlanReviewPage(env) {
   }));
 
   const typeRows = data.by_type.map((t) => ({
-    label: t.label,
+    label: t.label === "unknown" ? "Type not reported" : permitTypeLabel(t.label),
     value: t.avg_days,
-    display: `${t.avg_days} days`,
-    sub: `${t.count.toLocaleString()} permits`,
+    display: countLabel(t.avg_days, "day"),
+    sub: countLabel(t.count, "permit"),
   }));
 
   const neighborhoodRows = data.by_neighborhood.map((n) => ({
     label: n.label,
     href: n.slug ? `/neighborhood/${encodeURIComponent(n.slug)}` : null,
     value: n.avg_days,
-    display: `${n.avg_days} days`,
-    sub: `${n.count.toLocaleString()} permits`,
+    display: countLabel(n.avg_days, "day"),
+    sub: countLabel(n.count, "permit"),
   }));
 
+  const cycleTotal = data.by_cycles.reduce((sum, c) => sum + c.count, 0);
   const cycleRows = data.by_cycles.map((c) => ({
-    label: c.cycles === 1 ? "1 cycle" : `${c.cycles} cycles`,
+    label: c.cycles >= 10 ? "10+ cycles" : countLabel(c.cycles, "cycle"),
     value: c.count,
-    display: c.count.toLocaleString(),
+    display: formatCount(c.count),
+    sub: cycleTotal ? `${Math.round((c.count / cycleTotal) * 100)}%` : "",
   }));
 
   const reviewLevelRows = data.by_review_level.map((r) => ({
     label: r.label,
     value: r.avg_days,
-    display: `${r.avg_days} days`,
-    sub: `${r.count.toLocaleString()} permits`,
+    display: countLabel(r.avg_days, "day"),
+    sub: countLabel(r.count, "permit"),
   }));
 
   const body = `
@@ -5417,7 +5425,7 @@ async function renderPlanReviewPage(env) {
     <div class="ent-hero">
       <div class="ent-kicker">Insights</div>
       <h1>How long does Seattle permit plan review take?</h1>
-      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Based on ${s.count.toLocaleString()} permits with recorded SDCI plan-review timing. "Plan review" is the time spent in review cycles before a permit is issued.</p>
+      <p style="color:var(--text-muted);max-width:65ch;margin:0;">Based on ${countLabel(s.count, "permit")} with recorded SDCI plan-review timing. "Plan review" is the time spent in review cycles before a permit is issued.</p>
     </div>
     ${
       hasData
@@ -5447,6 +5455,7 @@ async function renderPlanReviewPage(env) {
       </div>
       <div class="bs-card">
         <h2>Review cycles per permit</h2>
+        ${cycleTotal ? `<p style="color:var(--text-muted);margin-top:0;font-size:0.85rem;">${formatCount(cycleTotal)} of the ${formatCount(s.count)} reviewed permits also report a cycle count.</p>` : ""}
         ${prBarChart(cycleRows, "var(--success)")}
         <p class="pr-note">Each correction cycle adds a round-trip with reviewers. ${
           data.avg_days_out_corrections != null
