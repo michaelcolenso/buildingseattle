@@ -23,6 +23,7 @@ import {
   developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
   ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, developmentSitesArePublic,
 } from "./development_sites.js";
+import { clampAnalyticsDays, pageViewSampleRate, pageViewTemplatePath, recordPageView, runPageViewRetention } from "./page_views.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -110,7 +111,7 @@ async function withHtmlEdgeCache(request, env, ctx, render) {
   if (cache && key) {
     const hit = await cache.match(key);
     if (hit) {
-      ctx?.waitUntil?.(logPageView(request, env, path));
+      ctx?.waitUntil?.(logPageView(request, env, pageViewTemplatePath(path)));
       return hit;
     }
   }
@@ -361,7 +362,7 @@ export default {
       if (path === "/api/admin/analytics") {
         const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
-        const days = parseInt(url.searchParams.get("days") || "7", 10);
+        const days = clampAnalyticsDays(url.searchParams.get("days"));
         const since = new Date();
         since.setDate(since.getDate() - days);
         const sinceStr = since.toISOString().split("T")[0];
@@ -381,7 +382,7 @@ export default {
         ]);
 
         return secure(
-          new Response(JSON.stringify({ days, total: totals[0]?.total || 0, top_pages: pages, daily: daily }), {
+          new Response(JSON.stringify({ days, sample_rate: pageViewSampleRate(env), bots_excluded: true, total: totals[0]?.total || 0, top_pages: pages, daily: daily }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           }),
         );
@@ -593,6 +594,9 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runScheduledIngest(env));
+    // Independent of the ingest so a failed ingest never skips it; bounded
+    // batches keep it light (see page_views.js).
+    ctx.waitUntil(runPageViewRetention(env));
   },
 };
 
@@ -848,17 +852,9 @@ function dateOrNull(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+// Bots skipped, humans sampled, fields truncated; never throws (page_views.js).
 async function logPageView(request, env, path) {
-  try {
-    const country = request.cf?.country || "";
-    const referrer = request.headers.get("referer") || "";
-    const ua = request.headers.get("user-agent") || "";
-    await env.DB.prepare(`INSERT INTO page_views (path, referrer, user_agent, country) VALUES (?, ?, ?, ?)`)
-      .bind(path, referrer, ua, country)
-      .run();
-  } catch (e) {
-    // Silently fail — analytics should never break the site
-  }
+  await recordPageView(request, env, path);
 }
 
 function renderPagination(url, page, totalPages, total, shown, offset) {

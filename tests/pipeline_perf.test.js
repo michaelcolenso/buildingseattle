@@ -264,7 +264,11 @@ test("template-wide HTML edge cache: warm second fetch skips the render's D1 wor
   };
   try {
     const env = createPermitEnv();
-    const request = () => new Request("https://buildingseattle.com/permits/PERM123");
+    // A browser UA, so the page-view insert runs (bots are not logged).
+    const request = () =>
+      new Request("https://buildingseattle.com/permits/PERM123", {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15" },
+      });
 
     const first = await worker.fetch(request(), env, createCtx());
     const firstHtml = await first.text();
