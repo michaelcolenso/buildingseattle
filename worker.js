@@ -4810,10 +4810,35 @@ function renderBasisResetPage(env) {
     .then(async (response) => {
       const payload = await response.json();
       const rows = payload.results || [];
+      const canonical = `${BASE_URL}/insights/basis-reset`;
+      const description = "Seattle properties where a lower basis and existing development work may change redevelopment economics.";
+      // Every sitemapped /insights/* page carries a Dataset (the SEO monitor
+      // checks for it); the radar joins the sitemap once it has scores.
+      const jsonLd = JSON.stringify({
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Dataset",
+            name: "Seattle Basis Reset Radar",
+            description,
+            url: canonical,
+            creator: { "@type": "Organization", name: "Building Seattle" },
+          },
+          {
+            "@type": "BreadcrumbList",
+            itemListElement: [
+              { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+              { "@type": "ListItem", position: 2, name: "Insights", item: `${BASE_URL}/insights` },
+              { "@type": "ListItem", position: 3, name: "Basis Reset Radar", item: canonical },
+            ],
+          },
+        ],
+      }).replace(/</g, "\\u003c");
       const html = renderEntityDoc({
         title: "Basis Reset Radar | Building Seattle",
-        description: "Seattle properties where a lower basis and existing development work may change redevelopment economics.",
-        canonical: `${BASE_URL}/insights/basis-reset`,
+        description,
+        canonical,
+        jsonLd,
         // An empty radar is one sentence of copy: keep it out of the index
         // (and the sitemap, see hasBasisResetRows) until it has scores.
         noindex: rows.length === 0,
