@@ -386,17 +386,9 @@ CREATE TABLE IF NOT EXISTS development_sites (
 -- All statements are additive and idempotent. The permits table is ~16k rows,
 -- so each index builds in well under a second on D1.
 
--- /permits, /api/permits and MCP search_permits list with
--- `ORDER BY p.issued_date DESC LIMIT ? OFFSET ?`. Without an index SQLite
--- scans the whole table and sorts it in a temp B-tree on every request.
-CREATE INDEX IF NOT EXISTS idx_permits_issued_date ON permits(issued_date DESC);
-
--- The same list filtered by ?type=, ?neighborhood= or ?status=: the equality
--- column first, then the sort column, so the filter and the ORDER BY are both
--- served by one index.
-CREATE INDEX IF NOT EXISTS idx_permits_type_issued_date ON permits(type, issued_date DESC);
-CREATE INDEX IF NOT EXISTS idx_permits_neighborhood_issued_date ON permits(neighborhood, issued_date DESC);
-CREATE INDEX IF NOT EXISTS idx_permits_status_issued_date ON permits(status, issued_date DESC);
+-- 0001's permit-list indexes (issued_date DESC, and type / neighborhood /
+-- status + issued_date DESC) were replaced by 0004's versions with the id
+-- tiebreak; see the end of this file.
 
 -- The entity-graph rebuild lock and the "latest rebuild" checks look up
 -- ingest_logs by run_type and status, newest first.
@@ -464,3 +456,13 @@ ALTER TABLE permits ADD COLUMN status_raw TEXT;
 ALTER TABLE permits ADD COLUMN source_updated_at TEXT;
 ALTER TABLE ingest_logs ADD COLUMN cursor TEXT;
 ALTER TABLE ingest_logs ADD COLUMN records_unchanged INTEGER DEFAULT 0;
+
+-- Permit lists (migrations/0004_permit_list_id_tiebreak.sql, replacing 0001's
+-- issued_date indexes). /permits, /api/permits and MCP list with
+-- `ORDER BY p.issued_date DESC[, p.id DESC] LIMIT ? OFFSET ?`; filtered lists
+-- put the equality column first, so the filter, the sort and the id tiebreak
+-- are all served by one index with no temp B-tree.
+CREATE INDEX IF NOT EXISTS idx_permits_issued_date_id ON permits(issued_date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_permits_type_issued_date_id ON permits(type, issued_date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_permits_neighborhood_issued_date_id ON permits(neighborhood, issued_date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_permits_status_issued_date_id ON permits(status, issued_date DESC, id DESC);
