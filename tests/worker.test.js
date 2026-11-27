@@ -3037,7 +3037,7 @@ test("GET /contractor/:slug reports the true permit total, not the capped list l
   assert.match(html, /is a General Contractor operating in Seattle/);
   assert.doesNotMatch(html, /Seattle area construction professional/);
   assert.match(html, /General Contractor · 27 Seattle permits · Downtown/);
-  assert.match(html, /Downtown<\/span>\s*<span[^>]*>1 permit<\/span>/);
+  assert.match(html, /href="\/neighborhood\/downtown"[^>]*>Downtown<\/a>\s*<span[^>]*>1 permit<\/span>/);
   assert.match(html, /· 1 permit<\/span>/);
   assert.match(html, /1 <span[^>]*>day<\/span>/);
   assert.match(html, /Value not reported/);

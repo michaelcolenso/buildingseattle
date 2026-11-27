@@ -3739,7 +3739,9 @@ async function renderContractorPage(slug, env, request) {
           <p style="margin:1rem 0 0;font-size:0.75rem;color:var(--text-muted)">Verified via WA Labor &amp; Industries</p>
         </div>`
     : "";
-  const contractorDisplayName = smartTitleCase(contractor.name);
+  // displayName also turns SDCI shorthand backslashes ("DSN\\CNST") into
+  // slashes (audit G8).
+  const contractorDisplayName = displayName(contractor.name) || smartTitleCase(contractor.name);
   const safeContractorName = escapeHtml(contractor.name);
   const safeContractorDisplayName = escapeHtml(contractorDisplayName);
   const fullContractorTitle = `${contractorDisplayName} — ${contractor.specialty || "Contractor"} | Building Seattle`;
@@ -3781,7 +3783,7 @@ async function renderContractorPage(slug, env, request) {
     "@graph": [
       {
         "@type": "LocalBusiness",
-        name: contractor.name,
+        name: contractorDisplayName,
         description: contractor.specialty || "Construction contractor in Seattle",
         url: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
         address: {
@@ -3796,11 +3798,11 @@ async function renderContractorPage(slug, env, request) {
         "@type": "BreadcrumbList",
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
-          { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
+          { "@type": "ListItem", position: 2, name: "Contractors", item: `${BASE_URL}/contractors` },
           {
             "@type": "ListItem",
             position: 3,
-            name: contractor.name,
+            name: contractorDisplayName,
             item: `${BASE_URL}/contractor/${encodeURIComponent(slug)}`,
           },
         ],
@@ -3831,7 +3833,7 @@ async function renderContractorPage(slug, env, request) {
     <meta name="twitter:card" content="summary_large_image">
     <meta property="og:image" content="${BASE_URL}/social/contractor.png">
     <meta property="og:image:type" content="image/png">
-    <meta property="og:image:alt" content="${safeContractorName} | Building Seattle">
+    <meta property="og:image:alt" content="${safeContractorDisplayName} | Building Seattle">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:image" content="${BASE_URL}/social/contractor.png">
@@ -3861,7 +3863,7 @@ async function renderContractorPage(slug, env, request) {
     <div class="seo-hero">
         <div class="container">
             <nav aria-label="breadcrumb" style="font-size:0.8125rem;color:#94a3b8;margin-bottom:1rem;">
-                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/permits" style="color:#94a3b8;text-decoration:none;">Permits</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${safeContractorDisplayName}</span>
+                <a href="/" style="color:#94a3b8;text-decoration:none;">Home</a> <span style="margin:0 0.4rem;">/</span> <a href="/contractors" style="color:#94a3b8;text-decoration:none;">Contractors</a> <span style="margin:0 0.4rem;">/</span> <span style="color:#ffffff;font-weight:600;">${safeContractorDisplayName}</span>
             </nav>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:2rem;">
                 <div style="max-width:600px;min-width:0">
@@ -3869,16 +3871,16 @@ async function renderContractorPage(slug, env, request) {
                     <h1 style="font-size:clamp(2rem,8vw,3rem);font-weight:800;line-height:1.1;letter-spacing:-0.02em;overflow-wrap:anywhere;margin:0 0 1rem 0">${safeContractorDisplayName}</h1>
                     <p style="font-size:1.25rem;color:#94a3b8;margin:0">${escapeHtml(heroSummary)}</p>
                 </div>
-                <div style="display:flex; gap:1.5rem;">
-                    <div style="text-align:right">
+                ${typeof permitDays === "number" || typeof buildDays === "number" ? `<div style="display:flex; gap:1.5rem;">
+                    ${typeof permitDays === "number" ? `<div style="text-align:right">
                         <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase; margin-bottom:0.25rem">Permit Speed</div>
                         <div style="font-size:1.5rem; font-weight:700;">${permitDays}${dayUnit(permitDays)}</div>
-                    </div>
-                    <div style="text-align:right">
+                    </div>` : ""}
+                    ${typeof buildDays === "number" ? `<div style="text-align:right">
                         <div style="font-size:0.75rem; color:#94a3b8; text-transform:uppercase; margin-bottom:0.25rem">Build Speed</div>
                         <div style="font-size:1.5rem; font-weight:700;">${buildDays}${dayUnit(buildDays)}</div>
-                    </div>
-                </div>
+                    </div>` : ""}
+                </div>` : ""}
             </div>
         </div>
     </div>
@@ -3906,12 +3908,13 @@ async function renderContractorPage(slug, env, request) {
                       .map(
                         (p) => `
                         <div class="permit-row" style="padding:1rem 0;border-bottom:1px solid var(--border)">
-                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(p.address)}</a></div>
-                            <div style="font-size:0.875rem;color:var(--text-muted)">${escapeHtml(p.type || "Unknown")} &bull; ${p.value ? `$${Number(p.value).toLocaleString("en-US")}` : "Value not reported"} &bull; ${escapeHtml(p.status)}</div>
+                            <div style="font-weight:700"><a href="/permits/${encodeURIComponent(p.permit_number)}">${escapeHtml(displayName(p.address) || `Permit ${p.permit_number}`)}</a></div>
+                            <div style="font-size:0.875rem;color:var(--text-muted)">${escapeHtml(permitTypeLabel(p.type))} &bull; ${p.value ? `$${Number(p.value).toLocaleString("en-US")}` : "Value not reported"} &bull; ${escapeHtml(statusLabel(p.status))} &bull; Permit ${escapeHtml(p.permit_number)}</div>
                         </div>
                     `,
                       )
                       .join("")}
+                    ${totalPermits > shownPermits ? `<p style="margin:1rem 0 0;font-size:0.9rem;"><a href="/permits?q=${encodeURIComponent(contractor.name)}" style="color:var(--accent);text-decoration:none;font-weight:600;">Search permits for ${safeContractorDisplayName} &rarr;</a></p>` : ""}
                 </div>
                 ${
                   graphAddresses.length || graphProjects.length
@@ -3925,7 +3928,7 @@ async function renderContractorPage(slug, env, request) {
                             ? graphAddresses
                                 .map(
                                   (a) =>
-                                    `<div style="font-size:0.9rem;"><a href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(a.display_address)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">· ${countLabel(a.permits, "permit", "permits")}</span></div>`,
+                                    `<div style="font-size:0.9rem;"><a href="/address/${encodeURIComponent(a.slug)}">${escapeHtml(displayName(a.display_address))}</a> <span style="color:var(--text-muted);font-size:0.8rem;">· ${countLabel(a.permits, "permit", "permits")}</span></div>`,
                                 )
                                 .join("")
                             : '<div style="color:var(--text-muted);font-size:0.85rem;">No linked addresses yet.</div>'
@@ -3950,6 +3953,7 @@ async function renderContractorPage(slug, env, request) {
                 }
             </div>
             <div>
+                ${renderAlertCta({ permits: permits.results || [], subject: contractorDisplayName })}
                 ${credentialsCard}
                 <div class="bs-card">
                     <h3>Market Specialization</h3>
@@ -3959,7 +3963,7 @@ async function renderContractorPage(slug, env, request) {
                           .map(
                             (f) => `
                             <div style="display:flex; justify-content:space-between; gap:1rem; margin-bottom:0.5rem; font-size:0.9375rem">
-                                <span style="font-weight:600">${escapeHtml(f.neighborhood)}</span>
+                                <a href="/neighborhood/${encodeURIComponent(makeSlug(f.neighborhood))}" style="font-weight:600;color:var(--accent);text-decoration:none;">${escapeHtml(f.neighborhood)}</a>
                                 <span style="color:var(--text-muted);white-space:nowrap">${countLabel(f.count, "permit", "permits")}</span>
                             </div>
                         `,
@@ -3972,7 +3976,7 @@ async function renderContractorPage(slug, env, request) {
                             ${projectTypes.results
                               .map(
                                 (t) => `
-                                <span style="background:var(--accent-soft); color:var(--link); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600; text-transform:capitalize">${escapeHtml(t.type)}</span>
+                                <span style="background:var(--accent-soft); color:var(--link); padding:0.25rem 0.75rem; border-radius:999px; font-size:0.75rem; font-weight:600">${escapeHtml(permitTypeLabel(t.type))} &middot; ${formatCount(t.count)}</span>
                             `,
                               )
                               .join("")}
@@ -4015,6 +4019,7 @@ async function renderContractorPage(slug, env, request) {
                         ${contractorWebsite ? `<p style="margin:0.5rem 0">Web <a href="${escapeHtml(contractorWebsite)}" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:none">${escapeHtml(contractorWebsite.replace("https://", "").replace("http://", ""))}</a></p>` : ""}
                     </div>
                 </div>
+                ${renderDatasetCta({ context: "contractor", subject: `${contractorDisplayName}'s permits`, count: totalPermits })}
             </div>
         </div>
     </div>

@@ -159,3 +159,24 @@ test("people/org contractor pages: display name, role labels, Contractors parent
   assert.doesNotMatch(html, /No inferred projects yet|No neighborhood data/);
   assert.match(html, /utm_content=contractor/);
 });
+
+test("curated contractor pages: no backslashes, Contractors parent, labelled rows, no empty speed tiles (audit E15/E17/G8)", async () => {
+  const env = routedEnv([
+    ["FROM contractors WHERE slug", { id: 5, slug: "belotti", name: "BELOTTI MCHUGH DSN\\\\CNST SR LLC", specialty: "General Contractor" }],
+    ["AVG(JulianDay", { total_count: 12, active_count: 1, completed_count: 1 }],
+    ["GROUP BY neighborhood", [{ neighborhood: "Capitol Hill", count: 2, total_value: 1 }]],
+    ["GROUP BY type", [{ type: "commercial", count: 2 }]],
+    ["SELECT * FROM permits WHERE contractor_id", [{ ...openPermit, address: "1 MAIN ST, SEATTLE, WA" }]],
+  ]);
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/contractor/belotti"), env, ctx())).text();
+  assert.doesNotMatch(html, /\\/);
+  assert.match(html, /<h1[^>]*>Belotti Mchugh Dsn\/Cnst Sr LLC<\/h1>/);
+  assert.match(html, /href="\/contractors"[^>]*>Contractors<\/a>/);
+  assert.match(html, /"name":"Contractors"/);
+  assert.match(html, /Residential Construction &bull; \$50,000 &bull; Active &bull; Permit P-OPEN/);
+  assert.match(html, /href="\/neighborhood\/capitol-hill"/);
+  assert.match(html, /Commercial Construction &middot; 2/);
+  assert.doesNotMatch(html, /Build Speed|Permit Speed/);
+  assert.match(html, /Search permits for Belotti Mchugh Dsn\/Cnst Sr LLC/);
+  assert.match(html, /utm_content=contractor/);
+});
