@@ -26,7 +26,7 @@ import {
 import { getBasisResetRadar, ingestBasisResetEvent, renderBasisResetRadarBody } from "./basis_reset_routes.js";
 import {
   developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
-  ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, developmentSitesArePublic,
+  ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, DEVELOPMENT_SITE_FIELDS, developmentSitesArePublic,
 } from "./development_sites.js";
 
 const corsHeaders = {
@@ -10736,7 +10736,7 @@ function renderAboutPage() {
   const canonical = `${BASE_URL}/about`;
   const title = "About Building Seattle — Construction Permit Intelligence";
   const description =
-    "Building Seattle turns public Seattle SDCI permit records into searchable property, contractor, project, and neighborhood views for the metro area.";
+    "Building Seattle turns public City of Seattle SDCI permit records into searchable property, contractor, project, and neighborhood pages.";
   const socialImage = `${BASE_URL}/social/insight.png`;
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -10833,13 +10833,13 @@ function renderAboutPage() {
         <section class="hero">
             <div class="container">
                 <h1>About Building Seattle</h1>
-                <p>Construction permit intelligence for the Seattle metro area — tracking who's building what, where, and with whom.</p>
+                <p>Construction permit intelligence for the City of Seattle — tracking who's building what, where, and with whom.</p>
             </div>
         </section>
         <section class="content">
             <div class="container">
                 <h2>What Building Seattle does</h2>
-                <p>Building Seattle collects, organizes, and publishes construction permit data from the <strong>Seattle Department of Construction and Inspections</strong>. Every permit — from tenant improvements and residential additions to major commercial projects — is ingested, enriched, and made searchable through a fast, modern web interface.</p>
+                <p>Building Seattle collects, organizes, and publishes construction permit data from the <strong>Seattle Department of Construction and Inspections</strong> (SDCI). Permits in the public feed — from tenant improvements and residential additions to major commercial projects — are ingested, enriched, and made searchable.</p>
                 <p>The site connects permits to their <strong>addresses, contractors, projects, and neighborhoods</strong>, turning raw city records into structured, linkable pages that help you understand Seattle's construction market at a glance.</p>
 
                 <h2>How the data works</h2>
@@ -10851,7 +10851,7 @@ function renderAboutPage() {
                     <li>Maps permits to Seattle neighborhoods</li>
                     <li>Tracks permit timelines, review cycles, and status changes</li>
                 </ul>
-                <p>Data is refreshed regularly to reflect new permit applications, issuances, and status updates from SDCI. The <a href="/methodology">methodology and sources page</a> documents refresh timing, entity matching, classifications, and known limitations.</p>
+                <p>A scheduled ingest runs daily to pick up new permit applications, issuances, and status updates from SDCI. The <a href="/methodology">methodology and sources page</a> documents refresh timing, entity matching, classifications, and known limitations.</p>
 
                 <h2>What you can do here</h2>
                 <ul>
@@ -10864,10 +10864,10 @@ function renderAboutPage() {
                 </ul>
 
                 <h2>Coverage</h2>
-                <p>Building Seattle covers construction permits within the city of Seattle, Washington, sourced from the Seattle Department of Construction and Inspections public records. The data includes permits across all permit types — commercial, residential, industrial, demolition, and more — spanning from historical records to the most recently filed applications.</p>
+                <p>Building Seattle covers building permits for addresses within the City of Seattle, sourced from SDCI's public open-data feed. It does not cover the rest of King County or other cities in the metro area. The site holds recent permit activity rather than the city's full historical archive; the current downloadable dataset (release ${escapeHtml(DATASET_RELEASE.version)}) covers applications dated ${escapeHtml(formatCalendarDate(DATASET_RELEASE.appliedFrom, { month: "long" }))} to ${escapeHtml(formatCalendarDate(DATASET_RELEASE.appliedThrough, { month: "long" }))}. Permit types include commercial, residential, industrial, demolition, and more.</p>
 
                 <h2>Get in touch</h2>
-                <p>Building Seattle is an independent project. For questions, corrections, or data inquiries, reach out via the site or file an issue on the project repository.</p>
+                <p>Building Seattle is an independent project. For questions, corrections, or data inquiries, email <a href="mailto:${SITE_CONTACT_EMAIL}">${SITE_CONTACT_EMAIL}</a>. The <a href="/privacy">privacy notice</a> explains what the site collects.</p>
 
                 <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
                     <a href="/permits" class="btn" style="display:inline-flex;align-items:center;justify-content:center;padding:0.75rem 1.5rem;border-radius:0.5rem;font-weight:600;text-decoration:none;background:var(--accent);color:var(--on-accent);">Browse Live Permits</a>
@@ -10888,33 +10888,23 @@ function renderAboutPage() {
 const GUMROAD_PRODUCT_URL = "https://buildingseattle.gumroad.com/l/seattle-permits";
 const GUMROAD_UTM = "utm_source=buildingseattle&utm_medium=site&utm_campaign=data_page";
 
+// /data sells the shipped release, so every figure here comes from
+// DATASET_RELEASE (site_content.js, mirrored from gumroad/VERSION.txt), not
+// live D1 counts, which drift from the file buyers download.
 async function renderDataPage(env) {
-  const datasetColumnCount = developmentSitesArePublic(env) ? 38 : 32;
+  const release = DATASET_RELEASE;
+  // With site context switched off, the development-site columns are withheld.
+  const datasetColumnCount = developmentSitesArePublic(env)
+    ? release.columns
+    : release.columns - DEVELOPMENT_SITE_FIELDS.length;
   const canonical = `${BASE_URL}/data`;
+  const coverage = `${formatCalendarDate(release.appliedFrom, { month: "long" })} to ${formatCalendarDate(release.appliedThrough, { month: "long" })}`;
+  const exportDate = formatCalendarDate(release.exportDate, { month: "long" });
+  const recordCount = release.records.toLocaleString("en-US");
+  const contractorCount = release.contractors.toLocaleString("en-US");
+  const valueLabel = compactMetricMoney(release.countedValue);
   const title = "Seattle Permit Dataset — CSV Download | Building Seattle";
-  const description =
-    "Every Seattle construction permit as a ready-to-use CSV, enriched with parcel numbers, review levels, and contractor licenses. Free 100-row sample.";
-
-  let stats = { permits: 0, contractors: 0, neighborhoods: 0, total_value: 0 };
-  try {
-    const row = await env.DB.prepare(
-      `
-      SELECT
-        COUNT(*) as permits,
-        SUM(${countedValueSql("permits")}) as total_value,
-        COUNT(DISTINCT neighborhood) as neighborhoods,
-        COUNT(DISTINCT contractor_id) as contractors
-      FROM permits
-    `,
-    ).first();
-    if (row) stats = row;
-  } catch (error) {
-    console.warn("Data page stats unavailable:", error.message);
-  }
-
-  const billions = stats.total_value ? `$${(stats.total_value / 1e9).toFixed(2)}B` : "$12B+";
-  const permitCount = stats.permits ? Number(stats.permits).toLocaleString() : "13,000+";
-  const contractorCount = stats.contractors ? Number(stats.contractors).toLocaleString() : "2,000+";
+  const description = `${recordCount} Seattle SDCI building permits applied ${formatMonthYear(release.appliedFrom)}–${formatMonthYear(release.appliedThrough)}, in one ${datasetColumnCount}-column CSV with contractor licenses and review timing. Free sample.`;
   const buyUrl = `${GUMROAD_PRODUCT_URL}?${GUMROAD_UTM}`;
   const socialImage = `${BASE_URL}/social/insight.png`;
   const jsonLd = JSON.stringify({
@@ -10925,6 +10915,9 @@ async function renderDataPage(env) {
         name: "Seattle construction permit dataset",
         description,
         url: canonical,
+        version: release.version,
+        dateModified: release.exportDate,
+        temporalCoverage: `${release.appliedFrom}/${release.appliedThrough}`,
         creator: { "@type": "Organization", name: "Building Seattle", url: `${BASE_URL}/` },
         spatialCoverage: { "@type": "Place", name: "Seattle, Washington" },
         isAccessibleForFree: false,
@@ -10955,6 +10948,16 @@ async function renderDataPage(env) {
       },
     ],
   }).replaceAll("<", "\\u003c");
+
+  const yes = `<span aria-label="Included">&#10003;</span>`;
+  const no = `<span aria-label="Not included" style="color:var(--text-muted);">&mdash;</span>`;
+  const tierRows = [
+    [`Permit CSV: ${recordCount} records, ${datasetColumnCount} columns`, yes, yes],
+    ["Data dictionary (every column documented)", yes, yes],
+    [`Contractor CSV: ${contractorCount} contractors with licenses, specialties, permit counts and values`, no, yes],
+    ["Python refresh script (standard library only) to pull newer records yourself", no, yes],
+    ["Later releases pushed to your Gumroad library", yes, yes],
+  ];
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -11007,16 +11010,21 @@ async function renderDataPage(env) {
         .content a.bs-btn { font-weight: 600; text-decoration: none; }
         .content a.bs-btn--primary { color: var(--on-accent); }
         .content a.bs-btn--secondary { color: var(--ink); }
-        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 2rem 0 0.75rem; }
         .stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 1.5rem; text-align: center; }
         .stat-card .num { font-size: 2rem; font-weight: 800; color: var(--accent); }
         .stat-card .label { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .release-note { font-size: 0.9rem !important; }
         .tier-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin: 2rem 0; }
         .tier-card { background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; padding: 2rem; }
         .tier-card.featured { border-color: var(--accent); box-shadow: 0 4px 24px rgba(0,0,0,0.06); }
         .tier-card h3 { font-size: 1.25rem; font-weight: 700; color: var(--primary); }
         .tier-card .price { font-size: 2.25rem; font-weight: 800; color: var(--text); margin: 0.5rem 0 1rem; }
         .tier-card ul { margin-left: 1.25rem; }
+        .tier-table { width: 100%; border-collapse: collapse; background: var(--bg); border: 1px solid var(--border); border-radius: 1rem; font-size: 0.95rem; }
+        .tier-table th, .tier-table td { padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; color: var(--text); }
+        .tier-table th[scope="col"] { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+        .tier-table td.mark { text-align: center; width: 7rem; font-weight: 700; }
         a.bs-btn { text-decoration: none; }
     </style>
 </head>
@@ -11027,32 +11035,43 @@ async function renderDataPage(env) {
         <section class="hero">
             <div class="container">
                 <h1>The Seattle Permit Dataset</h1>
-                <p>Everything on this site — ${permitCount} enriched construction permits, ${billions} in project value — exported as a clean, ready-to-analyze CSV. Refreshed monthly, updates free for every buyer.</p>
+                <p>${recordCount} City of Seattle building permits, applied for ${escapeHtml(coverage)}, exported as one clean CSV. Release ${escapeHtml(release.version)}, built ${escapeHtml(exportDate)}.</p>
             </div>
         </section>
         <section class="content">
             <div class="container">
                 <div class="stat-grid">
-                    <div class="stat-card"><div class="num">${permitCount}</div><div class="label">Permits</div></div>
-                    <div class="stat-card"><div class="num">${billions}</div><div class="label">Construction value</div></div>
-                    <div class="stat-card"><div class="num">${contractorCount}</div><div class="label">Contractors</div></div>
+                    <div class="stat-card"><div class="num">${recordCount}</div><div class="label">Permits</div></div>
+                    <div class="stat-card"><div class="num">${escapeHtml(valueLabel)}</div><div class="label">Counted permit value</div></div>
+                    <div class="stat-card"><div class="num">${contractorCount}</div><div class="label">Contractors (Pro CSV)</div></div>
                     <div class="stat-card"><div class="num">${datasetColumnCount}</div><div class="label">Columns per record</div></div>
                 </div>
+                <p class="release-note">Figures describe the file you download (release ${escapeHtml(release.version)}, exported ${escapeHtml(exportDate)}), not the live site, which keeps updating daily. Value is SDCI's declared value with a demolition valuation repeated at one address counted once (${escapeHtml(compactMetricMoney(release.declaredValue))} before that rule); see the <a href="/methodology#value">methodology</a>.</p>
 
                 <h2>What's in it</h2>
-                <p>Every construction permit filed with Seattle SDCI, cleaned and deduplicated, then enriched with data the open data portal doesn't have: <strong>parcel numbers, review levels, full detail-page descriptions, contractor license numbers, review-cycle counts, and housing unit breakdowns</strong>. One UTF-8 CSV that opens in Excel, Google Sheets, pandas, or R — plus a full data dictionary.</p>
+                <p>Building permits filed with the Seattle Department of Construction and Inspections (SDCI) for addresses in the City of Seattle, with applications dated ${escapeHtml(coverage)}. Each record is cleaned, deduplicated by permit number, and enriched with fields the open-data feed doesn't carry: <strong>SDCI property and development-site references, review levels, full detail-page descriptions, contractor license numbers, review-cycle counts, and housing-unit changes</strong>. One UTF-8 CSV that opens in Excel, Google Sheets, pandas, or R, plus a full data dictionary.</p>
+                <p>It does not cover King County outside the city, and the site references are SDCI identifiers, not King County parcel numbers.</p>
 
                 <h2>Try before you buy</h2>
-                <p>A <strong>free 100-row sample</strong> with the same ${datasetColumnCount} columns and real enriched data is available on the product page. If it doesn't have what you need, don't buy the full version. If you do buy and it isn't useful, there's a 14-day no-questions refund.</p>
+                <p>A <strong>free ${release.sampleRows}-row sample</strong> with the same ${datasetColumnCount} columns and real enriched data is on the <a href="${GUMROAD_PRODUCT_URL}?${GUMROAD_UTM}&utm_content=sample" rel="noopener">Gumroad product page</a>. If it doesn't have what you need, don't buy the full version. If you do buy and it isn't useful, there's a 14-day no-questions refund.</p>
+
+                <h2>Foundation or Pro</h2>
+                <p>Both tiers include the same permit file. Pro adds the contractor table and a script to pull newer records yourself between releases.</p>
+                <div class="table-scroll" role="region" aria-label="Tier comparison" tabindex="0">
+                <table class="tier-table">
+                    <thead><tr><th scope="col">Included</th><th scope="col">Foundation $49</th><th scope="col">Pro $89</th></tr></thead>
+                    <tbody>${tierRows.map(([label, foundation, pro]) => `<tr><th scope="row" style="font-weight:500;">${escapeHtml(label)}</th><td class="mark">${foundation}</td><td class="mark">${pro}</td></tr>`).join("")}</tbody>
+                </table>
+                </div>
 
                 <div class="tier-grid">
                     <div class="tier-card">
                         <h3>Foundation</h3>
                         <div class="price">$49</div>
                         <ul>
-                            <li>Full CSV — every permit, ${datasetColumnCount} columns</li>
-                            <li>Complete data dictionary</li>
-                            <li>Free monthly updates via Gumroad</li>
+                            <li>Permit CSV: ${recordCount} records, ${datasetColumnCount} columns</li>
+                            <li>Data dictionary</li>
+                            <li>Later releases via Gumroad</li>
                         </ul>
                         <p style="margin-top:1.5rem;"><a class="bs-btn bs-btn--secondary bs-btn--lg" href="${buyUrl}&utm_content=foundation" rel="noopener">Get Foundation</a></p>
                     </div>
@@ -11061,13 +11080,13 @@ async function renderDataPage(env) {
                         <div class="price">$89</div>
                         <ul>
                             <li>Everything in Foundation</li>
+                            <li>Contractor CSV: ${contractorCount} contractors</li>
                             <li>Python refresh script (stdlib-only)</li>
-                            <li>Contractor CSV — licenses, specialties, permit counts, total values</li>
-                            <li>Free monthly updates via Gumroad</li>
                         </ul>
                         <p style="margin-top:1.5rem;"><a class="bs-btn bs-btn--primary bs-btn--lg" href="${buyUrl}&utm_content=pro" rel="noopener">Get Pro</a></p>
                     </div>
                 </div>
+                <p class="release-note">Choose the tier on the Gumroad checkout page. New releases are pushed to every buyer's Gumroad library as file updates; the <a href="/methodology">methodology</a> explains how records are built.</p>
 
                 <h2>Who it's for</h2>
                 <ul>
@@ -11078,12 +11097,13 @@ async function renderDataPage(env) {
                 </ul>
 
                 <h2>Why pay for public data?</h2>
-                <p>The raw records are public — the work isn't. The city publishes permits piecemeal through a clunky portal, without contractor licenses, parcel numbers, review levels, or detailed descriptions. Our pipeline scrapes, cleans, deduplicates, and enriches every record so you don't spend a weekend doing it yourself.</p>
+                <p>The raw records are public — the work isn't. The city publishes permits piecemeal, without contractor licenses, review levels, or detailed descriptions in the open-data feed. Our pipeline scrapes, cleans, deduplicates, and enriches every record so you don't spend a weekend doing it yourself.</p>
 
                 <div style="display:flex;gap:1rem;margin-top:2.5rem;flex-wrap:wrap;">
                     <a href="${buyUrl}" class="bs-btn bs-btn--primary bs-btn--lg" rel="noopener">Get the Dataset</a>
                     <a href="/permits" class="bs-btn bs-btn--secondary bs-btn--lg">Browse the Data Live</a>
                 </div>
+                <p class="release-note" style="margin-top:1.5rem;">Questions about the data or a purchase: <a href="mailto:${SITE_CONTACT_EMAIL}">${SITE_CONTACT_EMAIL}</a>. Purchases are handled by Gumroad; see our <a href="/privacy">privacy notice</a>.</p>
             </div>
         </section>
     </main>

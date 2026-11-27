@@ -1014,8 +1014,11 @@ test("GET /sitemaps/permits-1.xml returns canonical URLs with accurate lastmod v
   assert.doesNotMatch(xml, /<priority>|<changefreq>/);
 });
 
-test("GET /data renders the dataset landing page with live stats", async () => {
+test("GET /data describes the shipped release, not live D1 counts (audit F6/E12/G11)", async () => {
   const env = createEnv();
+  const queries = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => { queries.push(sql); return prepare(sql); };
   const response = await worker.fetch(new Request("http://example.com/data"), env, createCtx());
   const html = await response.text();
 
@@ -1025,8 +1028,25 @@ test("GET /data renders the dataset landing page with live stats", async () => {
   assert.match(html, /utm_source=buildingseattle/);
   assert.match(html, /\$49/);
   assert.match(html, /\$89/);
-  // stats come from the mock DB: 2 permits totalling $63.8M
-  assert.match(html, /\$0\.06B/);
+  // Counts, coverage and version come from the release constants. The mock
+  // DB holds 2 permits; none of its figures may leak onto the sales page.
+  assert.equal(queries.filter((sql) => /FROM permits/i.test(sql)).length, 0, "the /data page reads no live counts");
+  assert.match(html, /15,581/);
+  assert.match(html, /2,367/);
+  assert.match(html, /\$11\.3B/);
+  assert.match(html, /applied for May 15, 2024 to November 6, 2026/);
+  assert.match(html, /Release 2026-11, built November 8, 2026/);
+  assert.doesNotMatch(html, /\$0\.06B|\$12B\+|13,000\+|2,000\+/);
+  // No coverage overclaims or the old "parcel numbers" claim.
+  assert.doesNotMatch(html, /Every construction permit|Every Seattle construction permit|Everything on this site/i);
+  assert.doesNotMatch(html, /parcel numbers,/i);
+  assert.match(html, /City of Seattle/);
+  // Tier differences are explicit.
+  assert.match(html, /<table class="tier-table">/);
+  assert.match(html, /Contractor CSV: 2,367 contractors/);
+  assert.match(html, /"version":"2026-11"/);
+  assert.match(html, /"temporalCoverage":"2024-05-15\/2026-11-06"/);
+  assert.match(html, /href="\/privacy"/);
 });
 
 test("trust, dataset, API, and error pages ship complete metadata and schema", async () => {
