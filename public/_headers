@@ -1,0 +1,11 @@
+# Workers Static Assets custom headers (these files are served before the
+# Worker runs). Same cache policy the Worker used when it served these images
+# from inlined base64.
+/social/*
+  Cache-Control: public, max-age=604800, immutable
+/icons/*
+  Cache-Control: public, max-age=604800, immutable
+/favicon.ico
+  Cache-Control: public, max-age=604800, immutable
+/og-image.png
+  Cache-Control: public, max-age=86400

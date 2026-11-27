@@ -919,32 +919,21 @@ test("permit browser escapes permit and contractor data before rendering HTML", 
   assert.match(html, /&lt;script&gt;alert\(&quot;permit&quot;\)&lt;\/script&gt;/);
 });
 
-test("GET /favicon.ico returns the site icon", async () => {
-  const response = await worker.fetch(new Request("http://example.com/favicon.ico"), createEnv(), createCtx());
-
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("Content-Type") || "", /image\/png/);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+test("/favicon.ico is the 32px site icon, served as a static asset", () => {
+  const bytes = new Uint8Array(readFileSync(new URL("../public/favicon.ico", import.meta.url)));
   assert.equal(bytes.length, 895);
   assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 32, 0, 0, 0, 32]);
-  assert.match(response.headers.get("Cache-Control") || "", /immutable/);
+  const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
+  assert.match(headers, /\/favicon\.ico\n\s+Cache-Control: public, max-age=604800, immutable/);
 });
 
-test("GET /icons serves square install icons at their declared dimensions", async () => {
+test("/icons are square install icons at their declared dimensions, served as static assets", () => {
   for (const [size, expectedLength] of [
     [32, 895],
     [192, 1367],
     [512, 3605],
   ]) {
-    const response = await worker.fetch(
-      new Request(`http://example.com/icons/icon-${size}.png`),
-      createEnv(),
-      createCtx(),
-    );
-
-    assert.equal(response.status, 200);
-    assert.match(response.headers.get("Content-Type") || "", /image\/png/);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = new Uint8Array(readFileSync(new URL(`../public/icons/icon-${size}.png`, import.meta.url)));
     assert.equal(bytes.length, expectedLength);
     assert.deepEqual([...bytes.slice(16, 24)], [
       (size >>> 24) & 255,
@@ -1432,21 +1421,29 @@ test("methodology page documents source, freshness, matching, and cost limitatio
   assert.match(html, /"@type":"AboutPage"/);
 });
 
-test("bounded social image routes return crawler-compatible PNGs with immutable caching", async () => {
+test("social, OG and app-icon PNGs are static assets with immutable caching", async () => {
+  // Served by the [assets] binding from public/ (moved out of inlined base64
+  // in worker.js); the Worker no longer has routes for them.
+  const png = (path) => new Uint8Array(readFileSync(new URL(`../public/${path}`, import.meta.url)));
   for (const type of ["permit", "contractor", "project", "address", "neighborhood", "insight"]) {
-    const response = await worker.fetch(
-      new Request(`http://example.com/social/${type}.png`),
-      createEnv(),
-      createCtx(),
-    );
-    const bytes = new Uint8Array(await response.arrayBuffer());
-
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Content-Type"), "image/png");
-    assert.match(response.headers.get("Cache-Control") || "", /immutable/);
+    const bytes = png(`social/${type}.png`);
     assert.deepEqual([...bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-    assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118]);
+    assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118], `${type} is 1200x630`);
   }
+  assert.deepEqual([...png("og-image.png").slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118]);
+  for (const size of [32, 192, 512]) {
+    const bytes = png(`icons/icon-${size}.png`);
+    const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    assert.equal(width, size);
+  }
+  assert.deepEqual(png("favicon.ico"), png("icons/icon-32.png"));
+
+  const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
+  assert.match(headers, /\/social\/\*\n\s+Cache-Control: public, max-age=604800, immutable/);
+  assert.match(headers, /\/icons\/\*\n\s+Cache-Control: public, max-age=604800, immutable/);
+
+  const source = readFileSync(new URL("../worker.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /iVBORw0KGgo/, "no inlined base64 PNGs left in worker.js");
 
   const response = await worker.fetch(
     new Request("http://example.com/social/not-a-real-type.png"),
