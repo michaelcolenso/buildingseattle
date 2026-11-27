@@ -4,7 +4,7 @@ const S=process.argv[2];
 const R='../../';
 const { default: worker } = await import(R+'worker.js');
 const db=new DatabaseSync(':memory:');
-for (const f of ['schema.sql','migration_entity_graph.sql','migration_entity_graph_upstream_compat.sql',...fs.readdirSync(R).filter(f=>/^migration_(permit|alert).*\.sql$/.test(f))]) {
+for (const f of ['schema.sql']) { // schema.sql is the full production schema
   const sql=fs.readFileSync(R+f,'utf8');
   for (const stmt of sql.split(/;\s*\n/)) { try{ db.exec(stmt+';'); }catch(e){ if(!/duplicate column|already exists|no such table/i.test(e.message)) console.log('migr warn',f,e.message.slice(0,80)); } }
 }

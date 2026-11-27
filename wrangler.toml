@@ -5,11 +5,19 @@ compatibility_date = "2026-03-14"
 [vars]
 # Enable after the migration and verified backfill; cache keys change with this flag.
 DEVELOPMENT_SITES_PUBLIC = "true"
+# Share of non-bot HTML page views written to the D1 page_views table (0..1;
+# "0" turns first-party logging off). Bots and crawlers are never logged.
+PAGE_VIEW_SAMPLE_RATE = "1"
 
 # Static brand assets (design tokens, IBM Plex fonts, SVG favicon) served from ./public.
 # Matching paths are served before the Worker runs; everything else falls through to worker.js.
 [assets]
 directory = "./public"
+
+# Exposes the deployed version id to the Worker (free; no extra product). The
+# HTML edge cache keys on it so every deploy starts from fresh HTML.
+[version_metadata]
+binding = "CF_VERSION_METADATA"
 
 [triggers]
 crons = ["0 13 * * *"]
@@ -30,6 +38,9 @@ head_sampling_rate = 1
 binding = "DB"
 database_name = "buildingseattle"
 database_id = "e065e988-045f-42b5-b47a-4027c2e5c417"  # Replace with your actual ID from Dashboard
+# Schema changes are numbered files in ./migrations (wrangler d1 migrations).
+# Production was baselined on 2026-11-27; see "Database migrations" in CLAUDE.md.
+migrations_dir = "migrations"
 
 [[send_email]]
 name = "EMAIL"

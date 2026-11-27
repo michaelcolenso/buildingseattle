@@ -17,11 +17,14 @@ npx wrangler dev
 # Deploy to Cloudflare
 npx wrangler deploy
 
-# Execute D1 SQL directly
-npx wrangler d1 execute buildingseattle --command "SELECT COUNT(*) FROM permits"
+# Read-only query against production D1
+npx wrangler d1 execute buildingseattle --remote --command "SELECT COUNT(*) FROM permits"
 
-# Run a SQL file against D1
-npx wrangler d1 execute buildingseattle --file schema.sql
+# Fresh local database from the full schema
+npx wrangler d1 execute buildingseattle --local --file schema.sql
+
+# Schema changes: see "Database migrations" below
+npx wrangler d1 migrations list buildingseattle --remote
 ```
 
 ### Python Data Pipeline
@@ -94,6 +97,8 @@ The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split int
 - **All HTML pages are inlined as template literals** — there is no separate templating engine or frontend build step
 - SQL queries are built inline with parameterized bindings via the D1 `prepare().bind()` API
 - CORS headers are added to every response
+- `withHtmlEdgeCache` (helpers in `edge_cache.js`) caches public 200 HTML in `caches.default`. The key keeps only the query params a route reads (`HTML_CACHE_QUERY_PARAMS`; add a param there when a page starts reading one), plus the deploy version (`CF_VERSION_METADATA`), `HTML_CACHE_VERSION`, the development-sites flag and a data day that rolls over at 14:00 UTC. Pages with `max-age>=3600` live a day at the edge, shorter ones an hour. Noindex, non-200, `no-store`/`private` pages and pages rendered from URLs with extra params are never stored. `/admin*` and `/api/admin*` are always `private, no-store` with no CORS.
+- `page_views.js` owns first-party page-view logging: bots are skipped, humans sampled at `PAGE_VIEW_SAMPLE_RATE`, and the cron prunes rows older than 90 days in bounded batches.
 - **Do not add non-function named exports to `worker.js`.** The Workers runtime rejects them and `wrangler dev` fails at startup. Constants/SQL fragments shared with tests go in a sibling module (this is why `adu.js` and `entity_hubs.js` exist).
 - A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`): new permits plus a bounded rotation of stale ones (status changed since the last enrichment, or still open and enriched >30 days ago; queue SQL in `scripts/enrichment_queue.py`). It posts to `https://buildingseattle.com` (override with `WORKER_URL`), never workers.dev.
 
@@ -126,7 +131,31 @@ Key routes:
 
 ### Database Schema (schema.sql)
 
-Core source tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time. `schema.sql` is only the base; later columns/tables live in individual `migration_*.sql` files applied one at a time with `wrangler d1 execute buildingseattle --file migration_X.sql`. A new column usually needs both a migration and a `schema.sql` update.
+Core source tables: `permits`, `contractors`, `leads`. Permits reference contractors via `contractor_id`. Neighborhood and permit type are inferred/normalized at ingest time. `schema.sql` is the **complete** current schema (no seed rows); `tests/schema_migrations.test.js` fails if it differs from `migrations/0000_baseline.sql` plus every later numbered migration. Production enforces the schema's foreign keys (D1 default), e.g. a permit cannot be deleted while `project_permits` / `permit_participants` rows point at it.
+
+### Database migrations
+
+Schema changes use `wrangler d1 migrations` (`migrations_dir = "migrations"` on the `DB` binding in `wrangler.toml`; wrangler tracks applied files in the `d1_migrations` table).
+
+- `migrations/0000_baseline.sql` is production's schema as read from `sqlite_master` on 2026-11-27 (idempotent `IF NOT EXISTS`). Production already has it; it is only *marked* applied there (bootstrap below).
+- New change: `npx wrangler d1 migrations create buildingseattle <snake_name>` (creates the next `migrations/NNNN_<snake_name>.sql`), write additive/idempotent SQL, mirror it in `schema.sql` in the same commit, run `npm test`, then `npx wrangler d1 migrations apply buildingseattle --local` before `--remote`.
+- Never edit a migration that production has applied; add a new one. Never run `schema.sql` or a migration file against production with `d1 execute --file`.
+- `migrations/legacy/` holds the old hand-applied `migration_*.sql` files for history only (wrangler reads `migrations/*.sql`, not subdirectories). Its README says which ones production has; `migration_alert_watches.sql` was never applied and nothing uses it.
+
+**One-time production bootstrap** (run once, in this order, after this change is merged and deployed; do not run the baseline itself):
+
+```bash
+# 1. Create wrangler's tracking table (same DDL wrangler uses) and mark the baseline applied
+npx wrangler d1 execute buildingseattle --remote --command "CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL); INSERT OR IGNORE INTO d1_migrations (name) VALUES ('0000_baseline.sql');"
+# 2. Confirm: 0000_baseline.sql must NOT be listed; 0001_hot_query_indexes.sql (and later) should be
+npx wrangler d1 migrations list buildingseattle --remote
+# 3. Apply the pending migrations (wrangler asks for confirmation)
+npx wrangler d1 migrations apply buildingseattle --remote
+# 4. Verify
+npx wrangler d1 execute buildingseattle --remote --command "SELECT name, applied_at FROM d1_migrations ORDER BY id"
+```
+
+If step 2 lists `0000_baseline.sql`, stop: step 1 did not take, and applying would re-run the baseline (harmless because every statement is `IF NOT EXISTS`, but it should not be needed).
 
 ### Entity Graph
 
@@ -141,13 +170,14 @@ tables are linked from `permits` via `permits.address_id` / `permits.project_id`
 - `worker.js` loads permits, runs `buildEntityGraph`, and persists the result in
   `rebuildEntityGraph(env)` — invoked after the scheduled ingest and via
   `POST /admin/build-graph`.
-- Apply the schema once: `npx wrangler d1 execute buildingseattle --file migration_entity_graph.sql`
+- The entity-graph tables are part of `schema.sql` / the migrations baseline (originally `migrations/legacy/migration_entity_graph.sql`).
 - The rebuild is incremental and non-destructive: it diffs the desired graph against stored rows, relinks only
   changed permits, and deletes entities last, so a failure never unlinks live pages. Outcomes are logged in
   `ingest_logs` as `run_type = 'entity_graph'` (`running` while it works, then `success` / `partial` / `error`);
   `/address/:slug` answers 503 (not 410) for an address with no permits while any permit is unlinked or the
   latest rebuild is not `success`.
 - After a bulk import, rebuild: `curl -X POST -H "X-Admin-Token: $ADMIN_API_TOKEN" https://buildingseattle.com/admin/build-graph`
+- Only one rebuild runs at a time (`rebuild_lock.js`): a rebuild starts only if no `entity_graph` row is `running` and younger than 30 minutes; otherwise `/admin/build-graph` answers 409 and the cron skips. A run that died leaves its `running` row, which blocks for at most 30 minutes; `POST /admin/build-graph?force=1` overrides it.
 - Validation report: `node scripts/entity_report.mjs` (or `GET /admin/entity-report`).
 
 ### Neighborhood & Type Detection
@@ -189,7 +219,7 @@ the same 202. GET `/alerts/confirm` and `/alerts/unsubscribe` only render a page
 the state change is the page's POST (RFC 8058 one-click POST still works).
 Confirmation links expire after 7 days. Each alert is claimed in
 `permit_alert_deliveries` before sending, so overlapping runs never double-send.
-Tables: `migrations/20261127_security_hardening.sql` (newer migrations live in
+Tables: `migrations/0002_security_hardening.sql` (newer migrations live in
 `migrations/`).
 
 ### Public API tiers

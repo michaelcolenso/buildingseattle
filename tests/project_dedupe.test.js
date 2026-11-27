@@ -41,9 +41,7 @@ function queriesEmbeddingPredicate() {
 
 function seededDatabase() {
   const db = new DatabaseSync(":memory:");
-  for (const file of ["../schema.sql", "../migration_entity_graph.sql"]) {
-    db.exec(readFileSync(new URL(file, import.meta.url), "utf8"));
-  }
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
   db.exec(`
     INSERT INTO addresses (id, slug, display_address, normalized_address)
       VALUES (1, '1-single-ave-seattle-wa', '1 Single Ave', '1 SINGLE AVE'),

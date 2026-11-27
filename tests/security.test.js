@@ -21,7 +21,7 @@ import {
 
 // Audit fixes A1, A3, A4, A7, A8, A11, A12, A15, A16, A18, A21, B3, F2, F10,
 // F11, exercised through the real worker.fetch on SQLite (schema.sql, every
-// migration, and migrations/20261127_security_hardening.sql) behind a D1 shim.
+// migration, and migrations/0002_security_hardening.sql) behind a D1 shim.
 
 const ADMIN_TOKEN = "test-admin-token";
 const API_KEY = "test-api-key-123";
@@ -34,7 +34,7 @@ function openDatabase() {
     .filter((name) => /^migration_.*\.sql$/.test(name))
     .sort()
     .map((name) => `../${name}`);
-  migrations.push("../migrations/20261127_security_hardening.sql");
+  migrations.push("../migrations/0002_security_hardening.sql");
   for (const file of migrations) {
     const sql = readFileSync(new URL(file, import.meta.url), "utf8");
     // Older migrations re-add columns schema.sql already has; apply each

@@ -16,7 +16,6 @@ function payload(ids = ["DV0025961"], sites = [site()]) {
 function fixture() {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
-  db.exec(readFileSync(new URL("../migration_entity_graph.sql", import.meta.url), "utf8"));
   db.exec("DELETE FROM permits; DELETE FROM contractors; DELETE FROM ingest_logs");
   const insert = db.prepare("INSERT INTO permits (permit_number, address, parcel_number, value, status, issued_date, type) VALUES (?, ?, ?, ?, 'active', '2026-01-01', 'residential')");
   insert.run("P-1", "1 MAIN ST", " dv0025961 ", 10000);
