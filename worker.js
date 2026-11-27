@@ -75,7 +75,15 @@ const SECURITY_HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-  "Content-Security-Policy": [
+};
+// The CSP ships as Content-Security-Policy-Report-Only (browsers report
+// violations to /csp-report, which logs them, and block nothing) until
+// env.CSP_ENFORCE === "1" switches it to the enforcing header (review S4:
+// Rocket Loader / Email Obfuscation rewrite scripts this policy would block).
+// Flip it after a week with no unexpected violations in Workers Logs; see
+// docs/deploy-runbook.md.
+const CSP_REPORT_PATH = "/csp-report";
+const CONTENT_SECURITY_POLICY = [
     "default-src 'self'",
     // No 'unsafe-inline' for scripts: the only inline script is the theme
     // boot script, allowed by hash (tests/security.test.js keeps it honest).
@@ -91,8 +99,36 @@ const SECURITY_HEADERS = {
     "form-action 'self'",
     "frame-ancestors 'none'",
     "upgrade-insecure-requests",
-  ].join("; "),
-};
+    `report-uri ${CSP_REPORT_PATH}`,
+  ].join("; ");
+
+function cspHeaderName(env) {
+  return env?.CSP_ENFORCE === "1" ? "Content-Security-Policy" : "Content-Security-Policy-Report-Only";
+}
+
+// Browsers POST violation reports here (application/csp-report or
+// application/reports+json). Log a trimmed line for Workers Logs and answer
+// 204; never store anything.
+async function handleCspReport(request) {
+  const text = (await request.text().catch(() => "")).slice(0, 8192);
+  let report = null;
+  try {
+    const parsed = JSON.parse(text);
+    report = parsed?.["csp-report"] || (Array.isArray(parsed) ? parsed[0]?.body : parsed?.body) || null;
+  } catch {
+    report = null;
+  }
+  if (report && typeof report === "object") {
+    const field = (...names) => String(names.map((name) => report[name]).find(Boolean) || "").slice(0, 200);
+    console.warn(`CSP violation: ${JSON.stringify({
+      directive: field("effective-directive", "effectiveDirective", "violated-directive"),
+      blocked: field("blocked-uri", "blockedURL"),
+      page: field("document-uri", "documentURL"),
+      source: field("source-file", "sourceFile"),
+    })}`);
+  }
+  return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+}
 
 // --- Template-wide HTML edge caching --------------------------------------
 // Worker responses bypass Cloudflare's edge cache unless a Cache Rule exists.
@@ -190,7 +226,7 @@ export default {
     return withHtmlEdgeCache(request, env, ctx, async () => {
     const url = new URL(request.url);
     const path = url.pathname;
-    const secure = (response) => withCrawlerHeaders(path, withSecurityHeaders(response));
+    const secure = (response) => withCrawlerHeaders(path, withSecurityHeaders(response, env));
 
     if (request.method === "OPTIONS") {
       // Same-origin form endpoints never grant CORS, so other sites cannot
@@ -225,6 +261,10 @@ export default {
         const authError = await requireAdminAuth(request, env);
         if (authError) return secure(authError);
         return secure(await renderAdminDashboard(request, env));
+      }
+
+      if (path === CSP_REPORT_PATH && request.method === "POST") {
+        return secure(await handleCspReport(request));
       }
 
       if (path === "/leads" && request.method === "POST") {
@@ -778,11 +818,14 @@ function badRequestResponse(path, message = "Bad request") {
   });
 }
 
-function withSecurityHeaders(response) {
+function withSecurityHeaders(response, env) {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     headers.set(name, value);
   }
+  headers.delete("Content-Security-Policy");
+  headers.delete("Content-Security-Policy-Report-Only");
+  headers.set(cspHeaderName(env), CONTENT_SECURITY_POLICY);
   // Machine-readable JSON is for clients, not search results.
   if ((headers.get("Content-Type") || "").includes("application/json") && !headers.has("X-Robots-Tag")) {
     headers.set("X-Robots-Tag", "noindex");

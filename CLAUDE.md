@@ -242,7 +242,12 @@ an unrevoked sha256 in `api_keys` unlocks full rows and paging. `API_RATE_LIMITE
 / `API_KEY_RATE_LIMITER` throttle `/api/*` and `/mcp` when bound. JSON responses
 carry `X-Robots-Tag: noindex`. The CSP forbids inline scripts except the theme
 boot script (allowed by hash, `THEME_BOOT_SCRIPT_SHA256`) and all inline `on*`
-handlers; page behaviour goes in static files under `public/brand/`.
+handlers; page behaviour goes in static files under `public/brand/`. It ships as
+`Content-Security-Policy-Report-Only` (violations go to `POST /csp-report`, which
+logs a `CSP violation:` line to Workers Logs) until the var `CSP_ENFORCE = "1"`
+switches it to the enforcing `Content-Security-Policy`. Flip it after a week of
+traffic with no unexpected violations (Rocket Loader off first); a var change is a
+new deployment version, so the HTML edge cache starts fresh with the new header.
 
 ## Key Constraints
 

@@ -921,7 +921,7 @@ test("HTML and JSON responses include baseline security headers", async () => {
     assert.match(response.headers.get("Strict-Transport-Security") || "", /max-age=/);
   }
 
-  assert.match(htmlResponse.headers.get("Content-Security-Policy") || "", /frame-ancestors 'none'/);
+  assert.match(htmlResponse.headers.get("Content-Security-Policy-Report-Only") || "", /frame-ancestors 'none'/);
 });
 
 test("GET /api/permits honors bounded per_page requests", async () => {

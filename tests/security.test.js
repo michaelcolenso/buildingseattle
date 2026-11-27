@@ -656,6 +656,41 @@ test("the D1 limiter counts per fixed window", async () => {
 
 // --- A18: CSP ----------------------------------------------------------------
 
+test("the CSP is report-only until CSP_ENFORCE=1 (S4)", async () => {
+  const db = openDatabase();
+  const reportOnly = await call(createEnv(db), "/about");
+  assert.equal(reportOnly.headers.get("Content-Security-Policy"), null);
+  const policy = reportOnly.headers.get("Content-Security-Policy-Report-Only");
+  assert.match(policy, /script-src 'self'/);
+  assert.match(policy, /report-uri \/csp-report/);
+  const enforced = await call(createEnv(db, { CSP_ENFORCE: "1" }), "/about");
+  assert.equal(enforced.headers.get("Content-Security-Policy"), policy);
+  assert.equal(enforced.headers.get("Content-Security-Policy-Report-Only"), null);
+  const notQuite = await call(createEnv(db, { CSP_ENFORCE: "true" }), "/about");
+  assert.equal(notQuite.headers.get("Content-Security-Policy"), null, "only the exact value 1 enforces");
+});
+
+test("/csp-report logs a trimmed violation and answers 204", async () => {
+  const db = openDatabase();
+  const warn = console.warn;
+  const lines = [];
+  console.warn = (line) => lines.push(String(line));
+  try {
+    const response = await call(createEnv(db), "/csp-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/csp-report" },
+      body: JSON.stringify({ "csp-report": { "document-uri": "https://buildingseattle.com/", "violated-directive": "script-src", "blocked-uri": "https://ajax.cloudflare.com/rocket-loader.min.js" } }),
+    });
+    assert.equal(response.status, 204);
+    const garbage = await call(createEnv(db), "/csp-report", { method: "POST", body: "not json" });
+    assert.equal(garbage.status, 204);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /CSP violation: .*script-src.*rocket-loader/);
+});
+
 test("CSP forbids inline script except the hashed theme boot script", async () => {
   const body = themeBootScript().replace(/^<script>/, "").replace(/<\/script>$/, "");
   const digest = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))).toString("base64");
@@ -666,7 +701,7 @@ test("CSP forbids inline script except the hashed theme boot script", async () =
   const paths = ["/", "/permits", "/permits/P-1", "/about", "/data", "/api-docs", "/insights", "/methodology", "/contractors", "/neighborhoods", "/nope-404"];
   for (const path of paths) {
     const response = await call(env, path);
-    const csp = response.headers.get("Content-Security-Policy");
+    const csp = response.headers.get("Content-Security-Policy-Report-Only");
     const scriptSrc = csp.split(";").map((part) => part.trim()).find((part) => part.startsWith("script-src "));
     assert.doesNotMatch(scriptSrc, /unsafe-inline/);
     assert.match(csp, /script-src-attr 'none'/);
