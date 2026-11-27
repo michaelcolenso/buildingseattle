@@ -94,6 +94,8 @@ The backend lives in `worker.js` (~10,500 lines). Pure/shared logic is split int
 - **All HTML pages are inlined as template literals** — there is no separate templating engine or frontend build step
 - SQL queries are built inline with parameterized bindings via the D1 `prepare().bind()` API
 - CORS headers are added to every response
+- `withHtmlEdgeCache` (helpers in `edge_cache.js`) caches public 200 HTML in `caches.default`. The key keeps only the query params a route reads (`HTML_CACHE_QUERY_PARAMS`; add a param there when a page starts reading one), plus the deploy version (`CF_VERSION_METADATA`), `HTML_CACHE_VERSION`, the development-sites flag and a data day that rolls over at 14:00 UTC. Pages with `max-age>=3600` live a day at the edge, shorter ones an hour. Noindex, non-200, `no-store`/`private` pages and pages rendered from URLs with extra params are never stored. `/admin*` and `/api/admin*` are always `private, no-store` with no CORS.
+- `page_views.js` owns first-party page-view logging: bots are skipped, humans sampled at `PAGE_VIEW_SAMPLE_RATE`, and the cron prunes rows older than 90 days in bounded batches.
 - **Do not add non-function named exports to `worker.js`.** The Workers runtime rejects them and `wrangler dev` fails at startup. Constants/SQL fragments shared with tests go in a sibling module (this is why `adu.js` and `entity_hubs.js` exist).
 - A daily cron (`0 13 * * *`, `scheduled()` in `worker.js`) ingests base permits, rebuilds the entity graph, and sends pending alerts. `.github/workflows/enrich-daily.yml` enriches permits an hour later (`scripts/enrich_unenriched.py`).
 

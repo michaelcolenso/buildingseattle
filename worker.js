@@ -23,6 +23,10 @@ import {
   developmentSiteJoin, developmentSiteColumns, withDevelopmentSiteFields,
   ingestDevelopmentSites, getDevelopmentSiteGeometry, renderDevelopmentSiteCard, DEVELOPMENT_SITE_SCHEMA, developmentSitesArePublic,
 } from "./development_sites.js";
+import {
+  cacheControlForbidsStore, dataDay, edgeCacheControl, hardenAdminResponse, htmlCacheKeyUrl, htmlCacheVersion,
+  isAdminPath, isNoindexResponse, pageCacheTtl,
+} from "./edge_cache.js";
 import { clampAnalyticsDays, pageViewSampleRate, pageViewTemplatePath, recordPageView, runPageViewRetention } from "./page_views.js";
 
 const corsHeaders = {
@@ -76,13 +80,11 @@ export function isHtmlCacheablePath(path) {
   return !HTML_CACHE_EXCLUDED_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
-// TTL for a cached HTML copy: honor the page's own max-age (permit/address
-// pages say 3600, insight pages 300), clamped to [60, 86400] seconds.
+// The page's own browser TTL: its max-age (permit/address pages say 3600,
+// insight pages 300), clamped to [60, 86400] seconds; 0 (never cache) for
+// no-store / private / no-cache. The edge TTL derives from it (edge_cache.js).
 export function htmlCacheTtl(response) {
-  const cc = response?.headers?.get("Cache-Control") || "";
-  const match = cc.match(/max-age=(\d+)/);
-  const ttl = match ? Number(match[1]) : 3600;
-  return Math.max(60, Math.min(Number.isFinite(ttl) ? ttl : 3600, 86400));
+  return pageCacheTtl(response?.headers?.get("Cache-Control"));
 }
 
 function edgeHtmlCache() {
@@ -91,22 +93,27 @@ function edgeHtmlCache() {
 
 // Wraps the route handler: serve warm pages from the edge cache, and store
 // freshly rendered 200 text/html pages back into it. Content-negotiated
-// markdown responses and non-GET requests are never cached. The version is
-// encoded as a query param on the cache key (the Cache API matches on the
-// full URL) so template changes can invalidate by bumping HTML_CACHE_VERSION.
+// markdown responses and non-GET requests are never cached. The cache key
+// (edge_cache.js) keeps only the query parameters the route reads, plus the
+// template/deploy version and the data day, so tracking or random parameters
+// share the warm copy. A page is stored only when its own URL is already in
+// key form, is a 200, allows caching, and is not noindex (transient D1 errors
+// render as noindex "no data" pages). Admin responses are hardened here so no
+// route can forget it.
 async function withHtmlEdgeCache(request, env, ctx, render) {
   const url = new URL(request.url);
   const path = url.pathname;
+  if (isAdminPath(path)) return hardenAdminResponse(await render());
   const cacheable =
     request.method === "GET" && isHtmlCacheablePath(path) && !wantsMarkdown(request);
   const cache = cacheable ? edgeHtmlCache() : null;
-  const key = cache
-    ? (() => {
-        const keyUrl = new URL(url.toString());
-        keyUrl.searchParams.set("__bsv", HTML_CACHE_VERSION + (developmentSitesArePublic(env) ? "" : "-sites-off"));
-        return new Request(keyUrl.toString(), { method: "GET" });
-      })()
+  const keyInfo = cache
+    ? htmlCacheKeyUrl(url, {
+        version: htmlCacheVersion(HTML_CACHE_VERSION, env, developmentSitesArePublic(env)),
+        day: dataDay(),
+      })
     : null;
+  const key = keyInfo ? new Request(keyInfo.url, { method: "GET" }) : null;
 
   if (cache && key) {
     const hit = await cache.match(key);
@@ -118,15 +125,19 @@ async function withHtmlEdgeCache(request, env, ctx, render) {
 
   const response = await render();
 
-  if (cache && key && response?.status === 200) {
+  if (cache && key && !keyInfo.droppedParams && response?.status === 200) {
     const contentType = response.headers.get("Content-Type") || "";
-    if (contentType.includes("text/html")) {
-      const ttl = htmlCacheTtl(response);
+    const ttl = htmlCacheTtl(response);
+    if (contentType.includes("text/html") && ttl > 0 && !cacheControlForbidsStore(response.headers.get("Cache-Control"))) {
+      const html = await response.text();
       const headers = new Headers(response.headers);
-      // Advertise edge-cache eligibility (s-maxage) so the owner's dashboard
-      // Cache Rule, once deployed, honors the same TTL; also store the copy.
-      headers.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
-      const upgraded = new Response(response.body, {
+      if (isNoindexResponse(headers, html)) {
+        return new Response(html, { status: response.status, statusText: response.statusText, headers });
+      }
+      // s-maxage + stale-while-revalidate also let the owner's dashboard
+      // Cache Rule, once deployed, honor the same TTL.
+      headers.set("Cache-Control", edgeCacheControl(ttl));
+      const upgraded = new Response(html, {
         status: response.status,
         statusText: response.statusText,
         headers,
