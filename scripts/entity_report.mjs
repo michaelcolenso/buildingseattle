@@ -115,6 +115,6 @@ try {
   main();
 } catch (err) {
   console.error("Report failed:", err.message);
-  console.error("Make sure wrangler is authenticated and the entity graph tables exist (run migration_entity_graph.sql).");
+  console.error("Make sure wrangler is authenticated and the entity graph tables exist (see migrations/ and schema.sql).");
   process.exit(1);
 }

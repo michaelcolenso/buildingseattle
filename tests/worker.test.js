@@ -1682,7 +1682,7 @@ test("ADU classification migration backfills realistic permit descriptions", () 
   for (const fixture of fixtures) insert.run(...fixture);
 
   const migration = readFileSync(
-    new URL("../migration_permit_adu_classification.sql", import.meta.url),
+    new URL("../migrations/legacy/migration_permit_adu_classification.sql", import.meta.url),
     "utf8",
   );
   db.exec(migration);
@@ -1775,7 +1775,7 @@ test("ADU classification agrees between the migration SQL and the worker classif
     insert.run(`DIFF${index}`, description),
   );
   db.exec(
-    readFileSync(new URL("../migration_permit_adu_classification.sql", import.meta.url), "utf8"),
+    readFileSync(new URL("../migrations/legacy/migration_permit_adu_classification.sql", import.meta.url), "utf8"),
   );
   const sqlResults = new Map(
     db
@@ -1793,7 +1793,7 @@ test("ADU classification agrees between the migration SQL and the worker classif
 
 test("migration SQL and worker reclassification SQL do not drift", () => {
   const migration = readFileSync(
-    new URL("../migration_permit_adu_classification.sql", import.meta.url),
+    new URL("../migrations/legacy/migration_permit_adu_classification.sql", import.meta.url),
     "utf8",
   );
   const collapse = (sql) => sql.replace(/\s+/g, " ").trim();
