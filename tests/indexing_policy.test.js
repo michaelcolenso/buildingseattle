@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import worker, { buildEntityHubQuery, buildEntityHubState } from "../worker.js";
+import worker, { buildEntityHubQuery, buildEntityHubState, buildHomeSnapshot } from "../worker.js";
 import {
   MULTI_PERMIT_PROJECT_SQL,
   PROJECT_SUBSET_NOINDEX_MAX_PERMITS,
@@ -473,4 +473,16 @@ test("permit pages link only neighborhood pages the graph built, never placehold
   assert.deepEqual(await neighborhoodLinks("7000301-CN"), [], "Other Seattle is not linked");
   assert.deepEqual(await neighborhoodLinks("7000501-CN"), [], "no graph neighborhood, no link");
   assert.equal((await get(env, "/neighborhood/lower-queen-anne")).status, 404);
+});
+
+test("homepage rankings leave out placeholder neighborhoods and city-only addresses (G5)", async () => {
+  const db = seededDatabase();
+  db.exec("UPDATE permits SET issued_date = date('now', '-3 days')");
+  const snapshot = await buildHomeSnapshot(createEnv(db));
+  const neighborhoods = snapshot.neighborhoods30d.map((row) => row.label);
+  const addresses = snapshot.addresses.map((row) => row.label);
+  assert.ok(neighborhoods.includes("Ballard"), neighborhoods.join());
+  assert.ok(!neighborhoods.includes("Other Seattle"), neighborhoods.join());
+  assert.ok(addresses.includes("400 OAK ST"), addresses.join());
+  assert.ok(!addresses.includes("Seattle, WA"), addresses.join());
 });

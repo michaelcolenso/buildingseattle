@@ -1343,6 +1343,7 @@ export async function buildHomeSnapshot(env) {
        FROM permits p
        WHERE lower(COALESCE(p.status,'')) = 'active'
          AND p.address IS NOT NULL AND trim(p.address) != ''
+         AND NOT EXISTS (SELECT 1 FROM addresses pa WHERE pa.id = p.address_id AND NOT ${realAddressSql("pa")})
        GROUP BY p.address
        ORDER BY active_permits DESC, total_value DESC, p.address ASC
        LIMIT 5`,
@@ -1364,7 +1365,7 @@ export async function buildHomeSnapshot(env) {
       `/* homepage:neighborhoods-30d */
        SELECT p.neighborhood AS label, COUNT(*) AS permits, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value
        FROM permits p
-       WHERE p.neighborhood IS NOT NULL AND trim(p.neighborhood) != ''
+       WHERE p.neighborhood IS NOT NULL AND ${realNeighborhoodSql("p.neighborhood")}
          AND date(COALESCE(p.issued_date, p.applied_date)) >= date('now', '-30 days')
        GROUP BY p.neighborhood
        ORDER BY permits DESC, total_value DESC, p.neighborhood ASC
@@ -8285,7 +8286,7 @@ async function renderOrgContractorPage(slug, env, request) {
          JOIN permits p ON p.id = pp.permit_id
          JOIN address_neighborhoods an ON an.address_id = p.address_id
          JOIN neighborhoods n ON n.id = an.neighborhood_id
-         WHERE pp.people_org_id = ? GROUP BY n.id ORDER BY cnt DESC LIMIT 5`,
+         WHERE pp.people_org_id = ? AND ${realNeighborhoodSql("n.name")} GROUP BY n.id ORDER BY cnt DESC LIMIT 5`,
         [org.id],
       ),
       safeAll(env, `SELECT DISTINCT role FROM permit_participants WHERE people_org_id = ?`, [org.id]),
