@@ -10,11 +10,16 @@
 // - referrer and user agent are truncated;
 // - a cache hit logs the same route template a miss logs (`/permits/:id`),
 //   so hits and misses no longer split the top-pages numbers;
-// - the daily cron deletes rows older than PAGE_VIEW_RETENTION_DAYS in
-//   bounded batches (`prunePageViews`).
+// - its own daily cron (PAGE_VIEW_RETENTION_CRON, a quiet hour away from the
+//   13:00 UTC ingest, so the deletes never compete with ingest writes for the
+//   single-threaded D1 database; review S7) deletes rows older than
+//   PAGE_VIEW_RETENTION_DAYS in bounded batches (`prunePageViews`).
 // Human traffic is also measured, cookieless, by Cloudflare Web Analytics.
 
 export const PAGE_VIEW_RETENTION_DAYS = 90;
+// Must match the second entry of [triggers] crons in wrangler.toml
+// (tests/page_views.test.js checks). 09:30 UTC is 01:30/02:30 in Seattle.
+export const PAGE_VIEW_RETENTION_CRON = "30 9 * * *";
 export const PAGE_VIEW_FIELD_MAX_CHARS = 300;
 export const PAGE_VIEW_PRUNE_BATCH_SIZE = 5000;
 export const PAGE_VIEW_PRUNE_MAX_BATCHES = 40;

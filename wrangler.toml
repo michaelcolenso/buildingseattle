@@ -19,8 +19,11 @@ directory = "./public"
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
+# 13:00 UTC: base-feed ingest, entity-graph rebuild, alerts (runScheduledIngest).
+# 09:30 UTC: page_views retention on its own quiet hour (PAGE_VIEW_RETENTION_CRON
+# in page_views.js; scheduled() dispatches on event.cron).
 [triggers]
-crons = ["0 13 * * *"]
+crons = ["0 13 * * *", "30 9 * * *"]
 
 # Persist Workers Logs so the next GitHub auto-deploy does not wipe
 # script-settings observability (enabled live 2026-09-05 via API).

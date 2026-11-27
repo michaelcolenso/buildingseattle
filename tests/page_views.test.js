@@ -8,6 +8,7 @@ import {
   ANALYTICS_MAX_DAYS,
   clampAnalyticsDays,
   isLikelyBot,
+  PAGE_VIEW_RETENTION_CRON,
   pageViewSampleRate,
   pageViewTemplatePath,
   prunePageViews,
@@ -194,13 +195,25 @@ test("the daily cron runs page_views retention alongside the ingest", async () =
   const originalError = console.error;
   console.error = () => {};
   try {
-    await worker.scheduled({}, env, { waitUntil(p) { waits.push(p); } });
+    await worker.scheduled({ cron: PAGE_VIEW_RETENTION_CRON }, env, { waitUntil(p) { waits.push(p); } });
     await Promise.allSettled(waits);
+    assert.equal(deletes.length, 1, "one bounded delete ran (and stopped: nothing to prune)");
+    // The ingest trigger never runs retention (S7).
+    await worker.scheduled({ cron: "0 13 * * *" }, env, { waitUntil(p) { waits.push(p); } });
+    await Promise.allSettled(waits);
+    assert.equal(deletes.length, 1, "the ingest cron does not prune page_views");
   } finally {
     globalThis.fetch = originalFetch;
     console.error = originalError;
   }
-  assert.equal(deletes.length, 1, "one bounded delete ran (and stopped: nothing to prune)");
+});
+
+test("wrangler.toml has the ingest cron and the separate retention cron (S7)", () => {
+  const toml = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  const crons = JSON.parse(toml.match(/^crons\s*=\s*(\[[^\]]*\])/m)[1]);
+  assert.deepEqual(crons, ["0 13 * * *", PAGE_VIEW_RETENTION_CRON]);
+  const [minute, hour] = PAGE_VIEW_RETENTION_CRON.split(" ").map(Number);
+  assert.ok(Math.abs(hour * 60 + minute - 13 * 60) >= 120, "retention runs well away from the 13:00 UTC ingest");
 });
 
 test("/api/admin/analytics clamps days to 1..30", async () => {

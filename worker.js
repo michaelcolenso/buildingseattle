@@ -59,7 +59,9 @@ import {
   isAdminPath, isNoindexResponse, noindexIsCacheable, pageCacheTtl,
 } from "./edge_cache.js";
 import { claimEntityGraphRebuild, ENTITY_GRAPH_LOCKED_CODE, entityGraphRebuildLockedError } from "./rebuild_lock.js";
-import { clampAnalyticsDays, pageViewSampleRate, pageViewTemplatePath, recordPageView, runPageViewRetention } from "./page_views.js";
+import {
+  clampAnalyticsDays, PAGE_VIEW_RETENTION_CRON, pageViewSampleRate, pageViewTemplatePath, recordPageView, runPageViewRetention,
+} from "./page_views.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -694,11 +696,16 @@ export default {
     });
   },
 
+  // Two cron triggers (wrangler.toml): page-view retention on its own quiet
+  // hour, so its deletes never share an invocation or the D1 database's
+  // attention with the ingest (review S7); every other trigger (the 13:00 UTC
+  // one, or a manual run without a cron) is the ingest.
   async scheduled(event, env, ctx) {
+    if (event?.cron === PAGE_VIEW_RETENTION_CRON) {
+      ctx.waitUntil(runPageViewRetention(env));
+      return;
+    }
     ctx.waitUntil(runScheduledIngest(env));
-    // Independent of the ingest so a failed ingest never skips it; bounded
-    // batches keep it light (see page_views.js).
-    ctx.waitUntil(runPageViewRetention(env));
   },
 };
 
