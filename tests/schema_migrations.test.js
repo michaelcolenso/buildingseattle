@@ -153,3 +153,30 @@ test("no numbered migration adds an index that duplicates an existing one (S1)",
   }
   db.close();
 });
+
+test("deploy docs apply migrations before the merge, and the runbook lists every migration (B1)", () => {
+  // A push to main deploys, and the new code fails on an unmigrated database,
+  // so the documented order must be: bookmark, bootstrap, apply, verify, merge.
+  const claude = read("CLAUDE.md");
+  assert.doesNotMatch(claude, /after this change is merged and deployed/);
+  assert.match(claude, /bootstrap: run it BEFORE merging/);
+
+  const runbook = read("docs/deploy-runbook.md");
+  const at = (text) => {
+    const index = runbook.indexOf(text);
+    assert.ok(index >= 0, `runbook mentions ${text}`);
+    return index;
+  };
+  const bookmark = at("d1 time-travel info buildingseattle");
+  const dupCheck = at("FROM basis_reset_events GROUP BY 1,2,3 HAVING COUNT(*) > 1");
+  const bootstrap = at("INSERT OR IGNORE INTO d1_migrations (name) VALUES ('0000_baseline.sql')");
+  const apply = at("d1 migrations apply buildingseattle --remote");
+  const merge = at("## Merge");
+  assert.ok(bookmark < dupCheck && dupCheck < bootstrap && bootstrap < apply && apply < merge);
+  at("--no-data");
+
+  // Every numbered migration after the baseline is named in the verify step.
+  for (const name of migrationFiles().filter((f) => !f.startsWith("0000_"))) {
+    assert.ok(runbook.includes(name), `runbook's verify step names ${name}`);
+  }
+});

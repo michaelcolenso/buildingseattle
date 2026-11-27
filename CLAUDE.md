@@ -144,20 +144,24 @@ Schema changes use `wrangler d1 migrations` (`migrations_dir = "migrations"` on 
 - Never edit a migration that production has applied; add a new one. Never run `schema.sql` or a migration file against production with `d1 execute --file`.
 - `migrations/legacy/` holds the old hand-applied `migration_*.sql` files for history only (wrangler reads `migrations/*.sql`, not subdirectories). Its README says which ones production has; `migration_alert_watches.sql` was never applied and nothing uses it.
 
-**One-time production bootstrap** (run once, in this order, after this change is merged and deployed; do not run the baseline itself):
+**One-time production bootstrap: run it BEFORE merging.** Pushing `main` deploys immediately, and the new code fails against an unmigrated database: the first cron dies on `no such column: cursor`, and the alert and keyed API routes return 500. Old code runs fine on the migrated schema. The full ordered release checklist, with every owner step and which ones are reversible, is `docs/deploy-runbook.md`. The database part, in order (do not run the baseline itself):
 
 ```bash
+# 0. Restore point, plus pre-checks (see the runbook for details)
+npx wrangler d1 time-travel info buildingseattle            # keep the bookmark
+npx wrangler d1 export buildingseattle --remote --no-data --output prod-schema.sql   # diff against 0000_baseline.sql
+npx wrangler d1 execute buildingseattle --remote --command "SELECT source_url, event_type, event_date, COUNT(*) FROM basis_reset_events GROUP BY 1,2,3 HAVING COUNT(*) > 1"   # must be 0 rows before 0001
 # 1. Create wrangler's tracking table (same DDL wrangler uses) and mark the baseline applied
 npx wrangler d1 execute buildingseattle --remote --command "CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL); INSERT OR IGNORE INTO d1_migrations (name) VALUES ('0000_baseline.sql');"
 # 2. Confirm: 0000_baseline.sql must NOT be listed; 0001_hot_query_indexes.sql (and later) should be
 npx wrangler d1 migrations list buildingseattle --remote
 # 3. Apply the pending migrations (wrangler asks for confirmation)
 npx wrangler d1 migrations apply buildingseattle --remote
-# 4. Verify
+# 4. Verify, then merge
 npx wrangler d1 execute buildingseattle --remote --command "SELECT name, applied_at FROM d1_migrations ORDER BY id"
 ```
 
-If step 2 lists `0000_baseline.sql`, stop: step 1 did not take, and applying would re-run the baseline (harmless because every statement is `IF NOT EXISTS`, but it should not be needed).
+If step 2 lists `0000_baseline.sql`, stop: step 1 did not take, and applying would re-run the baseline (harmless because every statement is `IF NOT EXISTS`, but it should not be needed). The same rule holds for every later migration: apply it with `migrations apply --remote` before merging the code that needs it.
 
 ### Entity Graph
 
