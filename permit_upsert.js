@@ -75,6 +75,26 @@ ${sets}
 
 export const PERMIT_UPSERT_SQL = buildPermitUpsertSql();
 
+/**
+ * Run in the same batch *after* PERMIT_UPSERT_SQL. The upsert skips a row
+ * whose tracked columns are unchanged, which would also leave the stored
+ * source_updated_at behind; a later stale record stamped between the two
+ * would then pass the guard. This advances the watermark alone, without
+ * touching updated_at, and only ever forward. It writes nothing when the
+ * upsert already stored the stamp.
+ */
+export const PERMIT_WATERMARK_SQL = `
+  UPDATE permits SET source_updated_at = ?
+  WHERE permit_number = ?
+    AND ? IS NOT NULL
+    AND (source_updated_at IS NULL OR source_updated_at < ?)
+`;
+
+export function permitWatermarkBinds(permit) {
+  const stamp = textOrNull(permit.source_updated_at);
+  return [stamp, permit.permit_number, stamp, stamp];
+}
+
 function intOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);

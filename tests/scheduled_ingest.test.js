@@ -226,6 +226,35 @@ test("unchanged rows keep updated_at; changed rows move it; lat/lng/zip are stor
   assert.deepEqual({ ...log }, { records_updated: 1, records_unchanged: 1 });
 });
 
+test("an unchanged re-stamped row still advances source_updated_at; counts stay 'unchanged'", async () => {
+  const db = openDatabase();
+  const rows = [feedRow(1)];
+  const feed = fakeSocrata(rows);
+  logRun(db, "full_sweep", "2026-11-26 13:00:00");
+  const env = createEnv(db);
+  await runScheduledIngest(env, { ...fast, fetchImpl: feed.fetchImpl });
+  db.exec("UPDATE permits SET updated_at = '2026-05-01 00:00:00'");
+  db.exec("DELETE FROM ingest_logs WHERE run_type = 'scheduled'");
+  rows[0][":updated_at"] = "2026-11-28T01:00:00.000Z";
+  const second = await runScheduledIngest(env, { ...fast, fetchImpl: feed.fetchImpl });
+  assert.equal(second.unchanged, 1);
+  assert.equal(second.updated, 0);
+  const stored = permit(db, "7000001-CN");
+  assert.equal(stored.source_updated_at, "2026-11-28T01:00:00.000Z");
+  assert.equal(stored.updated_at, "2026-05-01 00:00:00");
+});
+
+test("a new permit links to a contractor whose stored name differs only in punctuation", async () => {
+  const db = openDatabase();
+  db.exec("INSERT INTO contractors (name, slug) VALUES ('ACME BUILDERS, LLC', 'acme-builders-llc')");
+  const feed = fakeSocrata([feedRow(1, { contractorcompanyname: "Acme Builders LLC" })]);
+  logRun(db, "full_sweep", "2026-11-26 13:00:00");
+  await runScheduledIngest(createEnv(db), { ...fast, fetchImpl: feed.fetchImpl });
+  const contractor = db.prepare("SELECT id, name FROM contractors WHERE slug = 'acme-builders-llc'").get();
+  assert.equal(contractor.name, "ACME BUILDERS, LLC", "curated name kept");
+  assert.equal(permit(db, "7000001-CN").contractor_id, contractor.id);
+});
+
 test("a run that hits its page cap stores a cursor and the next run resumes from it", async () => {
   const db = openDatabase();
   const rows = Array.from({ length: 5 }, (_, n) => feedRow(n + 1, { ":updated_at": `2026-11-28T0${n}:00:00.000Z` }));

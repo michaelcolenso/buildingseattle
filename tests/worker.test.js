@@ -186,8 +186,8 @@ function createEnv() {
               return { results: statuses };
             }
 
-            if (sql.includes("SELECT id, name FROM contractors")) {
-              return { results: contractors.map((contractor) => ({ id: contractor.id, name: contractor.name })) };
+            if (sql.trim() === "SELECT id, slug FROM contractors") {
+              return { results: contractors.map((contractor) => ({ id: contractor.id, slug: contractor.slug })) };
             }
 
             if (sql.includes("SELECT id, slug FROM contractors WHERE slug IN")) {

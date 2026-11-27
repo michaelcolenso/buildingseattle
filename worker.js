@@ -29,7 +29,7 @@ import {
   assertFeedPage, assertMappingHealth, buildFeedQuery, cursorAfterPage, DEFAULT_COVERAGE_FLOOR, detectFullReplace,
   encodeCursor, FEED_LIMITS, feedPageUrl, fetchFeedPage, planFeedRun, SDCI_PERMIT_URL,
 } from "./sdci_feed.js";
-import { PERMIT_UPSERT_SQL, permitUpsertBinds, STATUS_CHANGE_INSERT_SQL, statusChangeBinds } from "./permit_upsert.js";
+import { PERMIT_UPSERT_SQL, permitUpsertBinds, PERMIT_WATERMARK_SQL, permitWatermarkBinds, STATUS_CHANGE_INSERT_SQL, statusChangeBinds } from "./permit_upsert.js";
 import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
@@ -9288,14 +9288,22 @@ async function upsertScheduledContractors(env, contractors) {
   }
 }
 
+// Keyed by slug, the same key upsertScheduledContractors conflicts on. The
+// stored name can differ from the feed's spelling (the enrichment ingest sets
+// the L&I business name, e.g. "ACME BUILDERS, LLC" for "Acme Builders LLC"),
+// so a name key would leave new permits unlinked.
 async function loadContractorMap(env) {
-  const { results } = await env.DB.prepare("SELECT id, name FROM contractors").all();
+  const { results } = await env.DB.prepare("SELECT id, slug FROM contractors").all();
   const map = new Map();
   for (const contractor of results || []) {
-    const key = String(contractor.name || "").toLowerCase();
-    if (key) map.set(key, contractor.id);
+    if (contractor.slug) map.set(contractor.slug, contractor.id);
   }
   return map;
+}
+
+function contractorIdFor(contractors, contractorName) {
+  const slug = contractorName ? slugify(contractorName) : "";
+  return slug ? contractors.get(slug) || null : null;
 }
 
 // Decide whether a status difference is a real change worth an alert. Rows
@@ -9333,13 +9341,14 @@ async function upsertScheduledPermits(env, permits, contractorMap = null) {
       const incomingStatus = normalizeStoredStatus(permit.status);
       const change = statusChangeFor(existing.get(permit.permit_number), permit, incomingStatus);
       if (change) statusChanges.push(change);
-      const contractorId = permit.contractor_name ? contractors.get(permit.contractor_name.toLowerCase()) || null : null;
+      const contractorId = contractorIdFor(contractors, permit.contractor_name);
       return env.DB.prepare(PERMIT_UPSERT_SQL).bind(...permitUpsertBinds(permit, { contractorId, status: incomingStatus }));
     });
 
     const reclassifyStatement = buildAduReclassificationStatement(env, permitNumbers);
     if (reclassifyStatement) statements.push(reclassifyStatement);
     statements.push(...buildStatusChangeStatements(env, statusChanges));
+    statements.push(...batchPermits.map((permit) => env.DB.prepare(PERMIT_WATERMARK_SQL).bind(...permitWatermarkBinds(permit))));
 
     const results = statements.length ? await env.DB.batch(statements) : [];
     batchPermits.forEach((permit, index) => {
@@ -9456,8 +9465,8 @@ async function ingestPermit(request, env) {
   // Resolve contractor_id from contractor_name if provided
   let contractorId = null;
   if (data.contractor_name) {
-    const contractor = await env.DB.prepare(`SELECT id FROM contractors WHERE name = ? COLLATE NOCASE`)
-      .bind(data.contractor_name)
+    const contractor = await env.DB.prepare(`SELECT id FROM contractors WHERE slug = ? OR name = ? COLLATE NOCASE LIMIT 1`)
+      .bind(slugify(data.contractor_name), data.contractor_name)
       .first();
     if (contractor) {
       contractorId = contractor.id;
@@ -9469,6 +9478,7 @@ async function ingestPermit(request, env) {
   if (reclassifyStatement) statements.push(reclassifyStatement);
   const change = statusChangeFor(existingPermit, data, incomingStatus);
   if (change) statements.push(...buildStatusChangeStatements(env, [change]));
+  statements.push(env.DB.prepare(PERMIT_WATERMARK_SQL).bind(...permitWatermarkBinds(data)));
   await env.DB.batch(statements);
 
   return new Response(JSON.stringify({ success: true }), {

@@ -4,7 +4,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import worker from "../worker.js";
-import { PERMIT_UPSERT_COLUMNS, PERMIT_UPSERT_SQL, permitUpsertBinds, zipOrNull } from "../permit_upsert.js";
+import { PERMIT_UPSERT_COLUMNS, PERMIT_UPSERT_SQL, PERMIT_WATERMARK_SQL, permitUpsertBinds, permitWatermarkBinds, zipOrNull } from "../permit_upsert.js";
 
 // The shared permit upsert (audit C5, C8, C16) on real SQLite.
 
@@ -130,4 +130,23 @@ test("/api/permits pages are stable when issued_date ties or is NULL (C11)", asy
     seen.push(...(await response.json()).results.map((r) => r.permit_number));
   }
   assert.equal(new Set(seen).size, 30);
+});
+
+test("an unchanged newer record still advances the watermark, so a stale record between them is refused", () => {
+  const db = openDatabase();
+  const write = (permit) => {
+    const changes = upsert(db, permit);
+    db.prepare(PERMIT_WATERMARK_SQL).run(...permitWatermarkBinds(permit));
+    return changes;
+  };
+  write({ ...base, value: 100000, source_updated_at: "2026-11-01T00:00:00.000Z" });
+  db.exec("UPDATE permits SET updated_at = '2026-05-01 00:00:00'");
+  assert.equal(write({ ...base, value: 100000, source_updated_at: "2026-11-03T00:00:00.000Z" }), 0);
+  assert.equal(row(db).source_updated_at, "2026-11-03T00:00:00.000Z");
+  assert.equal(row(db).updated_at, "2026-05-01 00:00:00", "metadata-only bump keeps updated_at");
+  assert.equal(write({ ...base, value: 50, source_updated_at: "2026-11-02T00:00:00.000Z" }), 0);
+  assert.equal(row(db).value, 100000, "stale record refused");
+  assert.equal(row(db).source_updated_at, "2026-11-03T00:00:00.000Z", "watermark never moves back");
+  write({ ...base, value: 50, source_updated_at: null });
+  assert.equal(row(db).value, 100000, "unstamped record cannot roll a stamped row back");
 });
