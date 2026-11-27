@@ -564,6 +564,38 @@ test("MCP search_permits is sample-sized without a key and full with one", async
   assert.equal(keyed.result.structuredContent.results[0].detailed_description, "Long enriched text");
 });
 
+test("/api/contractors and MCP list_contractors hide phone and email from anonymous callers (N11)", async () => {
+  const db = openDatabase();
+  db.prepare("INSERT INTO contractors (id, name, slug, phone, email, website) VALUES (1, 'Acme', 'acme', '206-555-0100', 'hi@acme.example', 'https://acme.example')").run();
+  db.exec("UPDATE permits SET contractor_id = 1 WHERE permit_number IN ('P-1', 'P-2')");
+  const env = createEnv(db, { API_KEYS: API_KEY });
+
+  const anonymous = await call(env, "/api/contractors");
+  const [row] = await anonymous.json();
+  assert.equal(row.name, "Acme");
+  assert.equal(row.active_projects, 2);
+  assert.equal(row.website, "https://acme.example");
+  assert.equal("phone" in row, false);
+  assert.equal("email" in row, false);
+  assert.match(anonymous.headers.get("Cache-Control"), /public/);
+  assert.match(anonymous.headers.get("Vary") || "", /X-API-Key/);
+
+  const keyed = await call(env, "/api/contractors", { headers: { "X-API-Key": API_KEY } });
+  const [full] = await keyed.json();
+  assert.equal(full.phone, "206-555-0100");
+  assert.equal(full.email, "hi@acme.example");
+  assert.equal(keyed.headers.get("Cache-Control"), "private, no-store");
+
+  const mcp = (headers = {}) =>
+    call(env, "/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_contractors", arguments: {} } }),
+    }).then((response) => response.json());
+  assert.doesNotMatch(JSON.stringify((await mcp()).result), /206-555-0100|hi@acme\.example/);
+  assert.match(JSON.stringify((await mcp({ "X-API-Key": API_KEY })).result), /hi@acme\.example/);
+});
+
 test("MCP refuses foreign browser Origins and echoes allowed ones", async () => {
   const db = openDatabase();
   const env = createEnv(db, { MCP_ALLOWED_ORIGINS: "https://inspector.example" });

@@ -48,7 +48,7 @@ import {
   ALERT_SEND_BATCH_LIMIT, ANON_API_MAX_PAGE, FILTER_PARAM_MAX_LENGTH, LEAD_IP_HOURLY_LIMIT, LEAD_TEXT_MAX_LENGTH,
   PERMIT_NUMBER_MAX_LENGTH, SEARCH_QUERY_MAX_LENGTH, THEME_BOOT_SCRIPT_SHA256,
   apiLimits, checkRateLimit, clientIp, isCrossSiteRequest, isJsonContentType, parseIntegerParam,
-  rateLimitKey, resolveApiAccess, slimPermitRow, timingSafeEqualString, turnstileEnabled, verifyTurnstile,
+  rateLimitKey, resolveApiAccess, slimContractorRow, slimPermitRow, timingSafeEqualString, turnstileEnabled, verifyTurnstile,
 } from "./security.js";
 import {
   cacheControlForbidsStore, dataDay, edgeCacheControl, hardenAdminResponse, htmlCacheKeyUrl, htmlCacheVersion,
@@ -341,7 +341,7 @@ export default {
       }
 
       if (path === "/api/contractors") {
-        return secure(await getContractors(request, env));
+        return secure(await getContractors(request, env, { access: apiAccess }));
       }
 
       if (path === "/api/stats") {
@@ -3824,10 +3824,13 @@ async function renderPermitDetail(permitNumber, env, request) {
   });
 }
 
-async function getContractors(request, env) {
+async function getContractors(request, env, { access = null } = {}) {
   // Only contractors with active permit work qualify (the JOIN + HAVING do the
-  // filtering), ranked by active project count.
-  const results = await dbAll(
+  // filtering), ranked by active project count. Anonymous callers get no
+  // contact details (phone, email); keyed callers keep them and their answer
+  // is never stored by a shared cache (review N11).
+  const keyed = access?.tier === "key";
+  const rows = await dbAll(
     env,
     `/* api:active-contractors */
      SELECT c.*, COUNT(p.id) AS active_projects
@@ -3840,12 +3843,14 @@ async function getContractors(request, env) {
      ORDER BY active_projects DESC, c.name ASC
      LIMIT 20`,
   );
+  const results = keyed ? rows : rows.map(slimContractorRow);
 
   return new Response(JSON.stringify(results), {
     headers: {
       ...corsHeaders,
       "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=300, s-maxage=300",
+      "Cache-Control": keyed ? "private, no-store" : "public, max-age=300, s-maxage=300",
+      Vary: "X-API-Key, Authorization",
     },
   });
 }
@@ -9950,7 +9955,7 @@ function renderApiSpecObject() {
           summary: "List contractors ranked by active project count (top 20).",
           responses: {
             200: {
-              description: "Contractor records, each including an active_projects count.",
+              description: "Contractor records, each including an active_projects count. phone and email are included only with an API key.",
               content: { "application/json": { schema: { type: "array", items: { type: "object" } } } },
             },
           },
@@ -10090,7 +10095,7 @@ function renderApiDocs() {
         ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1). Anonymous callers can read the first 10 pages."), param("per_page", "Results per page (1-100 with an API key, default 50; anonymous callers get at most 25 summary rows). Send an X-API-Key header for full rows.")].join(""))}
         <p>Permit results include six nullable development-site fields: <code>development_site_id</code>, <code>development_site_sqft</code>, <code>development_site_status</code>, <code>development_site_source_updated_at</code>, <code>development_site_fetched_at</code>, and <code>development_site_geometry_url</code>. Source dates may be unknown. The existing <code>parcel_number</code> is an SDCI property reference, usually a development-site ID.</p>
         ${endpoint("GET", "/api/development-sites/{id}/geometry", "Current boundary as a GeoJSON Feature with source attribution and UTC timestamps. Returns 404 without a usable boundary. Geometry links are live: they may change or disappear after refresh and do not freeze the boundary to a CSV export date.", param("id", "SDCI development-site ID, such as DV0025961."))}
-        ${endpoint("GET", "/api/contractors", "List the top 20 contractors ranked by active project count. Each record includes an active_projects count.", "")}
+        ${endpoint("GET", "/api/contractors", "List the top 20 contractors ranked by active project count. Each record includes an active_projects count; phone and email need an API key.", "")}
         ${endpoint("GET", "/api/stats", "Aggregate counts and permit value totals for the dashboard.", "")}
         <h2>Machine-readable resources</h2>
         <div class="resources">
@@ -10120,7 +10125,7 @@ async function executeMcpTool(name, args, env, requestUrl, access = null) {
     }
     response = await getPermits(new Request(url), env, { access });
   } else if (name === "list_contractors") {
-    response = await getContractors(new Request(new URL("/api/contractors", requestUrl)), env);
+    response = await getContractors(new Request(new URL("/api/contractors", requestUrl)), env, { access });
   } else {
     response = await getStats(env);
   }

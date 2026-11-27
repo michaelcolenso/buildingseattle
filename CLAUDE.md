@@ -238,7 +238,9 @@ Tables: `migrations/0002_security_hardening.sql` (newer migrations live in
 `/api/permits` and the MCP `search_permits` tool give anonymous callers a sample
 (25 slim rows per page, first 10 pages; constants in `security.js`). An
 `X-API-Key` (or `Authorization: Bearer`) matching `env.API_KEYS` (comma list) or
-an unrevoked sha256 in `api_keys` unlocks full rows and paging. `API_RATE_LIMITER`
+an unrevoked sha256 in `api_keys` unlocks full rows and paging. `/api/contractors`
+and MCP `list_contractors` drop contractor `phone` and `email` for anonymous
+callers (`slimContractorRow`); keyed answers are `private, no-store`. `API_RATE_LIMITER`
 / `API_KEY_RATE_LIMITER` throttle `/api/*` and `/mcp` when bound. JSON responses
 carry `X-Robots-Tag: noindex`. The CSP forbids inline scripts except the theme
 boot script (allowed by hash, `THEME_BOOT_SCRIPT_SHA256`) and all inline `on*`

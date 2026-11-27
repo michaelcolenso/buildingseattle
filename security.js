@@ -286,6 +286,17 @@ export function apiLimits(access) {
     : { maxPerPage: ANON_API_MAX_PER_PAGE, maxPage: ANON_API_MAX_PAGE };
 }
 
+// Contractor contact details from the curated contractors table are part of
+// the paid dataset: /api/contractors and MCP list_contractors drop them for
+// anonymous callers (review N11).
+export const CONTRACTOR_CONTACT_FIELDS = ["phone", "email"];
+
+export function slimContractorRow(row) {
+  const slim = { ...(row || {}) };
+  for (const field of CONTRACTOR_CONTACT_FIELDS) delete slim[field];
+  return slim;
+}
+
 export function slimPermitRow(row) {
   const slim = {};
   for (const field of ANON_PERMIT_FIELDS) {
