@@ -9,6 +9,8 @@ import os
 
 CF_WORKER_URL = "http://localhost:8787"  # Default to local dev; pass URL as arg for prod
 BATCH_SIZE = 100
+# /ingest/permit/batch rejects more than 100 items per request (HTTP 413).
+MAX_BATCH_SIZE = 100
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
@@ -36,6 +38,14 @@ def ingest_headers():
     return {"X-Ingest-Token": token}
 
 
+def batch_size_arg(value):
+    """argparse type: an int between 1 and MAX_BATCH_SIZE."""
+    size = int(value)
+    if not 1 <= size <= MAX_BATCH_SIZE:
+        raise argparse.ArgumentTypeError(f"batch size must be between 1 and {MAX_BATCH_SIZE}")
+    return size
+
+
 def build_parser():
     """Build command-line arguments for data imports."""
     parser = argparse.ArgumentParser(description="Import scraped Seattle permit data into the Worker API.")
@@ -45,16 +55,14 @@ def build_parser():
         default=CF_WORKER_URL,
         help=f"Worker base URL. Defaults to {CF_WORKER_URL}.",
     )
-    parser.add_argument(
-        "--replace-all",
-        action="store_true",
-        help="Clear imported permits and contractors before importing the local JSONL files.",
-    )
+    # There is deliberately no --replace-all: the endpoint it called deleted
+    # every permit, contractor and status change with the shared ingest token.
+    # Imports are idempotent upserts; see CLAUDE.md for recovery.
     parser.add_argument(
         "--batch-size",
-        type=int,
+        type=batch_size_arg,
         default=BATCH_SIZE,
-        help=f"Records per ingest request. Defaults to {BATCH_SIZE}. Use 25-50 for production retries.",
+        help=f"Records per ingest request (1-{MAX_BATCH_SIZE}). Defaults to {BATCH_SIZE}. Use 25-50 for production retries.",
     )
     parser.add_argument(
         "--retries",
@@ -142,26 +150,6 @@ async def post_batch_with_retries(client, url, endpoint, batch, headers, retries
     return last_response
 
 
-async def replace_all_data(client, url):
-    """Request a guarded full refresh before importing data."""
-    print("\nClearing imported permits and contractors before import...")
-    response = await client.post(
-        f"{url}/ingest/refresh",
-        json={"confirm": "replace-all"},
-        timeout=60.0,
-        headers=ingest_headers(),
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"Full refresh failed - HTTP {response.status_code}: {response.text[:200]}")
-
-    payload = response.json()
-    print(
-        "  Cleared "
-        f"{payload.get('permits_deleted', 0)} permits and "
-        f"{payload.get('contractors_deleted', 0)} contractors"
-    )
-
-
 async def import_contractors(client, url, batch_size=BATCH_SIZE, retries=4):
     """Import contractors from seattle_contractors.jsonl."""
     try:
@@ -202,8 +190,6 @@ async def main():
     print(f"Importing to: {url}")
 
     async with httpx.AsyncClient() as client:
-        if args.replace_all:
-            await replace_all_data(client, url)
         await import_contractors(client, url, batch_size=args.batch_size, retries=args.retries)
         await import_permits(client, url, batch_size=args.batch_size, retries=args.retries)
 

@@ -2,8 +2,8 @@
 
 import {
   buildEntityGraph,
-  parseAddress,
   makeSlug,
+  unaddressableAddressSql,
   guessOrgType,
   normalizeOrgName,
 } from "./entity_graph.js";
@@ -15,6 +15,12 @@ import {
   classifyAduPermit,
 } from "./adu.js";
 import { ENTITY_HUBS } from "./entity_hubs.js";
+import { detectNeighborhood, legacyMapPermitStatus, mapSdciStatus, NEIGHBORHOOD_BOUNDS } from "./sdci_mappings.js";
+import {
+  assertFeedPage, assertMappingHealth, buildFeedQuery, cursorAfterPage, DEFAULT_COVERAGE_FLOOR, encodeCursor,
+  FEED_LIMITS, feedPageUrl, fetchFeedPage, planFeedRun, SDCI_PERMIT_URL,
+} from "./sdci_feed.js";
+import { PERMIT_UPSERT_SQL, permitUpsertBinds, STATUS_CHANGE_INSERT_SQL, statusChangeBinds } from "./permit_upsert.js";
 import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
@@ -542,13 +548,10 @@ export default {
         return secure(await ingestContractorBatch(request, env));
       }
 
-      if (path === "/ingest/refresh" && request.method === "POST") {
-        const authError = await requireIngestAuth(request, env);
-        if (authError) {
-          return secure(authError);
-        }
-        return secure(await replaceIngestData(request, env));
-      }
+      // POST /ingest/refresh (delete every permit, contractor and status change,
+      // then re-import) was removed: it let the shared ingest token wipe
+      // production. Upserts are idempotent, so a re-sync is the weekly full
+      // sweep; recovering from bad data is D1 Time Travel (see CLAUDE.md).
 
       if (path === "/api/user") {
         return secure(await checkAuth(request, env));
@@ -887,49 +890,6 @@ function buildAduReclassificationStatement(env, permitNumbers) {
      WHERE id IN (SELECT id FROM classified)`,
   ).bind(...uniquePermitNumbers);
 }
-
-// Upserts permits by permit_number while preserving enrichment-only columns
-// (parcel_number, contractor_license, review_level, inspections, owner_name,
-// last_enriched_at, etc.). Only base-feed columns are overwritten; contractor_id
-// and applicant_name use COALESCE so a null from the feed does not clear an
-// enrichment-supplied value.
-const PERMIT_UPSERT_SQL = `
-  INSERT INTO permits (
-    permit_number, contractor_id, applicant_name, address, neighborhood,
-    type, value, status, description, housing_units,
-    applied_date, issued_date, completed_date,
-    housing_units_added, housing_units_removed, housing_category,
-    dwelling_unit_type, zoning, parent_permit_number, related_mup,
-    number_review_cycles, total_days_plan_review, days_out_corrections,
-    plan_review_complete_date, ready_to_issue_date
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(permit_number) DO UPDATE SET
-    contractor_id = COALESCE(excluded.contractor_id, permits.contractor_id),
-    applicant_name = COALESCE(excluded.applicant_name, permits.applicant_name),
-    address = excluded.address,
-    neighborhood = excluded.neighborhood,
-    type = excluded.type,
-    value = excluded.value,
-    status = excluded.status,
-    description = excluded.description,
-    housing_units = excluded.housing_units,
-    applied_date = excluded.applied_date,
-    issued_date = excluded.issued_date,
-    completed_date = excluded.completed_date,
-    housing_units_added = excluded.housing_units_added,
-    housing_units_removed = excluded.housing_units_removed,
-    housing_category = excluded.housing_category,
-    dwelling_unit_type = excluded.dwelling_unit_type,
-    zoning = excluded.zoning,
-    parent_permit_number = excluded.parent_permit_number,
-    related_mup = excluded.related_mup,
-    number_review_cycles = excluded.number_review_cycles,
-    total_days_plan_review = excluded.total_days_plan_review,
-    days_out_corrections = excluded.days_out_corrections,
-    plan_review_complete_date = excluded.plan_review_complete_date,
-    ready_to_issue_date = excluded.ready_to_issue_date,
-    updated_at = CURRENT_TIMESTAMP
-`;
 
 function dateOrNull(value) {
   if (!value) {
@@ -2404,7 +2364,7 @@ async function getPermits(request, env, { access = null } = {}) {
     params.push(like, like, like, like, like);
   }
 
-  const listQuery = `SELECT p.*, ${siteContext ? developmentSiteColumns() + "," : ""} c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty, c.phone as contractor_phone, c.email as contractor_email FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${siteContext ? developmentSiteJoin() : ""} ${where} ORDER BY p.issued_date DESC LIMIT ${perPage} OFFSET ${offset}`;
+  const listQuery = `SELECT p.*, ${siteContext ? developmentSiteColumns() + "," : ""} c.name as contractor_name, c.slug as contractor_slug, c.specialty as contractor_specialty, c.phone as contractor_phone, c.email as contractor_email FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${siteContext ? developmentSiteJoin() : ""} ${where} ORDER BY p.issued_date DESC, p.id DESC LIMIT ${perPage} OFFSET ${offset}`;
   const countQuery = `SELECT COUNT(*) as total FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id ${where}`;
 
   const [{ results }, { total }] = await Promise.all([
@@ -3696,7 +3656,8 @@ async function getStats(env) {
   const stats = await getCanonicalStats(env);
   const avgValue = await dbFirst(
     env,
-    `/* api:mean-permit-value */ SELECT AVG(value) AS avg_value FROM permits`,
+    // Same counting rule as total_value, so avg_value x permits = total_value.
+    `/* api:mean-permit-value */ SELECT COALESCE(SUM(${countedValueSql("p")}), 0) * 1.0 / NULLIF(COUNT(*), 0) AS avg_value FROM permits p`,
   );
 
   return new Response(
@@ -6921,7 +6882,7 @@ function compactMoney(n) {
 }
 
 // Neighborhood centroids for the bubble map, derived (lazily + memoized) from
-// the canonical NEIGHBORHOOD_BOUNDS defined later in this file. Lazy so it reads
+// the canonical NEIGHBORHOOD_BOUNDS (sdci_mappings.js, data/sdci_mappings.json). Lazy so it reads
 // that const after module evaluation rather than in its temporal dead zone.
 let _neighborhoodCentroids = null;
 function neighborhoodCentroids() {
@@ -7810,7 +7771,7 @@ async function renderAddressPage(slug, env, request) {
     let check = null;
     try {
       check = await env.DB.prepare(
-        `SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL) AS pending,
+        `SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL AND NOT ${unaddressableAddressSql("permits")}) AS pending,
                 (SELECT status FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1) AS last_rebuild`,
       ).first();
     } catch (error) {
@@ -8547,80 +8508,97 @@ async function logIngest(
     .run();
 }
 
-const SDCI_PERMIT_URL = "https://data.seattle.gov/resource/k44w-2dcq.json";
-const SCHEDULED_INGEST_LIMIT = 5000;
-const SCHEDULED_INGEST_PAGE_SIZE = 1000;
+// Scheduled base-feed ingest. Pure feed logic (queries, cursors, retries,
+// schema and mapping guards) lives in sdci_feed.js; status and neighborhood
+// mappings in sdci_mappings.js (data/sdci_mappings.json, shared with
+// sdci_scraper.py); the permit upsert in permit_upsert.js.
+//
+// Each run (1) pulls records whose Socrata :updated_at moved since the last
+// successful `scheduled` run (start time minus an overlap, or the cursor that
+// run stopped at when it hit its page cap), then (2) spends any page budget
+// left on the weekly full sweep (`full_sweep` rows; resumes until it reaches
+// the end of the coverage window). Pages are upserted as they arrive, so a
+// failure keeps every page already written; the next run re-reads from the
+// last success and the upsert is idempotent.
+async function logFeedRun(env, { run_type, status, added = 0, updated = 0, unchanged = 0, error_message = null, cursor = null, start_time, end_time }) {
+  const fmt = (date) => date.toISOString().replace("T", " ").split(".")[0];
+  // Needs migrations/0003_permit_feed_fields.sql (cursor, records_unchanged).
+  await env.DB.prepare(
+    `INSERT INTO ingest_logs (run_type, source, status, records_added, records_updated, records_unchanged, error_message, cursor, start_time, end_time)
+     VALUES (?, 'seattle_open_data', ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(run_type, status, added, updated, unchanged, error_message, cursor, fmt(start_time), fmt(end_time))
+    .run();
+}
 
-const NEIGHBORHOOD_BOUNDS = [
-  ["Ballard", 47.668, 47.692, -122.41, -122.37],
-  ["Crown Hill", 47.692, 47.71, -122.39, -122.37],
-  ["Fremont", 47.65, 47.668, -122.37, -122.34],
-  ["Phinney Ridge", 47.668, 47.692, -122.37, -122.35],
-  ["Greenwood", 47.692, 47.71, -122.37, -122.34],
-  ["Broadview", 47.71, 47.735, -122.37, -122.34],
-  ["Bitter Lake", 47.71, 47.735, -122.36, -122.335],
-  ["Magnolia", 47.63, 47.67, -122.42, -122.385],
-  ["Interbay", 47.64, 47.66, -122.385, -122.365],
-  ["Green Lake", 47.668, 47.692, -122.36, -122.325],
-  ["Wallingford", 47.65, 47.668, -122.34, -122.315],
-  ["Roosevelt", 47.668, 47.685, -122.325, -122.31],
-  ["Maple Leaf", 47.685, 47.71, -122.325, -122.3],
-  ["Northgate", 47.7, 47.72, -122.34, -122.31],
-  ["Licton Springs", 47.692, 47.71, -122.345, -122.325],
-  ["Haller Lake", 47.715, 47.735, -122.345, -122.32],
-  ["Pinehurst", 47.72, 47.74, -122.32, -122.295],
-  ["University District", 47.65, 47.668, -122.315, -122.29],
-  ["Ravenna", 47.668, 47.688, -122.31, -122.28],
-  ["Wedgwood", 47.685, 47.7, -122.3, -122.28],
-  ["View Ridge", 47.68, 47.695, -122.28, -122.26],
-  ["Sand Point", 47.68, 47.695, -122.27, -122.25],
-  ["Laurelhurst", 47.66, 47.68, -122.285, -122.265],
-  ["Bryant", 47.668, 47.685, -122.29, -122.27],
-  ["Meadowbrook", 47.7, 47.715, -122.3, -122.28],
-  ["Lake City", 47.71, 47.735, -122.3, -122.27],
-  ["Olympic Hills", 47.72, 47.74, -122.3, -122.275],
-  ["Queen Anne", 47.625, 47.65, -122.37, -122.345],
-  ["South Lake Union", 47.62, 47.635, -122.345, -122.325],
-  ["Eastlake", 47.635, 47.65, -122.335, -122.32],
-  ["Capitol Hill", 47.61, 47.64, -122.325, -122.3],
-  ["First Hill", 47.6, 47.615, -122.33, -122.315],
-  ["Central District", 47.6, 47.62, -122.31, -122.29],
-  ["Madrona", 47.608, 47.625, -122.295, -122.28],
-  ["Leschi", 47.596, 47.608, -122.295, -122.28],
-  ["Madison Park", 47.63, 47.645, -122.29, -122.27],
-  ["Madison Valley", 47.625, 47.64, -122.3, -122.285],
-  ["Montlake", 47.64, 47.655, -122.31, -122.29],
-  ["Downtown", 47.6, 47.62, -122.345, -122.325],
-  ["Belltown", 47.612, 47.622, -122.355, -122.34],
-  ["Pioneer Square", 47.598, 47.605, -122.34, -122.325],
-  ["International District", 47.593, 47.602, -122.33, -122.315],
-  ["SoDo", 47.565, 47.595, -122.345, -122.32],
-  ["Georgetown", 47.54, 47.565, -122.34, -122.31],
-  ["Beacon Hill", 47.555, 47.6, -122.315, -122.295],
-  ["North Beacon Hill", 47.575, 47.6, -122.315, -122.295],
-  ["Mt Baker", 47.57, 47.59, -122.295, -122.28],
-  ["Columbia City", 47.555, 47.575, -122.295, -122.275],
-  ["Hillman City", 47.545, 47.558, -122.295, -122.275],
-  ["Rainier Beach", 47.505, 47.535, -122.275, -122.245],
-  ["Seward Park", 47.53, 47.56, -122.27, -122.25],
-  ["Rainier Valley", 47.52, 47.555, -122.3, -122.27],
-  ["South Park", 47.52, 47.54, -122.34, -122.315],
-  ["Dunlap", 47.53, 47.545, -122.28, -122.26],
-  ["West Seattle", 47.53, 47.6, -122.42, -122.345],
-  ["Admiral", 47.57, 47.585, -122.41, -122.38],
-  ["Alki", 47.576, 47.592, -122.42, -122.4],
-  ["White Center", 47.505, 47.53, -122.38, -122.345],
-];
+async function latestFeedRun(env, runType) {
+  return env.DB.prepare(
+    `SELECT start_time, cursor FROM ingest_logs
+     WHERE run_type = ? AND status = 'success'
+     ORDER BY start_time DESC, id DESC LIMIT 1`,
+  )
+    .bind(runType)
+    .first();
+}
 
-async function runScheduledIngest(env) {
+async function feedCoverageFloor(env) {
+  const row = await env.DB.prepare(`SELECT MIN(applied_date) AS floor FROM permits WHERE applied_date IS NOT NULL`).first();
+  const floor = String(row?.floor || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(floor) ? floor : DEFAULT_COVERAGE_FLOOR;
+}
+
+// options: { fetchImpl, sleep, now, limits } for tests; production passes none.
+export async function runScheduledIngest(env, options = {}) {
   const startTime = new Date();
+  const limits = { ...FEED_LIMITS, ...(options.limits || {}) };
+  const fetchOptions = { fetchImpl: options.fetchImpl || fetch, sleep: options.sleep, attempts: limits.fetchAttempts, backoffMs: limits.backoffMs };
+  const totals = { added: 0, updated: 0, unchanged: 0, contractors: 0, unknownStatuses: new Map() };
+  let incrementalLogged = false;
 
   try {
-    const rawPermits = await fetchSdciPermits();
-    const { permits, contractors } = normalizeSdciPermits(rawPermits);
+    const [lastIncremental, lastSweep, floor] = await Promise.all([
+      latestFeedRun(env, "scheduled"),
+      latestFeedRun(env, "full_sweep"),
+      feedCoverageFloor(env),
+    ]);
+    const plan = planFeedRun({ lastIncremental, lastSweep, now: options.now || startTime, limits });
+    const context = { env, floor, limits, fetchOptions, totals, contractorMap: null };
 
-    await upsertScheduledContractors(env, contractors);
-    const { added, updated } = await upsertScheduledPermits(env, permits);
+    const incremental = await pullFeedPages(context, plan.incremental, plan.incremental.maxPages);
+    await logFeedRun(env, {
+      run_type: "scheduled",
+      status: "success",
+      added: incremental.added,
+      updated: incremental.updated,
+      unchanged: incremental.unchanged,
+      error_message: unknownStatusNote(totals.unknownStatuses),
+      cursor: encodeCursor(incremental.cursor),
+      start_time: startTime,
+      end_time: new Date(),
+    });
+    incrementalLogged = true;
+
+    let sweep = null;
+    if (plan.sweep) {
+      const sweepStart = new Date();
+      const pages = Math.max(plan.sweep.maxPages, limits.maxPagesPerRun - incremental.pages);
+      try {
+        sweep = await pullFeedPages(context, plan.sweep, pages);
+        await logFeedRun(env, {
+          run_type: "full_sweep",
+          status: "success",
+          added: sweep.added,
+          updated: sweep.updated,
+          unchanged: sweep.unchanged,
+          cursor: encodeCursor(sweep.cursor),
+          start_time: sweepStart,
+          end_time: new Date(),
+        });
+      } catch (error) {
+        console.error("Full sweep failed:", error);
+        await logFeedRun(env, { run_type: "full_sweep", status: "error", error_message: error.message, start_time: sweepStart, end_time: new Date() });
+      }
+    }
 
     // Keep the derived entity graph (addresses / projects / orgs) fresh. The
     // outcome is recorded in its own ingest_logs row (partial / error included);
@@ -8633,113 +8611,83 @@ async function runScheduledIngest(env) {
     }
     const alertDelivery = await sendPendingPermitAlerts(env);
 
-    await logIngest(env, {
-      run_type: "scheduled",
-      source: "seattle_open_data",
-      status: "success",
-      records_added: added,
-      records_updated: updated,
-      start_time: startTime,
-      end_time: new Date(),
-    });
-
-    console.log(
-      `Scheduled ingest complete: ${added} added, ${updated} updated, ${alertDelivery.sent} alerts sent`,
-    );
-    return {
-      added,
-      updated,
-      contractors: contractors.length,
+    const summary = {
+      added: totals.added,
+      updated: totals.updated,
+      unchanged: totals.unchanged,
+      contractors: totals.contractors,
+      incremental: { pages: incremental.pages, complete: !incremental.cursor },
+      sweep: sweep ? { pages: sweep.pages, complete: !sweep.cursor } : null,
+      unknown_statuses: Object.fromEntries(totals.unknownStatuses),
       alerts_sent: alertDelivery.sent,
       entity_graph: graph ? { ok: graph.ok, unlinked: graph.unlinked } : { ok: false, error: true },
     };
+    console.log(`Scheduled ingest complete: ${JSON.stringify(summary)}`);
+    return summary;
   } catch (error) {
     console.error("Scheduled ingest failed:", error);
-    await logIngest(env, {
-      run_type: "scheduled",
-      source: "seattle_open_data",
-      status: "error",
-      error_message: error.message,
-      start_time: startTime,
-      end_time: new Date(),
-    });
+    if (!incrementalLogged) {
+      await logFeedRun(env, {
+        run_type: "scheduled",
+        status: "error",
+        added: totals.added,
+        updated: totals.updated,
+        unchanged: totals.unchanged,
+        error_message: error.message,
+        start_time: startTime,
+        end_time: new Date(),
+      });
+    }
     throw error;
   }
 }
 
-async function fetchSdciPermits(total = SCHEDULED_INGEST_LIMIT, pageSize = SCHEDULED_INGEST_PAGE_SIZE) {
-  const selectFields = [
-    "permitnum",
-    "permitclass",
-    "permitclassmapped",
-    "permittypemapped",
-    "permittypedesc",
-    "description",
-    "housingunits",
-    "statuscurrent",
-    "originaladdress1",
-    "originalcity",
-    "originalstate",
-    "originalzip",
-    "contractorcompanyname",
-    "link",
-    "latitude",
-    "longitude",
-    "applieddate",
-    "issueddate",
-    "expiresdate",
-    "completeddate",
-    "estprojectcost",
-    "readytoissuedate",
-    "planreviewcompletedate",
-    "zoning",
-    "housingcategory",
-    "dwellingunittype",
-    "parentpermitnum",
-    "relatedmup",
-    "numberreviewcycles",
-    "totaldaysplanreview",
-    "daysoutcorrections",
-    "housingunitsadded",
-    "housingunitsremoved",
-  ].join(",");
-  const records = [];
+function unknownStatusNote(unknownStatuses) {
+  if (!unknownStatuses.size) return null;
+  const list = [...unknownStatuses].map(([value, count]) => `${value || "(empty)"} x${count}`).join(", ");
+  return `warning: unmapped SDCI statuses stored as pending: ${list}`.slice(0, 500);
+}
 
-  for (let offset = 0; offset < total; offset += pageSize) {
-    const limit = Math.min(pageSize, total - offset);
-    const url = new URL(SDCI_PERMIT_URL);
-    url.searchParams.set("$select", selectFields);
-    url.searchParams.set("$limit", String(limit));
-    url.searchParams.set("$offset", String(offset));
-    url.searchParams.set("$order", "applieddate DESC");
-    url.searchParams.set("$where", "applieddate > '2022-01-01'");
-
-    const response = await fetch(url.toString(), {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "BuildingSeattle-Worker/1.0",
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Seattle Open Data returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
-    }
-
-    const page = await response.json();
-    if (!Array.isArray(page) || page.length === 0) {
+// Pull up to `maxPages` pages for one plan step, upserting each page.
+async function pullFeedPages(context, step, maxPages) {
+  const { env, floor, limits, fetchOptions, totals } = context;
+  const result = { pages: 0, added: 0, updated: 0, unchanged: 0, cursor: step.cursor };
+  let cursor = step.cursor;
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
+    const query = buildFeedQuery({ mode: step.mode, since: step.since, cursor, floor, pageSize: limits.pageSize });
+    const page = await fetchFeedPage(feedPageUrl(query, limits.feedUrl || SDCI_PERMIT_URL), fetchOptions);
+    result.pages++;
+    if (!page.length) {
+      cursor = null;
       break;
     }
+    assertFeedPage(page);
+    const { permits, contractors } = normalizeSdciPermits(page, totals.unknownStatuses);
+    assertMappingHealth(permits, { minRows: limits.mappingGuardMinRows, maxRatio: limits.mappingGuardMaxOtherRatio });
 
-    records.push(...page);
-    if (page.length < limit) {
+    if (contractors.length) {
+      await upsertScheduledContractors(env, contractors);
+      context.contractorMap = null;
+      totals.contractors += contractors.length;
+    }
+    if (!context.contractorMap) context.contractorMap = await loadContractorMap(env);
+    const counts = await upsertScheduledPermits(env, permits, context.contractorMap);
+    for (const key of ["added", "updated", "unchanged"]) {
+      result[key] += counts[key];
+      totals[key] += counts[key];
+    }
+
+    cursor = cursorAfterPage(step.mode, page);
+    if (page.length < limits.pageSize) {
+      cursor = null;
       break;
     }
   }
-
-  return records;
+  result.cursor = cursor;
+  return result;
 }
 
-function normalizeSdciPermits(rawPermits) {
+function normalizeSdciPermits(rawPermits, unknownStatuses = new Map()) {
   const permits = [];
   const contractorsBySlug = new Map();
 
@@ -8765,6 +8713,12 @@ function normalizeSdciPermits(rawPermits) {
       .filter(Boolean)
       .join(", ");
 
+    const statusRaw = cleanFeedText(item.statuscurrent);
+    const mappedStatus = mapSdciStatus(statusRaw);
+    if (!mappedStatus.known) {
+      unknownStatuses.set(statusRaw, (unknownStatuses.get(statusRaw) || 0) + 1);
+    }
+
     permits.push({
       permit_number: permitNumber,
       contractor_name: contractorName && !["n/a", "none"].includes(contractorName.toLowerCase()) ? contractorName : "",
@@ -8773,7 +8727,8 @@ function normalizeSdciPermits(rawPermits) {
       neighborhood: detectNeighborhood(item.latitude, item.longitude),
       type: classifyPermitType(item.permitclass, item.permittypemapped),
       value: extractValue(item.estprojectcost),
-      status: mapPermitStatus(item.statuscurrent),
+      status: mappedStatus.status,
+      status_raw: statusRaw,
       description: item.description || "No description",
       housing_units: parseInt(item.housingunits || "0", 10) || 0,
       housing_units_added: intOrNull(item.housingunitsadded),
@@ -8791,6 +8746,10 @@ function normalizeSdciPermits(rawPermits) {
       applied_date: extractDate(item.applieddate),
       issued_date: extractDate(item.issueddate),
       completed_date: extractDate(item.completeddate),
+      lat: item.latitude,
+      lng: item.longitude,
+      zip: item.originalzip,
+      source_updated_at: item[":updated_at"] || null,
     });
   }
 
@@ -8799,15 +8758,19 @@ function normalizeSdciPermits(rawPermits) {
 
 async function upsertScheduledContractors(env, contractors) {
   for (let i = 0; i < contractors.length; i += 100) {
+    // The feed's contractorcompanyname / permitclass only seed a contractor.
+    // An existing row keeps its name (the enrichment ingest sets the L&I
+    // business name) and gets a specialty only if it has none, so the two
+    // writers no longer overwrite each other every day.
     const batch = contractors.slice(i, i + 100).map((contractor) =>
       env.DB.prepare(
         `
       INSERT INTO contractors (name, slug, specialty)
       VALUES (?, ?, ?)
       ON CONFLICT(slug) DO UPDATE SET
-        name = excluded.name,
-        specialty = COALESCE(excluded.specialty, contractors.specialty),
+        specialty = excluded.specialty,
         updated_at = CURRENT_TIMESTAMP
+      WHERE contractors.specialty IS NULL AND excluded.specialty IS NOT NULL
     `,
       ).bind(contractor.name, contractor.slug, contractor.specialty || null),
     );
@@ -8818,134 +8781,92 @@ async function upsertScheduledContractors(env, contractors) {
   }
 }
 
-async function upsertScheduledPermits(env, permits) {
-  let added = 0;
-  let updated = 0;
-  const { results: allContractors } = await env.DB.prepare("SELECT id, name FROM contractors").all();
-  const contractorMap = new Map(
-    (allContractors || []).map((contractor) => [contractor.name.toLowerCase(), contractor.id]),
-  );
+async function loadContractorMap(env) {
+  const { results } = await env.DB.prepare("SELECT id, name FROM contractors").all();
+  const map = new Map();
+  for (const contractor of results || []) {
+    const key = String(contractor.name || "").toLowerCase();
+    if (key) map.set(key, contractor.id);
+  }
+  return map;
+}
+
+// Decide whether a status difference is a real change worth an alert. Rows
+// written before status_raw existed hold the old substring-cascade mapping; if
+// that old mapping of the incoming raw value equals the stored status, only
+// the mapping changed (e.g. "Application Completed" completed -> pending) and
+// no permit_status_changes row is written.
+function statusChangeFor(existing, permit, incomingStatus) {
+  if (!existing) return null;
+  const previousStatus = normalizeStoredStatus(existing.status);
+  if (previousStatus === incomingStatus) return null;
+  if (existing.status_raw == null && permit.status_raw !== undefined
+      && legacyMapPermitStatus(permit.status_raw) === previousStatus) {
+    return null;
+  }
+  return { permit_number: permit.permit_number, previous_status: previousStatus, new_status: incomingStatus };
+}
+
+// Upsert normalized permits in chunks of 100 (D1 caps bound parameters per
+// statement at 100, and the ADU reclassification binds one per permit).
+// Returns { added, updated, unchanged }: "unchanged" rows matched a stored
+// permit but no tracked column differed, so the row (and updated_at) was not
+// written.
+async function upsertScheduledPermits(env, permits, contractorMap = null) {
+  const counts = { added: 0, updated: 0, unchanged: 0 };
+  const contractors = contractorMap || (await loadContractorMap(env));
 
   for (let i = 0; i < permits.length; i += 100) {
     const batchPermits = permits.slice(i, i + 100);
     const permitNumbers = batchPermits.map((permit) => permit.permit_number).filter(Boolean);
-    const existingStatuses = await getExistingPermitStatuses(env, permitNumbers);
+    const existing = await getExistingPermitStatuses(env, permitNumbers);
     const statusChanges = [];
 
     const statements = batchPermits.map((permit) => {
       const incomingStatus = normalizeStoredStatus(permit.status);
-      if (existingStatuses.has(permit.permit_number)) {
-        updated++;
-        const previousStatus = normalizeStoredStatus(existingStatuses.get(permit.permit_number));
-        if (previousStatus !== incomingStatus) {
-          statusChanges.push({
-            permit_number: permit.permit_number,
-            previous_status: previousStatus,
-            new_status: incomingStatus,
-          });
-        }
-      } else {
-        added++;
-      }
-
-      const contractorId = permit.contractor_name
-        ? contractorMap.get(permit.contractor_name.toLowerCase()) || null
-        : null;
-
-      return env.DB.prepare(PERMIT_UPSERT_SQL).bind(
-        permit.permit_number,
-        contractorId,
-        permit.applicant_name || null,
-        permit.address,
-        permit.neighborhood || null,
-        permit.type || null,
-        permit.value || null,
-        incomingStatus,
-        permit.description || null,
-        permit.housing_units || 0,
-        permit.applied_date || null,
-        permit.issued_date || null,
-        permit.completed_date || null,
-        intOrNull(permit.housing_units_added),
-        intOrNull(permit.housing_units_removed),
-        permit.housing_category || null,
-        permit.dwelling_unit_type || null,
-        permit.zoning || null,
-        permit.parent_permit_number || null,
-        permit.related_mup || null,
-        intOrNull(permit.number_review_cycles),
-        intOrNull(permit.total_days_plan_review),
-        intOrNull(permit.days_out_corrections),
-        dateOrNull(permit.plan_review_complete_date),
-        dateOrNull(permit.ready_to_issue_date),
-      );
+      const change = statusChangeFor(existing.get(permit.permit_number), permit, incomingStatus);
+      if (change) statusChanges.push(change);
+      const contractorId = permit.contractor_name ? contractors.get(permit.contractor_name.toLowerCase()) || null : null;
+      return env.DB.prepare(PERMIT_UPSERT_SQL).bind(...permitUpsertBinds(permit, { contractorId, status: incomingStatus }));
     });
 
     const reclassifyStatement = buildAduReclassificationStatement(env, permitNumbers);
     if (reclassifyStatement) statements.push(reclassifyStatement);
     statements.push(...buildStatusChangeStatements(env, statusChanges));
 
-    if (statements.length) {
-      await env.DB.batch(statements);
-    }
+    const results = statements.length ? await env.DB.batch(statements) : [];
+    batchPermits.forEach((permit, index) => {
+      if (!existing.has(permit.permit_number)) counts.added++;
+      else if (Number(results[index]?.meta?.changes ?? 1) > 0) counts.updated++;
+      else counts.unchanged++;
+    });
   }
 
-  return { added, updated };
+  return counts;
 }
 
 async function getExistingPermitStatuses(env, permitNumbers) {
-  const existingStatuses = new Map();
+  const existing = new Map();
   if (!permitNumbers.length) {
-    return existingStatuses;
+    return existing;
   }
 
   const placeholders = permitNumbers.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`,
+    `SELECT permit_number, status, status_raw FROM permits WHERE permit_number IN (${placeholders})`,
   )
     .bind(...permitNumbers)
     .all();
 
   for (const row of results || []) {
-    existingStatuses.set(row.permit_number, row.status);
+    existing.set(row.permit_number, row);
   }
 
-  return existingStatuses;
+  return existing;
 }
 
 function buildStatusChangeStatements(env, statusChanges) {
-  return statusChanges.map((change) =>
-    env.DB.prepare(
-      `
-      INSERT INTO permit_status_changes (permit_number, previous_status, new_status)
-      VALUES (?, ?, ?)
-    `,
-    ).bind(change.permit_number, change.previous_status || null, change.new_status || "new"),
-  );
-}
-
-function detectNeighborhood(lat, lng) {
-  if (!lat || !lng) {
-    return "Other";
-  }
-
-  const parsedLat = Number(lat);
-  const parsedLng = Number(lng);
-  if (Number.isNaN(parsedLat) || Number.isNaN(parsedLng)) {
-    return "Other";
-  }
-
-  for (const [name, minLat, maxLat, minLng, maxLng] of NEIGHBORHOOD_BOUNDS) {
-    if (parsedLat >= minLat && parsedLat <= maxLat && parsedLng >= minLng && parsedLng <= maxLng) {
-      return name;
-    }
-  }
-
-  if (parsedLat >= 47.49 && parsedLat <= 47.74 && parsedLng >= -122.44 && parsedLng <= -122.24) {
-    return "Other Seattle";
-  }
-
-  return "Other";
+  return statusChanges.map((change) => env.DB.prepare(STATUS_CHANGE_INSERT_SQL).bind(...statusChangeBinds(change)));
 }
 
 function classifyPermitType(permitClass, permitTypeMapped) {
@@ -8986,29 +8907,6 @@ function extractValue(value) {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
 }
 
-function mapPermitStatus(status) {
-  const value = String(status || "").toLowerCase();
-  if (!value) {
-    return "new";
-  }
-  if (value.includes("issue") || value.includes("active") || value.includes("approved")) {
-    return "active";
-  }
-  if (value.includes("pending") || value.includes("review") || value.includes("applied")) {
-    return "pending";
-  }
-  if (value.includes("complete") || value.includes("final") || value.includes("closed")) {
-    return "completed";
-  }
-  if (value.includes("expir")) {
-    return "expired";
-  }
-  if (value.includes("cancel")) {
-    return "cancelled";
-  }
-  return "new";
-}
-
 function extractDate(value) {
   if (!value) {
     return null;
@@ -9037,10 +8935,16 @@ function slugify(name) {
 
 async function ingestPermit(request, env) {
   const data = await request.json();
+  if (!data || typeof data !== "object" || !data.permit_number || !data.address) {
+    return new Response(JSON.stringify({ error: "permit_number and address are required" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
   const incomingStatus = normalizeStoredStatus(data.status);
-  const existingPermit = data.permit_number
-    ? await env.DB.prepare(`SELECT status FROM permits WHERE permit_number = ?`).bind(data.permit_number).first()
-    : null;
+  const existingPermit = await env.DB.prepare(`SELECT status, status_raw FROM permits WHERE permit_number = ?`)
+    .bind(data.permit_number)
+    .first();
 
   // Resolve contractor_id from contractor_name if provided
   let contractorId = null;
@@ -9053,59 +8957,21 @@ async function ingestPermit(request, env) {
     }
   }
 
-  const stmt = env.DB.prepare(PERMIT_UPSERT_SQL);
-
-  await stmt
-    .bind(
-      data.permit_number,
-      contractorId,
-      data.applicant_name || null,
-      data.address,
-      data.neighborhood || null,
-      data.type || null,
-      data.value || null,
-      incomingStatus,
-      data.description || null,
-      data.housing_units || 0,
-      data.applied_date || null,
-      data.issued_date || null,
-      data.completed_date || null,
-      intOrNull(data.housing_units_added),
-      intOrNull(data.housing_units_removed),
-      data.housing_category || null,
-      data.dwelling_unit_type || null,
-      data.zoning || null,
-      data.parent_permit_number || null,
-      data.related_mup || null,
-      intOrNull(data.number_review_cycles),
-      intOrNull(data.total_days_plan_review),
-      intOrNull(data.days_out_corrections),
-      dateOrNull(data.plan_review_complete_date),
-      dateOrNull(data.ready_to_issue_date),
-    )
-    .run();
-
+  const statements = [env.DB.prepare(PERMIT_UPSERT_SQL).bind(...permitUpsertBinds(data, { contractorId, status: incomingStatus }))];
   const reclassifyStatement = buildAduReclassificationStatement(env, [data.permit_number]);
-  if (reclassifyStatement) await reclassifyStatement.run();
-
-  if (existingPermit) {
-    const previousStatus = normalizeStoredStatus(existingPermit.status);
-    if (previousStatus !== incomingStatus) {
-      await env.DB.prepare(
-        `
-        INSERT INTO permit_status_changes (permit_number, previous_status, new_status)
-        VALUES (?, ?, ?)
-      `,
-      )
-        .bind(data.permit_number, previousStatus, incomingStatus)
-        .run();
-    }
-  }
+  if (reclassifyStatement) statements.push(reclassifyStatement);
+  const change = statusChangeFor(existingPermit, data, incomingStatus);
+  if (change) statements.push(...buildStatusChangeStatements(env, [change]));
+  await env.DB.batch(statements);
 
   return new Response(JSON.stringify({ success: true }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
+
+// One request writes one D1 batch; the ADU reclassification binds one
+// parameter per permit and D1 allows 100 per statement.
+const INGEST_PERMIT_BATCH_MAX_ITEMS = 100;
 
 async function ingestPermitBatch(request, env) {
   const startTime = new Date();
@@ -9114,110 +8980,47 @@ async function ingestPermitBatch(request, env) {
     const body = await request.json();
     items = body.items;
   } catch (e) {
-    return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   if (!Array.isArray(items)) {
-    return new Response(JSON.stringify({ error: "items must be an array" }), { status: 400 });
+    return new Response(JSON.stringify({ error: "items must be an array" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  if (items.length > INGEST_PERMIT_BATCH_MAX_ITEMS) {
+    return new Response(
+      JSON.stringify({ error: `items must hold at most ${INGEST_PERMIT_BATCH_MAX_ITEMS} permits per request` }),
+      { status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+  const invalid = items.findIndex((item) => !item || typeof item !== "object" || !item.permit_number || !item.address);
+  if (invalid !== -1) {
+    return new Response(JSON.stringify({ error: `items[${invalid}] needs permit_number and address` }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
-  let added = 0;
-  let updated = 0;
-
   try {
-    // 1. Pre-load contractors for fast in-memory lookup
-    const { results: allContractors } = await env.DB.prepare("SELECT id, name FROM contractors").all();
-    const contractorMap = new Map();
-    for (const c of allContractors) {
-      contractorMap.set(c.name.toLowerCase(), c.id);
-    }
-
-    // 2. Check existing permits in chunked queries
-    const permitNumbers = items.map((i) => i.permit_number).filter(Boolean);
-    const existingStatuses = new Map();
-    if (permitNumbers.length > 0) {
-      const chunkSize = 100;
-      for (let i = 0; i < permitNumbers.length; i += chunkSize) {
-        const chunk = permitNumbers.slice(i, i + chunkSize);
-        const placeholders = chunk.map(() => "?").join(",");
-        const { results } = await env.DB.prepare(
-          `SELECT permit_number, status FROM permits WHERE permit_number IN (${placeholders})`,
-        )
-          .bind(...chunk)
-          .all();
-        for (const r of results) existingStatuses.set(r.permit_number, r.status);
-      }
-    }
-
-    // 3. Build batched insert statements
-    const statements = [];
-    const statusChanges = [];
-    for (const item of items) {
-      const contractorId = item.contractor_name ? contractorMap.get(item.contractor_name.toLowerCase()) || null : null;
-      const incomingStatus = normalizeStoredStatus(item.status);
-
-      if (existingStatuses.has(item.permit_number)) {
-        updated++;
-        const previousStatus = normalizeStoredStatus(existingStatuses.get(item.permit_number));
-        if (previousStatus !== incomingStatus) {
-          statusChanges.push({
-            permit_number: item.permit_number,
-            previous_status: previousStatus,
-            new_status: incomingStatus,
-          });
-        }
-      } else {
-        added++;
-      }
-
-      statements.push(
-        env.DB.prepare(PERMIT_UPSERT_SQL).bind(
-          item.permit_number,
-          contractorId,
-          item.applicant_name || null,
-          item.address,
-          item.neighborhood || null,
-          item.type || null,
-          item.value || null,
-          incomingStatus,
-          item.description || null,
-          item.housing_units || 0,
-          item.applied_date || null,
-          item.issued_date || null,
-          item.completed_date || null,
-          intOrNull(item.housing_units_added),
-          intOrNull(item.housing_units_removed),
-          item.housing_category || null,
-          item.dwelling_unit_type || null,
-          item.zoning || null,
-          item.parent_permit_number || null,
-          item.related_mup || null,
-          intOrNull(item.number_review_cycles),
-          intOrNull(item.total_days_plan_review),
-          intOrNull(item.days_out_corrections),
-          dateOrNull(item.plan_review_complete_date),
-          dateOrNull(item.ready_to_issue_date),
-        ),
-      );
-    }
-
-    const reclassifyStatement = buildAduReclassificationStatement(env, permitNumbers);
-    if (reclassifyStatement) statements.push(reclassifyStatement);
-    statements.push(...buildStatusChangeStatements(env, statusChanges));
-
-    await env.DB.batch(statements);
+    // Same upsert, change detection and counting as the scheduled ingest.
+    const counts = await upsertScheduledPermits(env, items);
 
     await logIngest(env, {
       run_type: "permit",
       source: "scraper",
       status: "success",
-      records_added: added,
-      records_updated: updated,
+      records_added: counts.added,
+      records_updated: counts.updated,
       start_time: startTime,
       end_time: new Date(),
     });
 
-    return new Response(JSON.stringify({ processed: items.length, added, updated }), {
+    return new Response(JSON.stringify({ processed: items.length, ...counts }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
@@ -9448,65 +9251,6 @@ async function ingestPermitEnrichmentBatch(request, env) {
     await logIngest(env, {
       run_type: "permit_enrichment",
       source: "sdci_detail_lni",
-      status: "error",
-      error_message: error.message,
-      start_time: startTime,
-      end_time: new Date(),
-    });
-    throw error;
-  }
-}
-
-async function replaceIngestData(request, env) {
-  let body;
-  try {
-    body = await request.json();
-  } catch (e) {
-    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-
-  if (body.confirm !== "replace-all") {
-    return new Response(JSON.stringify({ error: "confirm must be replace-all" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-
-  const startTime = new Date();
-  try {
-    await env.DB.prepare("DELETE FROM permit_status_changes").run();
-    const permitsResult = await env.DB.prepare("DELETE FROM permits").run();
-    const contractorsResult = await env.DB.prepare("DELETE FROM contractors").run();
-    const permitsDeleted = permitsResult.meta?.changes || 0;
-    const contractorsDeleted = contractorsResult.meta?.changes || 0;
-
-    await logIngest(env, {
-      run_type: "full_refresh",
-      source: "direct_import",
-      status: "success",
-      records_added: 0,
-      records_updated: permitsDeleted + contractorsDeleted,
-      start_time: startTime,
-      end_time: new Date(),
-    });
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        permits_deleted: permitsDeleted,
-        contractors_deleted: contractorsDeleted,
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
-    );
-  } catch (error) {
-    await logIngest(env, {
-      run_type: "full_refresh",
-      source: "direct_import",
       status: "error",
       error_message: error.message,
       start_time: startTime,

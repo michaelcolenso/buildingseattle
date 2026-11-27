@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
+import { PERMIT_UPSERT_COLUMNS } from "../permit_upsert.js";
 import worker, {
   summarizePlanReview,
   percentileSorted,
@@ -197,11 +198,11 @@ function createEnv() {
               };
             }
 
-            if (sql.includes("SELECT permit_number, status FROM permits WHERE permit_number IN")) {
+            if (sql.includes("SELECT permit_number, status") && sql.includes("FROM permits WHERE permit_number IN")) {
               return {
                 results: permits
                   .filter((permit) => params.includes(permit.permit_number))
-                  .map((permit) => ({ permit_number: permit.permit_number, status: permit.status })),
+                  .map((permit) => ({ permit_number: permit.permit_number, status: permit.status, status_raw: permit.status_raw ?? null })),
               };
             }
 
@@ -358,7 +359,7 @@ function createEnv() {
               return permit ? { id: permit.id } : null;
             }
 
-            if (sql.includes("SELECT status FROM permits WHERE permit_number = ?")) {
+            if (sql.includes("FROM permits WHERE permit_number = ?") && /SELECT status(, status_raw)? FROM/.test(sql)) {
               const permit = permits.find((item) => item.permit_number === params[0]);
               return permit ? { status: permit.status } : null;
             }
@@ -483,43 +484,23 @@ function createEnv() {
 
             if (sql.includes("INSERT INTO permits") && sql.includes("ON CONFLICT(permit_number)")) {
               const existingIndex = permits.findIndex((permit) => permit.permit_number === params[0]);
-              const baseFields = {
-                address: params[3],
-                neighborhood: params[4],
-                type: params[5],
-                value: params[6],
-                status: params[7],
-                description: params[8],
-                housing_units: params[9],
-                applied_date: params[10],
-                issued_date: params[11],
-                completed_date: params[12],
-                housing_units_added: params[13],
-                housing_units_removed: params[14],
-                housing_category: params[15],
-                dwelling_unit_type: params[16],
-                zoning: params[17],
-                parent_permit_number: params[18],
-                related_mup: params[19],
-                number_review_cycles: params[20],
-                total_days_plan_review: params[21],
-                days_out_corrections: params[22],
-              };
+              const row = Object.fromEntries(PERMIT_UPSERT_COLUMNS.map((column, index) => [column, params[index]]));
+              const { permit_number: _permitNumber, contractor_id: _contractorId, applicant_name: _applicant, ...baseFields } = row;
               if (existingIndex >= 0) {
                 const existing = permits[existingIndex];
                 permits[existingIndex] = {
                   ...existing,
                   ...baseFields,
-                  contractor_id: params[1] ?? existing.contractor_id,
-                  applicant_name: params[2] ?? existing.applicant_name,
+                  contractor_id: row.contractor_id ?? existing.contractor_id,
+                  applicant_name: row.applicant_name ?? existing.applicant_name,
                   updated_at: "2026-05-16 12:00:00",
                 };
               } else {
                 permits.push({
                   id: permits.length + 1,
-                  permit_number: params[0],
-                  contractor_id: params[1],
-                  applicant_name: params[2],
+                  permit_number: row.permit_number,
+                  contractor_id: row.contractor_id,
+                  applicant_name: row.applicant_name,
                   ...baseFields,
                 });
               }
@@ -2623,8 +2604,10 @@ test("POST /ingest/permit/enrichment/batch links permits from contractor license
   assert.equal(permit.has_required_inspections, 1);
 });
 
-test("POST /ingest/refresh clears imported permit and contractor data after explicit confirmation", async () => {
+test("POST /ingest/refresh no longer exists, so the ingest token cannot wipe production", async () => {
   const env = createEnv();
+  const permitsBefore = env._state.permits.length;
+  const contractorsBefore = env._state.contractors.length;
   const response = await worker.fetch(
     new Request("http://example.com/ingest/refresh", {
       method: "POST",
@@ -2638,14 +2621,25 @@ test("POST /ingest/refresh clears imported permit and contractor data after expl
     createCtx(),
   );
 
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    success: true,
-    permits_deleted: 2,
-    contractors_deleted: 1,
-  });
-  assert.equal(env._state.permits.length, 0);
-  assert.equal(env._state.contractors.length, 0);
+  assert.notEqual(response.status, 200);
+  assert.equal(env._state.permits.length, permitsBefore);
+  assert.equal(env._state.contractors.length, contractorsBefore);
+});
+
+test("POST /ingest/permit/batch rejects more than 100 items", async () => {
+  const env = createEnv();
+  const items = Array.from({ length: 101 }, (_, i) => ({ permit_number: `P${i}`, address: `${i} Main St, Seattle, WA` }));
+  const response = await worker.fetch(
+    new Request("http://example.com/ingest/permit/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Ingest-Token": "test-ingest-token" },
+      body: JSON.stringify({ items }),
+    }),
+    env,
+    createCtx(),
+  );
+  assert.equal(response.status, 413);
+  assert.equal(env._state.permits.some((permit) => permit.permit_number === "P0"), false);
 });
 
 test("POST /ingest/permit rejects requests without the ingest token", async () => {

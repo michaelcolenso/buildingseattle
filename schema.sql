@@ -459,3 +459,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_permit_alert_subscriptions_confirmation_sent
     ON permit_alert_subscriptions(confirmation_sent_at);
+
+-- Permit feed fields (migrations/0003_permit_feed_fields.sql).
+ALTER TABLE permits ADD COLUMN status_raw TEXT;
+ALTER TABLE permits ADD COLUMN source_updated_at TEXT;
+ALTER TABLE ingest_logs ADD COLUMN cursor TEXT;
+ALTER TABLE ingest_logs ADD COLUMN records_unchanged INTEGER DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_ingest_logs_run_type_start ON ingest_logs(run_type, status, start_time);

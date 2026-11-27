@@ -36,7 +36,7 @@ function createAddressEnv(permits, { pending = 0, lastRebuild = null, faults = [
           async first() {
             fault(sql);
             if (sql.includes("FROM addresses WHERE slug")) return addressRow;
-            if (sql.includes("EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL)")) return { pending, last_rebuild: lastRebuild };
+            if (sql.includes("EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL")) return { pending, last_rebuild: lastRebuild };
             if (sql.includes("FROM neighborhoods n JOIN address_neighborhoods an")) return null;
             return null;
           },
@@ -112,7 +112,7 @@ test("an address whose permit read fails answers 503, not 410", async () => {
 });
 
 test("an address whose integrity check fails answers 503, not 410", async () => {
-  const response = await fetchAddress(createAddressEnv([], { faults: ["EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL)"] }));
+  const response = await fetchAddress(createAddressEnv([], { faults: ["EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL"] }));
   assertTemporarilyUnavailable(response);
 });
 

@@ -60,10 +60,15 @@ test("migration files follow wrangler's NNNN_name.sql convention and start with 
   });
 });
 
+// SQLite has no ADD COLUMN IF NOT EXISTS, so a column-adding statement can only run once.
+// wrangler records applied files in d1_migrations and never re-runs them; everything else
+// (tables, indexes, triggers) must still be safe to run twice.
+const withoutAddColumn = (sql) => sql.replace(/^ALTER TABLE \w+ ADD COLUMN [^;]+;\s*$/gm, "");
+
 test("every migration is idempotent (safe to re-run)", () => {
   const db = new DatabaseSync(":memory:");
   for (const name of migrationFiles()) db.exec(read(`migrations/${name}`));
-  for (const name of migrationFiles()) db.exec(read(`migrations/${name}`));
+  for (const name of migrationFiles()) db.exec(withoutAddColumn(read(`migrations/${name}`)));
   db.close();
 });
 
