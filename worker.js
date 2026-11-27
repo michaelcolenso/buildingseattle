@@ -337,6 +337,16 @@ export default {
         return secure(await renderEntityHubPage(path.slice(1), env, request));
       }
 
+      if ((path === "/alerts" || path === "/alerts/") && request.method === "GET") {
+        ctx.waitUntil(logPageView(request, env, "/alerts"));
+        return secure(renderAlertsLandingPage());
+      }
+
+      if (path === "/privacy" || path === "/privacy/") {
+        ctx.waitUntil(logPageView(request, env, "/privacy"));
+        return secure(renderPrivacyPage());
+      }
+
       if (path === "/about" || path === "/about/") {
         ctx.waitUntil(logPageView(request, env, "/about"));
         return secure(renderAboutPage());
@@ -1554,7 +1564,7 @@ export function renderHomepage(snapshot) {
       </div></div>
     </section>
 
-    <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:var(--brand-sky)">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Building Seattle already supports free per-permit alerts with confirmation and one-click unsubscribe.</p></div><a class="alert-button" href="/permits">Find a permit to watch</a></div></div></section>
+    <section class="section alt" aria-labelledby="alerts-heading"><div class="container"><div class="alert-panel"><div><p class="section-kicker" style="color:var(--brand-sky)">Permit alerts</p><h2 id="alerts-heading">Get the changes that matter</h2><p>Choose a permit and subscribe to its status changes. Alerts are free, start only after you confirm your email, and every message has a one-click unsubscribe.</p></div><a class="alert-button" href="/alerts">How permit alerts work</a></div></div></section>
   </main>
   ${renderFooter()}
 </body>
@@ -10729,6 +10739,142 @@ async function renderMethodologyPage(env) {
   return new Response(
     renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "data" }),
     { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
+  );
+}
+
+// GET /alerts: what the free per-permit alerts do and how to start one. The
+// subscribe/confirm/unsubscribe handlers live under /alerts/* and are
+// separate; this page only explains them and sends people to a permit.
+function renderAlertsLandingPage() {
+  const canonical = `${BASE_URL}/alerts`;
+  const title = "Seattle Permit Status Alerts | Building Seattle";
+  const description =
+    "Free email alerts when a Seattle building permit changes status in SDCI records. Confirm once, one email per change, one-click unsubscribe.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "WebPage", name: title, description, url: canonical },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Permit alerts", item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Permit alerts" }])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Free alerts</div>
+      <h1>Seattle permit status alerts</h1>
+      <p style="color:var(--text-muted);max-width:68ch;margin:0;">Follow a single permit and get an email when Seattle SDCI records a new status for it: applied to issued, issued to completed, or expired. Alerts are free.</p>
+    </div>
+    <div class="ent-grid">
+      <div>
+        <section class="bs-card">
+          <h2>How it works</h2>
+          <ol style="margin:0;padding-left:1.25rem;">
+            <li><strong>Find the permit.</strong> Search by address, permit number or contractor, or open a permit from any property, project, contractor or neighborhood page.</li>
+            <li><strong>Choose &ldquo;Email Me Permit Updates&rdquo;</strong> on the permit page and enter your email address.</li>
+            <li><strong>Confirm.</strong> We send one confirmation email. Nothing else is sent until you click its link.</li>
+            <li><strong>Get one email per status change.</strong> Changes are picked up by the daily ingest, so an email arrives within about a day of SDCI updating the record.</li>
+          </ol>
+          <form class="bs-search" action="/permits" method="get" role="search" style="margin-top:1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <label for="alerts-search" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">Find a permit to watch</label>
+            <input class="bs-input" id="alerts-search" name="q" type="search" placeholder="Address or permit number" style="flex:1;min-width:12rem;">
+            <input type="hidden" name="status" value="active">
+            <button class="bs-btn bs-btn--primary" type="submit">Find an active permit</button>
+          </form>
+        </section>
+        <section class="bs-card">
+          <h2>What you won't get</h2>
+          <ul style="margin:0;padding-left:1.25rem;">
+            <li>Alerts for completed, expired or canceled permits: there is no next status to report, so those pages don't offer one.</li>
+            <li>Marketing email. The address is used for the alerts you confirmed.</li>
+            <li>Alerts for a whole contractor, address or neighborhood. Alerts follow one permit at a time for now.</li>
+          </ul>
+        </section>
+      </div>
+      <div>
+        <section class="bs-card">
+          <h3>Stop any time</h3>
+          <p style="margin:0;font-size:0.9rem;color:var(--text-muted);">Every alert email has a one-click unsubscribe link that ends that permit's alerts.</p>
+        </section>
+        <section class="bs-card">
+          <h3>Your data</h3>
+          <p style="margin:0;font-size:0.9rem;color:var(--text-muted);">We store your email address, the permit you follow and the dates you confirmed or unsubscribed. See the <a class="ent-link" href="/privacy">privacy notice</a>.</p>
+        </section>
+        <section class="bs-card">
+          <h3>Need every permit at once?</h3>
+          <p style="margin:0 0 0.5rem;font-size:0.9rem;color:var(--text-muted);">The downloadable dataset has ${DATASET_RELEASE.records.toLocaleString("en-US")} permits in one CSV.</p>
+          <a class="ent-link" href="/data?utm_source=buildingseattle&amp;utm_medium=site&amp;utm_campaign=alerts_page">See the dataset &rarr;</a>
+        </section>
+      </div>
+    </div>`;
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "alerts" }),
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=86400" } },
+  );
+}
+
+// GET /privacy: what the site collects. Factual description of the code paths
+// (alerts, leads, page views, Cloudflare Web Analytics); the owner should
+// review the wording before launch.
+function renderPrivacyPage() {
+  const canonical = `${BASE_URL}/privacy`;
+  const title = "Privacy Notice | Building Seattle";
+  const description =
+    "What Building Seattle collects: alert email addresses, optional form fields, page-view logs and cookieless Cloudflare Web Analytics, and how to reach us.";
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "WebPage", name: title, description, url: canonical },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
+          { "@type": "ListItem", position: 2, name: "Privacy", item: canonical },
+        ],
+      },
+    ],
+  }).replace(/</g, "\\u003c");
+  const contact = `<a class="ent-link" href="mailto:${SITE_CONTACT_EMAIL}">${SITE_CONTACT_EMAIL}</a>`;
+  const body = `
+    ${entBreadcrumb([{ label: "Home", href: "/" }, { label: "Privacy" }])}
+    <div class="ent-hero">
+      <div class="ent-kicker">Privacy</div>
+      <h1>Privacy notice</h1>
+      <p style="color:var(--text-muted);max-width:68ch;margin:0;">Building Seattle publishes public permit records. This page covers the information the site collects about visitors and subscribers.</p>
+    </div>
+    <section class="bs-card">
+      <h2>Permit alert subscriptions</h2>
+      <p>When you sign up for a permit alert we store your email address, the permit number, the subscription status, and when you confirmed, were last emailed, or unsubscribed. The address is used to send the confirmation email and the status-change alerts you confirmed. Each alert carries a one-click unsubscribe link; unsubscribing stops further alerts for that permit.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Forms</h2>
+      <p>If you send us a request through a site form, we store the fields you submit (such as email, company, interest and neighborhoods), the form's source and your browser's user-agent string, and use them to answer the request.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Server logs and analytics</h2>
+      <p>For pages we log the path, the referring page, the browser's user-agent string, the country Cloudflare reports for the request, and the time. Aggregate traffic is also measured with Cloudflare Web Analytics, which does not use cookies. Cloudflare hosts the site and processes requests, including IP addresses, as our infrastructure provider.</p>
+      <p>The site sets no cookies of its own. Your light/dark theme choice is kept in your browser's local storage and never sent to us.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Third parties</h2>
+      <p>Permit pages embed a Google Maps view, so your browser requests map tiles from Google when you open one. Dataset purchases are handled by Gumroad under its own privacy policy; we receive the order details Gumroad shares with sellers.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Permit records</h2>
+      <p>Names and addresses on permit, property and contractor pages come from public Seattle SDCI records. To report an error or ask about a record, contact us; the official record is maintained by SDCI.</p>
+    </section>
+    <section class="bs-card">
+      <h2>Contact</h2>
+      <p>Questions or requests about your information, including deleting an alert subscription: ${contact}.</p>
+    </section>`;
+  return new Response(
+    renderEntityDoc({ title, description, canonical, jsonLd, noindex: false, body, activeNav: "privacy" }),
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=86400" } },
   );
 }
 
