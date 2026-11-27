@@ -174,6 +174,7 @@ tables are linked from `permits` via `permits.address_id` / `permits.project_id`
   `/address/:slug` answers 503 (not 410) for an address with no permits while any permit is unlinked or the
   latest rebuild is not `success`.
 - After a bulk import, rebuild: `curl -X POST -H "X-Admin-Token: $ADMIN_API_TOKEN" https://buildingseattle.com/admin/build-graph`
+- Only one rebuild runs at a time (`rebuild_lock.js`): a rebuild starts only if no `entity_graph` row is `running` and younger than 30 minutes; otherwise `/admin/build-graph` answers 409 and the cron skips. A run that died leaves its `running` row, which blocks for at most 30 minutes; `POST /admin/build-graph?force=1` overrides it.
 - Validation report: `node scripts/entity_report.mjs` (or `GET /admin/entity-report`).
 
 ### Neighborhood & Type Detection

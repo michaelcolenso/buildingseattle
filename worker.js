@@ -27,6 +27,7 @@ import {
   cacheControlForbidsStore, dataDay, edgeCacheControl, hardenAdminResponse, htmlCacheKeyUrl, htmlCacheVersion,
   isAdminPath, isNoindexResponse, pageCacheTtl,
 } from "./edge_cache.js";
+import { claimEntityGraphRebuild, ENTITY_GRAPH_LOCKED_CODE, entityGraphRebuildLockedError } from "./rebuild_lock.js";
 import { clampAnalyticsDays, pageViewSampleRate, pageViewTemplatePath, recordPageView, runPageViewRetention } from "./page_views.js";
 
 const corsHeaders = {
@@ -428,15 +429,17 @@ export default {
         if (authError) return secure(authError);
         // 200 only when every permit ended up linked; a failed or partial
         // rebuild is a 500 so a curl/CI caller cannot mistake it for success.
+        // 409 when another rebuild holds the lock; ?force=1 overrides a
+        // stale `running` marker.
         let body;
         try {
-          body = await runLoggedEntityGraphRebuild(env, "admin");
+          body = await runLoggedEntityGraphRebuild(env, "admin", { force: url.searchParams.get("force") === "1" });
         } catch (error) {
-          body = { ok: false, error: String(error?.message || error) };
+          body = { ok: false, error: String(error?.message || error), locked: error?.code === ENTITY_GRAPH_LOCKED_CODE };
         }
         return secure(
           new Response(JSON.stringify(body, null, 2), {
-            status: body.ok ? 200 : 500,
+            status: body.ok ? 200 : body.locked ? 409 : 500,
             headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
           }),
         );
@@ -4397,22 +4400,27 @@ async function rebuildEntityGraph(env) {
 // `success`, so a run that dies, or whose final log write fails, still leaves the
 // signal behind (a row stuck at `running` keeps empty addresses on 503 until the
 // next run finishes). If the start marker cannot be written the run does not start.
-async function runLoggedEntityGraphRebuild(env, source) {
+//
+// Only one rebuild runs at a time: the `running` row is inserted only when no
+// other entity_graph row is `running` and recent (rebuild_lock.js); otherwise
+// this throws an error with code ENTITY_GRAPH_LOCKED_CODE and changes nothing.
+// `force` (admin only) skips that check.
+async function runLoggedEntityGraphRebuild(env, source, { force = false } = {}) {
   const startTime = new Date();
   const stamp = (date) => date.toISOString().replace("T", " ").split(".")[0];
   let logId = null;
+  let claim;
   try {
-    const started = await env.DB.prepare(
-      `INSERT INTO ingest_logs (run_type, source, status, records_added, records_updated, start_time, end_time)
-       VALUES ('entity_graph', ?, 'running', 0, 0, ?, ?)`,
-    )
-      .bind(source, stamp(startTime), stamp(startTime))
-      .run();
-    logId = started?.meta?.last_row_id ?? null;
+    claim = await claimEntityGraphRebuild(env.DB, { source, now: startTime, force });
   } catch (startError) {
     console.error("Could not record entity graph rebuild start; not running it:", startError);
     throw new Error(`entity graph rebuild not started: ${String(startError?.message || startError)}`);
   }
+  if (claim.locked) {
+    console.warn(`Entity graph rebuild (${source}) skipped: another rebuild is running`);
+    throw entityGraphRebuildLockedError();
+  }
+  logId = claim.logId;
 
   let result = null;
   let failure = null;

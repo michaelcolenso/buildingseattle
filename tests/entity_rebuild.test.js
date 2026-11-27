@@ -578,6 +578,59 @@ test("a failed run whose final log write also fails still keeps empty addresses 
   const page = await worker.fetch(new Request(`https://buildingseattle.com/address/${slug}`), env, { waitUntil() {} });
   assert.equal(page.status, 503, "empty address is not declared gone while the latest rebuild is unfinished");
 
-  await rebuild(createEnv(db)); // the next clean run restores trust (and removes the stale address)
+  // The stuck marker holds the single-flight lock until it is 30 minutes old...
+  const blocked = await rebuild(createEnv(db));
+  assert.equal(blocked.status, 409);
+  assert.equal(lastRebuildStatus(db), "running");
+  db.prepare("UPDATE ingest_logs SET start_time = datetime('now', '-31 minutes') WHERE status = 'running'").run();
+
+  await rebuild(createEnv(db)); // ...then the next clean run restores trust (and removes the stale address)
   assert.equal(lastRebuildStatus(db), "success");
+});
+
+test("a second rebuild while one is running is refused with 409 and changes nothing", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  // An in-flight rebuild (cron or admin) holds a fresh `running` row.
+  db.prepare(
+    "INSERT INTO ingest_logs (run_type, source, status, start_time, end_time) VALUES ('entity_graph', 'scheduled', 'running', datetime('now', '-2 minutes'), datetime('now', '-2 minutes'))",
+  ).run();
+  const before = snapshot(db);
+  const env = createEnv(db);
+  const second = await rebuild(env);
+  assert.equal(second.status, 409);
+  assert.equal(second.body.locked, true);
+  assert.match(second.body.error, /already running/);
+  assert.deepEqual(snapshot(db), before, "nothing was mutated");
+  const runs = rows(db, "SELECT status FROM ingest_logs WHERE run_type = 'entity_graph'").map((r) => r.status);
+  assert.deepEqual(runs, ["running"], "the refused run wrote no ingest_logs row");
+  assert.ok(
+    env.statements.every((sql) => !/^\s*(UPDATE|DELETE)/i.test(sql)),
+    "the refused run issued no UPDATE/DELETE",
+  );
+});
+
+test("?force=1 overrides a stale running marker; the lock ignores markers older than 30 minutes", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  db.prepare(
+    "INSERT INTO ingest_logs (run_type, source, status, start_time, end_time) VALUES ('entity_graph', 'admin', 'running', datetime('now', '-5 minutes'), datetime('now', '-5 minutes'))",
+  ).run();
+  assert.equal((await rebuild(createEnv(db))).status, 409);
+
+  const forced = await worker.fetch(
+    new Request("https://buildingseattle.com/admin/build-graph?force=1", { method: "POST", headers: { "X-Admin-Token": ADMIN_TOKEN } }),
+    createEnv(db),
+    { waitUntil() {} },
+  );
+  assert.equal(forced.status, 200);
+  assert.equal(lastRebuildStatus(db), "success");
+
+  const stale = openDatabase();
+  seedPermits(stale);
+  stale.prepare(
+    "INSERT INTO ingest_logs (run_type, source, status, start_time, end_time) VALUES ('entity_graph', 'scheduled', 'running', datetime('now', '-45 minutes'), datetime('now', '-45 minutes'))",
+  ).run();
+  assert.equal((await rebuild(createEnv(stale))).status, 200, "a 45-minute-old marker is treated as dead");
+  assert.equal(lastRebuildStatus(stale), "success");
 });
