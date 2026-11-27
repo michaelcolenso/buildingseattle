@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS permits (
     has_completed_inspections INTEGER DEFAULT 0,
     adu_type TEXT CHECK (adu_type IN ('ADU', 'DADU') OR adu_type IS NULL),
     adu_classification_version INTEGER NOT NULL DEFAULT 0,
+    status_raw TEXT,
+    source_updated_at TEXT,
     last_enriched_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -143,11 +145,14 @@ CREATE TABLE IF NOT EXISTS ingest_logs (
     records_added INTEGER DEFAULT 0,
     records_updated INTEGER DEFAULT 0,
     error_message TEXT,
+    cursor TEXT,
+    records_unchanged INTEGER DEFAULT 0,
     start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     end_time DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_ingest_logs_status ON ingest_logs(status);
+CREATE INDEX IF NOT EXISTS idx_ingest_logs_run_type_start ON ingest_logs(run_type, status, start_time);
 CREATE INDEX IF NOT EXISTS idx_ingest_logs_run_type ON ingest_logs(run_type);
 
 INSERT OR IGNORE INTO contractors (name, slug, specialty, description, license_number, years_active, active_projects) VALUES ('Seattle Construction Group', 'seattle-construction-group', 'General Contractor', 'Full-service commercial construction serving Greater Seattle since 2008.', 'CONTRACT1234', 16, 12);
