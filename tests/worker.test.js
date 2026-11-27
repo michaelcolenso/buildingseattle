@@ -1970,11 +1970,15 @@ test("GET /insights/plan-review renders the insights page", async () => {
   assert.match(html, /Insights/);
 });
 
-test("latestPermitActivity selects the freshest available source timestamp", () => {
+test("latestPermitActivity selects the newest SDCI source event, not row-touch timestamps", () => {
+  // updated_at/created_at are bumped by every upsert, so they would report
+  // the ingest date rather than permit activity (audit E14).
   assert.equal(latestPermitActivity([
     { issued_date: "2026-06-01", updated_at: "2026-07-30" },
     { applied_date: "2026-07-01", created_at: "2026-07-02" },
-  ]), "2026-07-30");
+  ]), "2026-07-01");
+  assert.equal(latestPermitActivity([{ applied_date: "2026-05-01", completed_date: "2026-08-02T00:00:00" }]), "2026-08-02");
+  assert.equal(latestPermitActivity([{ updated_at: "2026-07-30" }]), null);
   assert.equal(latestPermitActivity([]), null);
 });
 
@@ -1992,7 +1996,7 @@ test("address detail renders record-level freshness and methodology context", as
           },
           async all() {
             if (sql.includes("FROM permits p LEFT JOIN contractors")) {
-              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, updated_at: "2026-07-30" }] };
+              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, issued_date: "2026-07-30", updated_at: "2026-11-27" }] };
             }
             return { results: [] };
           },
@@ -2004,7 +2008,8 @@ test("address detail renders record-level freshness and methodology context", as
   const html = await response.text();
 
   assert.equal(response.status, 200);
-  assert.match(html, /Source records updated through Jul 30, 2026/);
+  assert.match(html, /Latest permit activity on record here: Jul 30, 2026\./);
+  assert.doesNotMatch(html, /Nov 27, 2026/);
   assert.match(html, /declared value is not verified project cost/i);
   assert.match(html, /Read the full methodology and limitations/);
 });

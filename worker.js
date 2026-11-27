@@ -1157,13 +1157,17 @@ function parseUtcDate(value) {
 function formatDate(value, includeTime = false) {
   const date = parseUtcDate(value);
   if (!date) return "Unavailable";
+  // A date-only value ("2026-09-18") is a calendar day, not UTC midnight:
+  // formatting it in Pacific time printed the day before.
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(String(value).trim());
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
-    year: includeTime ? undefined : "numeric",
+    year: "numeric",
     hour: includeTime ? "numeric" : undefined,
     minute: includeTime ? "2-digit" : undefined,
-    timeZone: "America/Los_Angeles",
+    timeZoneName: includeTime ? "short" : undefined,
+    timeZone: dateOnly && !includeTime ? "UTC" : "America/Los_Angeles",
   }).format(date);
 }
 function humanize(value, fallback = "Permit") {
@@ -1197,6 +1201,13 @@ async function dbAll(env, sql, binds = []) {
   }
 }
 
+// Source freshness, one definition for every "latest permit event" and
+// "updated through" label: the newest applied/issued/completed date SDCI
+// reports. Row-touch timestamps (updated_at, created_at) are excluded because
+// every upsert bumps them, so they showed the render date, not source activity.
+const LATEST_SOURCE_EVENT_SQL =
+  "NULLIF(MAX(MAX(COALESCE(completed_date, ''), COALESCE(issued_date, ''), COALESCE(applied_date, ''))), '')";
+
 export async function getCanonicalStats(env) {
   const [stats, ingest] = await Promise.all([
     dbFirst(
@@ -1208,7 +1219,7 @@ export async function getCanonicalStats(env) {
          COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL THEN contractor_id END) AS contractors,
          COUNT(DISTINCT CASE WHEN contractor_id IS NOT NULL AND lower(COALESCE(status,'')) = 'active' THEN contractor_id END) AS active_contractors,
          COALESCE(SUM(${countedValueSql("permits")}), 0) AS total_value,
-         MAX(COALESCE(issued_date, applied_date)) AS latest_record_date
+         ${LATEST_SOURCE_EVENT_SQL} AS latest_record_date
        FROM permits`,
     ),
     dbFirst(
@@ -4816,12 +4827,10 @@ function entPermitRows(permits) {
   return `<div class="table-scroll" role="region" aria-label="Permits" tabindex="0"><table class="ent"><thead><tr><th>Permit</th><th>Type</th><th>Value</th><th>Status</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
+// Newest SDCI source event (applied/issued/completed) among an entity's
+// permits. Row-touch timestamps are ignored: every upsert bumps them.
 export function latestPermitActivity(permits) {
-  return (permits || [])
-    .flatMap((permit) => [permit.updated_at, permit.issued_date, permit.applied_date, permit.created_at])
-    .filter(Boolean)
-    .sort()
-    .at(-1) || null;
+  return latestSourceEventDate(permits);
 }
 
 const ENTITY_HUB_PAGE_SIZE = 48;
@@ -4959,6 +4968,7 @@ async function renderEntityHubPage(type, env, request) {
 
   const state = buildEntityHubState(type, request);
   const query = buildEntityHubQuery(type, state);
+  const freshnessPromise = getDataFreshness(env);
   let items = [];
   let queryFailed = false;
   try {
@@ -4974,11 +4984,9 @@ async function renderEntityHubPage(type, env, request) {
 
   const hasNext = items.length > ENTITY_HUB_PAGE_SIZE;
   items = items.slice(0, ENTITY_HUB_PAGE_SIZE);
-  const updatedThrough = items
-    .map((item) => item.latest_activity)
-    .filter(Boolean)
-    .sort()
-    .at(-1);
+  // Site-wide source freshness, the same value every hub and insight page
+  // shows, instead of the newest item on this page (which differed per page).
+  const updatedThrough = (await freshnessPromise)?.updated_through || null;
   const canonicalPath = state.hasFilters ? `/${type}` : hubUrl(type, state, state.page);
   const canonical = `${BASE_URL}${canonicalPath}`;
   const itemList = items.map((item, index) => ({
@@ -5930,7 +5938,7 @@ async function getAduDaduData(env) {
              SUM(COALESCE(housing_units_added, 0)) AS units_added,
              SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
              SUM(CASE WHEN lower(COALESCE(status, '')) IN ('active', 'pending', 'new', 'in review', 'under review') THEN 1 ELSE 0 END) AS active,
-             MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS data_updated_through
+             ${LATEST_SOURCE_EVENT_SQL} AS data_updated_through
       FROM permits
       WHERE adu_type IN ('ADU', 'DADU')`,
     ).first(),
@@ -6415,16 +6423,22 @@ async function getDataFreshness(env) {
   return safeFirst(
     env,
     `/* data-freshness */
-     SELECT MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS updated_through,
+     SELECT ${LATEST_SOURCE_EVENT_SQL} AS updated_through,
             COUNT(*) AS permit_count
      FROM permits`,
   );
 }
 
-function renderDataTrustNote(updatedThrough, extra = "") {
-  const freshness = updatedThrough
-    ? `Source records updated through ${escapeHtml(entDate(updatedThrough))}.`
-    : "Freshness is shown when the source record provides a usable update date.";
+// scope "site": updatedThrough is the site-wide newest SDCI event
+// (getDataFreshness). scope "entity": the newest event among this page's own
+// permits, which is activity, not freshness, so it is labelled as such.
+function renderDataTrustNote(updatedThrough, extra = "", scope = "site") {
+  const label = formatCalendarDate(updatedThrough);
+  const freshness = !label
+    ? "Freshness is shown when the source record provides a usable date."
+    : scope === "entity"
+      ? `Latest permit activity on record here: ${escapeHtml(label)}.`
+      : `Source records updated through ${escapeHtml(label)} (newest SDCI permit event).`;
   return `<aside class="bs-card" aria-label="Data source and methodology" style="font-size:.82rem;color:var(--text-muted);">
       <strong style="color:var(--text);">Source and methodology.</strong>
       ${freshness} ${extra}
@@ -6443,7 +6457,7 @@ async function getMarketSegmentData(env, segment) {
        SELECT COUNT(*) AS total, COALESCE(SUM(${countedValueSql("p")}), 0) AS total_value,
               SUM(CASE WHEN issued_date IS NOT NULL AND issued_date != '' THEN 1 ELSE 0 END) AS issued,
               SUM(CASE WHEN ${ACTIVE_PERMIT_SQL} THEN 1 ELSE 0 END) AS active,
-              MAX(COALESCE(updated_at, last_enriched_at, issued_date, applied_date, created_at)) AS updated_through
+              ${LATEST_SOURCE_EVENT_SQL} AS updated_through
        FROM permits p WHERE ${where}`,
     ),
     safeAll(
@@ -7674,7 +7688,7 @@ async function renderAddressPage(slug, env, request) {
       jsonLd,
       noindex,
       ogType: "place",
-      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Property totals aggregate public permit records; declared value is not verified project cost.")}`,
+      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Property totals aggregate public permit records; declared value is not verified project cost.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } },
   );
@@ -7868,7 +7882,7 @@ async function renderProjectPage(slug, env, request) {
       jsonLd,
       noindex,
       ogType: "article",
-      body: `${body}${renderDataTrustNote(project.latest_activity_date || latestPermitActivity(permits), "Projects are inferred permit groups, not verified completed developments.")}`,
+      body: `${body}${renderDataTrustNote(latestPermitActivity(permits) || project.latest_activity_date, "Projects are inferred permit groups, not verified completed developments.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html" } },
   );
@@ -8027,7 +8041,7 @@ async function renderNeighborhoodPage(slug, env, request) {
       canonical,
       jsonLd,
       noindex,
-      body: `${body}${renderDataTrustNote(latestPermitActivity(recentPermits), "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.")}`,
+      body: `${body}${renderDataTrustNote(latestPermitActivity(recentPermits), "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html" } },
   );
@@ -8199,7 +8213,7 @@ async function renderOrgContractorPage(slug, env, request) {
       jsonLd,
       noindex,
       ogType: "profile",
-      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Participant matching follows names in public permit records and may combine or separate similarly named entities.")}`,
+      body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Participant matching follows names in public permit records and may combine or separate similarly named entities.", "entity")}`,
     }),
     { headers: { "Content-Type": "text/html" } },
   );
@@ -10695,7 +10709,7 @@ async function renderMethodologyPage(env) {
     <section class="bs-card">
       <h2>Ingest and enrichment</h2>
       <p>A scheduled daily ingest upserts base permit fields. A separate enrichment job retrieves detail-page fields that are not consistently available in the open-data feed, including parcel number, review level, review milestones, contractor license details, housing-unit changes, and fuller descriptions.</p>
-      <p>Dates and statuses may change as SDCI reviewers update a record. Page-level “updated through” labels report the newest source-record timestamp included in that result, not the time a reader opened the page.</p>
+      <p>Dates and statuses may change as SDCI reviewers update a record. “Updated through” labels report the newest applied, issued or completed date in the SDCI records we hold, site-wide, so every page shows the same value. Property, project, neighborhood and participant pages also show the latest permit activity among their own records. Neither is the time a reader opened the page or the time we last re-saved a row.</p>
     </section>
     <section class="bs-card">
       <h2>Derived entities and matching confidence</h2>

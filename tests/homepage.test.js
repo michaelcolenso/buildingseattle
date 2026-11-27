@@ -211,3 +211,14 @@ test("non-home routes and www canonicalization continue through the existing wor
   const www = await worker.fetch(new Request("https://www.buildingseattle.com/"), createEnv(), ctx());
   assert.equal(www.status, 301);
 });
+
+test("homepage formats date-only freshness as the same calendar day (audit E13)", async () => {
+  const response = await worker.fetch(new Request("https://buildingseattle.com/"), createEnv(), ctx());
+  const html = await response.text();
+  // latest_record_date "2026-08-23" used to render as Aug 22 (UTC midnight
+  // shown in Pacific time).
+  assert.match(html, /Latest permit event <strong>Aug 23, 2026<\/strong>/);
+  assert.doesNotMatch(html, /Aug 22, 2026/);
+  // Ingest timestamps carry the year and the time zone.
+  assert.match(html, /Last successful ingest <strong>Aug 24, 2026, 1:15 AM PDT<\/strong>/);
+});
