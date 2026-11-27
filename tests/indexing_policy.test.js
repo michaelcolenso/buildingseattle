@@ -455,3 +455,22 @@ test("an empty Basis Reset Radar is noindex and left out of the sitemap; a score
   assert.equal(fallback.status, 200);
   assert.doesNotMatch(fallback.html, /insights\/basis-reset/);
 });
+
+test("permit pages link only neighborhood pages the graph built, never placeholder or derived slugs (E10)", async () => {
+  const db = seededDatabase();
+  // Free-text neighborhood with no graph page behind it.
+  db.exec(`
+    INSERT INTO addresses (id, slug, normalized_address, display_address) VALUES (5, '500-elm-st-seattle-wa', '500 ELM ST, SEATTLE, WA', '500 ELM ST, Seattle, WA');
+    INSERT INTO permits (id, permit_number, address, address_id, neighborhood, status, type) VALUES
+      (501, '7000501-CN', '500 ELM ST', 5, 'Lower Queen Anne', 'active', 'residential');
+  `);
+  const env = createEnv(db);
+  const neighborhoodLinks = async (number) =>
+    [...(await get(env, `/permits/${number}`)).html.matchAll(/href="(\/neighborhood\/[^"]+)"/g)].map((m) => m[1]);
+
+  assert.deepEqual(await neighborhoodLinks("7000101-CN"), ["/neighborhood/ballard"]);
+  assert.equal((await get(env, "/neighborhood/ballard")).status, 200);
+  assert.deepEqual(await neighborhoodLinks("7000301-CN"), [], "Other Seattle is not linked");
+  assert.deepEqual(await neighborhoodLinks("7000501-CN"), [], "no graph neighborhood, no link");
+  assert.equal((await get(env, "/neighborhood/lower-queen-anne")).status, 404);
+});

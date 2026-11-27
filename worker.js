@@ -3,7 +3,6 @@
 import {
   buildEntityGraph,
   parseAddress,
-  makeSlug,
   guessOrgType,
   normalizeOrgName,
 } from "./entity_graph.js";
@@ -2726,7 +2725,11 @@ async function renderPermitDetail(permitNumber, env, request) {
            a.slug as address_slug,
            a.display_address as address_display,
            pr.slug as project_slug,
-           pr.name as project_name
+           pr.name as project_name,
+           (SELECT n.slug FROM address_neighborhoods an JOIN neighborhoods n ON n.id = an.neighborhood_id
+             WHERE an.address_id = p.address_id ORDER BY n.id LIMIT 1) AS graph_neighborhood_slug,
+           (SELECT n.name FROM address_neighborhoods an JOIN neighborhoods n ON n.id = an.neighborhood_id
+             WHERE an.address_id = p.address_id ORDER BY n.id LIMIT 1) AS graph_neighborhood_name
     FROM permits p
     LEFT JOIN contractors c ON p.contractor_id = c.id
     ${developmentSiteJoin()}
@@ -3068,7 +3071,13 @@ async function renderPermitDetail(permitNumber, env, request) {
   }).replace(/</g, "\\u003c");
 
   // Links up into the entity graph (address / project / contractor / neighborhood).
-  const neighborhoodSlug = permit.neighborhood ? makeSlug(permit.neighborhood) : makeSlug(neighborhood);
+  // Link the neighborhood page the entity graph actually built for this
+  // permit's address. A slug derived from the permit's free-text neighborhood
+  // can name a page that does not exist (E10), and placeholder buckets such as
+  // "Other Seattle" are noindex, so neither is linked.
+  const neighborhoodSlug = permit.graph_neighborhood_slug && !isPlaceholderNeighborhood(permit.graph_neighborhood_name)
+    ? permit.graph_neighborhood_slug
+    : "";
   const entityLinks = [
     permit.address_slug
       ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.address_display || permit.address)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Property</span>`
@@ -3080,7 +3089,7 @@ async function renderPermitDetail(permitNumber, env, request) {
       ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Contractor</span>`
       : "",
     neighborhoodSlug
-      ? `<a href="/neighborhood/${encodeURIComponent(neighborhoodSlug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${safeNeighborhood}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Neighborhood</span>`
+      ? `<a href="/neighborhood/${encodeURIComponent(neighborhoodSlug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.graph_neighborhood_name)}</a> <span style="color:var(--text-muted);font-size:0.8rem;">Neighborhood</span>`
       : "",
   ].filter(Boolean);
   const entityLinksCard = entityLinks.length
