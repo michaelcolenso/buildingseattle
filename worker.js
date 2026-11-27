@@ -14,7 +14,19 @@ import {
   ADU_NORMALIZED_TEXT_SQL,
   classifyAduPermit,
 } from "./adu.js";
-import { ENTITY_HUBS } from "./entity_hubs.js";
+import {
+  ADDRESS_MIN_INDEXABLE_PERMITS,
+  ENTITY_HUBS,
+  MULTI_PERMIT_PROJECT_SQL,
+  ORG_INDEX_POLICY_SQL,
+  addressIsIndexable,
+  isPlaceholderNeighborhood,
+  PUBLISHED_ORGS_CTE,
+  projectIsWithinAddress,
+  projectPagePolicy,
+  realAddressSql,
+  realNeighborhoodSql,
+} from "./entity_hubs.js";
 import { countedValueSql, countedValues } from "./value_counting.js";
 import { bsIcon, bsStatusPill, bsTransition, themeBootScript, themeToggleButton, themeToggleStyles, themedLockup } from "./brand_ui.js";
 import { handleMcpRequest, MCP_TOOLS } from "./mcp.js";
@@ -3570,8 +3582,13 @@ async function renderAdminDashboard(request, env) {
 }
 
 async function renderContractorPage(slug, env, request) {
-  const canonical = BASE_URL + "/contractor/" + encodeURIComponent(slug);
-  const contractor = await env.DB.prepare("SELECT * FROM contractors WHERE slug = ?").bind(slug).first();
+  let contractor;
+  try {
+    contractor = await env.DB.prepare("SELECT * FROM contractors WHERE slug = ?").bind(slug).first();
+  } catch (error) {
+    console.error("Contractor lookup failed:", error);
+    return renderTemporarilyUnavailable();
+  }
 
   if (!contractor) {
     // Fall back to the people_orgs-backed page so /contractor/:slug resolves the
@@ -3579,6 +3596,18 @@ async function renderContractorPage(slug, env, request) {
     return renderOrgContractorPage(slug, env, request);
   }
 
+  // A D1 error while reading the curated page answers 503 (not a JSON 500, and
+  // never a page whose permit count silently read as zero).
+  try {
+    return await renderCuratedContractorPage(contractor, slug, env, request);
+  } catch (error) {
+    console.error("Contractor page read failed:", error);
+    return renderTemporarilyUnavailable();
+  }
+}
+
+async function renderCuratedContractorPage(contractor, slug, env, request) {
+  const canonical = BASE_URL + "/contractor/" + encodeURIComponent(slug);
   const [permits, metrics, marketFocus, projectTypes] = await Promise.all([
     env.DB.prepare("SELECT * FROM permits WHERE contractor_id = ? ORDER BY issued_date DESC LIMIT 10")
       .bind(contractor.id)
@@ -3601,19 +3630,7 @@ async function renderContractorPage(slug, env, request) {
     `,
     )
       .bind(contractor.id)
-      .first()
-      .catch(() => ({
-        avg_permit_days: null,
-        avg_build_days: null,
-        avg_review_cycles: null,
-        avg_plan_review_days: null,
-        avg_corrections_days: null,
-        units_added: 0,
-        units_removed: 0,
-        total_count: 0,
-        active_count: 0,
-        completed_count: 0,
-      })),
+      .first(),
     env.DB.prepare(
       `
       SELECT neighborhood, COUNT(*) as count, SUM(${countedValueSql("permits")}) as total_value
@@ -3793,7 +3810,7 @@ async function renderContractorPage(slug, env, request) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${escapeHtml(contractorPageTitle)}</title>
     <meta name="description" content="${safeContractorMetaDescription}">
-    <meta name="robots" content="index,follow,max-image-preview:large">
+    <meta name="robots" content="${totalPermits === 0 ? "noindex,follow" : "index,follow,max-image-preview:large"}">
     <link rel="canonical" href="${canonical}">
     <meta property="og:title" content="${escapeHtml(contractorPageTitle)}">
     <meta property="og:description" content="${safeContractorMetaDescription}">
@@ -4840,15 +4857,8 @@ export function latestPermitActivity(permits) {
 const ENTITY_HUB_PAGE_SIZE = 48;
 const ACTIVE_PERMIT_SQL =
   "lower(COALESCE(p.status, '')) IN ('active', 'pending', 'new', 'in review', 'under review')";
-// A cluster of one permit is not a project: it repeats the record its address
-// page already publishes. Nor is a cluster that holds every permit at its
-// address and nothing else: its page lists exactly what the address page lists,
-// and Google picks the address page as canonical over it. Only clusters that
-// are neither are listed, linked, and advertised as projects; the duplicates
-// redirect to the address page instead (see renderProjectPage). `pr` is the
-// projects alias in every query using this.
-const MULTI_PERMIT_PROJECT_SQL =
-  "((SELECT COUNT(*) FROM project_permits mpp WHERE mpp.project_id = pr.id) > 1 AND NOT (pr.address_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM project_permits dpp JOIN permits dp ON dp.id = dpp.permit_id WHERE dpp.project_id = pr.id AND dp.address_id IS NOT pr.address_id) AND (SELECT COUNT(*) FROM permits ap WHERE ap.address_id = pr.address_id) = (SELECT COUNT(*) FROM project_permits cpp WHERE cpp.project_id = pr.id)))";
+// MULTI_PERMIT_PROJECT_SQL and the other indexing predicates live in
+// entity_hubs.js so sibling modules (basis_reset_routes.js) share them.
 export { buildEntityHubQuery, buildEntityHubState };
 
 function boundedHubChoice(value, allowed, fallback) {
@@ -4890,7 +4900,8 @@ function buildEntityHubQuery(type, state) {
   const where = [];
   const havingParts = [];
   const binds = [];
-  if (type === "projects") havingParts.push(MULTI_PERMIT_PROJECT_SQL);
+  if (config.baseWhereSql) where.push(config.baseWhereSql);
+  if (config.baseHavingSql) havingParts.push(config.baseHavingSql);
   if (state.neighborhood) {
     where.push("p.neighborhood = ?");
     binds.push(state.neighborhood);
@@ -4973,16 +4984,22 @@ async function renderEntityHubPage(type, env, request) {
   const state = buildEntityHubState(type, request);
   const query = buildEntityHubQuery(type, state);
   let items = [];
-  let queryFailed = false;
   try {
     const result = await env.DB.prepare(query.sql).bind(...query.binds).all();
     items = result.results || [];
   } catch (error) {
-    queryFailed = true;
-    // Graph migrations may briefly lag a deployment; keep the route available
-    // but prevent an empty fallback from entering the index. Log it so a
-    // permanently failing hub query is visible instead of silently empty.
+    // A failed read is "ask again later", never a cached 200 noindex page.
     console.error(`entity-hub query failed for ${type}:`, error);
+    return renderTemporarilyUnavailable();
+  }
+  if (items.length === 0) {
+    // Past the last page there is nothing to publish: 404 (503 while the graph
+    // is mid-rebuild). An empty unfiltered first page means the graph itself is
+    // empty or unreadable, which is never a state to index or cache.
+    if (state.page > 1) {
+      return entityNotFound(env, { heading: "Page not found", message: `There are no more ${config.itemLabel} on this page. Start from the first page.` });
+    }
+    if (!state.hasFilters) return renderTemporarilyUnavailable();
   }
 
   const hasNext = items.length > ENTITY_HUB_PAGE_SIZE;
@@ -5037,13 +5054,17 @@ async function renderEntityHubPage(type, env, request) {
     <nav aria-label="Breadcrumb" style="font-size:0.8125rem;margin-bottom:1.25rem;"><a class="ent-link" href="/">Home</a> / ${escapeHtml(config.title)}</nav>
     <header style="max-width:800px;margin-bottom:2rem;"><h1>${escapeHtml(config.title)}</h1><p style="font-size:1.08rem;color:var(--text-muted);line-height:1.7;">${escapeHtml(config.intro)}</p></header>
     ${renderEntityHubFilters(type, state)}
-    ${items.length ? `<p style="color:var(--text-muted);">Page ${state.page}: showing ${items.length} ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>${pagination}` : queryFailed ? `<div class="bs-card"><h2>Listings are temporarily unavailable</h2><p>We couldn't load ${escapeHtml(config.itemLabel)} right now. Try again in a few minutes.</p></div>` : `<div class="bs-card"><h2>No matching ${escapeHtml(config.itemLabel)}</h2><p>No ${escapeHtml(config.itemLabel)} match these filters. <a class="ent-link" href="/${type}">View all ${escapeHtml(config.itemLabel)}</a></p></div>`}
+    ${items.length ? `<p style="color:var(--text-muted);">Page ${state.page}: showing ${items.length} ${config.itemLabel} from current public permit records.</p><section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;">${cards}</section>${pagination}` : `<div class="bs-card"><h2>No matching ${escapeHtml(config.itemLabel)}</h2><p>No ${escapeHtml(config.itemLabel)} match these filters. <a class="ent-link" href="/${type}">View all ${escapeHtml(config.itemLabel)}</a></p></div>`}
     ${renderDataTrustNote(updatedThrough, "Hub rankings aggregate public permit records; declared value is not verified project cost.")}`;
 
+  // Each page of a hub is self-canonical and indexable (crawlable pagination
+  // is how deep entity pages are discovered), so each gets its own title and
+  // description instead of sharing page 1's.
+  const pageSuffix = state.page > 1 ? ` — Page ${state.page}` : "";
   return new Response(
     renderEntityDoc({
-      title: `${config.title} | Building Seattle`,
-      description: config.description,
+      title: `${config.title}${pageSuffix} | Building Seattle`,
+      description: state.page > 1 ? `Page ${state.page}. ${config.description}` : config.description,
       canonical,
       jsonLd,
       noindex: items.length === 0 || state.hasFilters,
@@ -7422,6 +7443,63 @@ function renderTemporarilyUnavailable() {
   return response;
 }
 
+// Strict reads for entity pages: a D1 error throws instead of looking like an
+// empty result, so the caller can answer 503 rather than derive a 404, 410 or
+// noindex from a read that never happened.
+async function strictAll(env, sql, binds = []) {
+  return (await env.DB.prepare(sql).bind(...binds).all()).results || [];
+}
+async function strictFirst(env, sql, binds = []) {
+  return (await env.DB.prepare(sql).bind(...binds).first()) || null;
+}
+
+// Whether the entity graph can be trusted to say "this entity does not exist"
+// or "this entity is empty" right now. Not while the latest rebuild is running
+// or did not finish cleanly (slugs and links may be half-moved), and, when
+// `requireLinked`, not while any permit still waits to be linked to an
+// address. A failed read counts as unsettled. No rebuild row yet counts as
+// settled.
+async function entityGraphSettled(env, { requireLinked = false } = {}) {
+  let check = null;
+  try {
+    check = await env.DB.prepare(
+      `SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL) AS pending,
+              (SELECT status FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1) AS last_rebuild`,
+    ).first();
+  } catch (error) {
+    console.error("Entity graph integrity check failed:", error);
+    return false;
+  }
+  if (!check) return !requireLinked;
+  if (["running", "error", "partial"].includes(check.last_rebuild)) return false;
+  return !requireLinked || Number(check.pending) === 0;
+}
+
+// 404 for a slug the graph does not have, unless the graph is mid-rebuild or
+// unreadable, when the slug may merely be moving: then 503.
+async function entityNotFound(env, options) {
+  if (!(await entityGraphSettled(env))) return renderTemporarilyUnavailable();
+  return render404(options);
+}
+
+// 410 for an entity row with nothing left to publish, unless the graph cannot
+// vouch for that (see entityGraphSettled): then 503.
+async function entityGone(env, options) {
+  if (!(await entityGraphSettled(env, { requireLinked: true }))) return renderTemporarilyUnavailable();
+  return renderGone(options);
+}
+
+// Address titles stay inside the 62-character SERP budget the SEO monitor
+// enforces: drop the value first, then shorten the address itself.
+const ADDRESS_TITLE_MAX = 62;
+function fitAddressTitle(display, permitFact, money) {
+  const full = `${display} — ${permitFact}${money ? ` · ${money}` : ""}`;
+  if (full.length <= ADDRESS_TITLE_MAX) return full;
+  const suffix = ` — ${permitFact}`;
+  if (display.length + suffix.length <= ADDRESS_TITLE_MAX) return `${display}${suffix}`;
+  return `${display.slice(0, Math.max(1, ADDRESS_TITLE_MAX - suffix.length - 1)).trimEnd()}…${suffix}`;
+}
+
 async function renderAddressPage(slug, env, request) {
   const canonical = `${BASE_URL}/address/${encodeURIComponent(slug)}`;
   let address;
@@ -7432,7 +7510,7 @@ async function renderAddressPage(slug, env, request) {
     return renderTemporarilyUnavailable();
   }
   if (!address) {
-    return render404({
+    return entityNotFound(env, {
       heading: "Address not found",
       message: "We do not have an aggregated property page for that address yet.",
     });
@@ -7501,19 +7579,7 @@ async function renderAddressPage(slug, env, request) {
   // part-way through relinking), "no permits here" cannot be trusted, so answer
   // 503 and let the crawler come back instead. No rebuild row yet counts as clean.
   if (permitCount === 0) {
-    let check = null;
-    try {
-      check = await env.DB.prepare(
-        `SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL) AS pending,
-                (SELECT status FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1) AS last_rebuild`,
-      ).first();
-    } catch (error) {
-      console.error("Address integrity check failed:", error);
-    }
-    if (!check || Number(check.pending) !== 0 || ["running", "error", "partial"].includes(check.last_rebuild)) {
-      return renderTemporarilyUnavailable();
-    }
-    return renderGone({
+    return entityGone(env, {
       heading: "This address has no permits on record",
       message:
         "We no longer have construction permit records for this address in the public Seattle DCI data we publish. Try browsing permits or searching for another address.",
@@ -7527,9 +7593,11 @@ async function renderAddressPage(slug, env, request) {
   const lastDate = dates[dates.length - 1];
   const activePermits = permits.filter((p) => ["active", "pending", "new"].includes(String(p.status || "").toLowerCase()));
   const display = smartTitleCase(cleanFeedText(address.display_address) || cleanFeedText(address.normalized_address)) || "Seattle property";
-  // Zero-permit addresses return 410 above, so every address page that renders
-  // has records on it and stays indexable.
-  const noindex = false;
+  // Zero-permit addresses return 410 above. A single-permit address repeats
+  // its one permit page, and a city-only placeholder ("Seattle, Seattle, WA")
+  // lumps unrelated permits together: both stay reachable for people but are
+  // noindex,follow and left out of the sitemap and hub (addressIsIndexable).
+  const noindex = !addressIsIndexable(address, permitCount);
 
   // Use one shared, source-backed descriptor for the address title, meta, and
   // first screen. Prefer a distinctive tenant/project phrase when available,
@@ -7546,7 +7614,7 @@ async function renderAddressPage(slug, env, request) {
   const titlePermitFact = activePermits.length > 0
     ? `${activePermits.length} Active Permit${activePermits.length !== 1 ? "s" : ""}`
     : `${permitCount} Permit${permitCount !== 1 ? "s" : ""}`;
-  const title = `${display} — ${titlePermitFact}${totalValue ? ` · ${compactMetricMoney(totalValue)}` : ""}`;
+  const title = fitAddressTitle(display, titlePermitFact, totalValue ? compactMetricMoney(totalValue) : "");
 
   // Put complete decision-making facts before the optional work descriptor.
   // Contractors are included whole or not at all; only the final descriptor
@@ -7695,86 +7763,101 @@ async function renderAddressPage(slug, env, request) {
 
 async function renderProjectPage(slug, env, request) {
   const selfUrl = `${BASE_URL}/project/${encodeURIComponent(slug)}`;
-  const project = await safeFirst(
-    env,
-    `SELECT pr.*, a.display_address, a.slug AS address_slug, a.city, a.state
-     FROM projects pr LEFT JOIN addresses a ON a.id = pr.address_id WHERE pr.slug = ?`,
-    [slug],
-  );
-  if (!project) {
-    return render404({ heading: "Project not found", message: "We have not clustered a project under that name yet." });
+  // Every read that decides the status, robots or canonical is strict: a D1
+  // error answers 503 instead of a cached 200 noindex or a false 404.
+  let project;
+  let permits;
+  let participants;
+  let neighborhood;
+  try {
+    project = await strictFirst(
+      env,
+      `SELECT pr.*, a.display_address, a.slug AS address_slug, a.city, a.state
+       FROM projects pr LEFT JOIN addresses a ON a.id = pr.address_id WHERE pr.slug = ?`,
+      [slug],
+    );
+    if (!project) {
+      return entityNotFound(env, { heading: "Project not found", message: "We have not clustered a project under that name yet." });
+    }
+    [permits, participants, neighborhood] = await Promise.all([
+      strictAll(
+        env,
+        `SELECT p.*, c.name AS contractor_name, c.slug AS contractor_slug
+         FROM project_permits jp JOIN permits p ON p.id = jp.permit_id
+         LEFT JOIN contractors c ON c.id = p.contractor_id
+         WHERE jp.project_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC`,
+        [project.id],
+      ),
+      safeAll(
+        env,
+        `SELECT o.name, o.slug, o.type_guess, pp.role FROM project_participants pp
+         JOIN people_orgs o ON o.id = pp.people_org_id WHERE pp.project_id = ? ORDER BY pp.role`,
+        [project.id],
+      ),
+      safeFirst(
+        env,
+        `SELECT n.* FROM neighborhoods n JOIN address_neighborhoods an ON an.neighborhood_id = n.id WHERE an.address_id = ? LIMIT 1`,
+        [project.address_id],
+      ),
+    ]);
+  } catch (error) {
+    console.error("Project lookup failed:", error);
+    return renderTemporarilyUnavailable();
+  }
+  if (permits.length === 0) {
+    return entityGone(env, {
+      heading: "This project has no permits on record",
+      message: "The permits this project grouped are no longer in the public Seattle DCI data we publish. Try the property page or browse permits.",
+    });
   }
 
-  const [permits, participants, neighborhood] = await Promise.all([
-    safeAll(
-      env,
-      `SELECT p.*, c.name AS contractor_name, c.slug AS contractor_slug
-       FROM project_permits jp JOIN permits p ON p.id = jp.permit_id
-       LEFT JOIN contractors c ON c.id = p.contractor_id
-       WHERE jp.project_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC`,
-      [project.id],
-    ),
-    safeAll(
-      env,
-      `SELECT o.name, o.slug, o.type_guess, pp.role FROM project_participants pp
-       JOIN people_orgs o ON o.id = pp.people_org_id WHERE pp.project_id = ? ORDER BY pp.role`,
-      [project.id],
-    ),
-    safeFirst(
-      env,
-      `SELECT n.* FROM neighborhoods n JOIN address_neighborhoods an ON an.neighborhood_id = n.id WHERE an.address_id = ? LIMIT 1`,
-      [project.address_id],
-    ),
-  ]);
-
-  const noindex = permits.length === 0;
-  // A cluster of one permit is not a project: it repeats the record the
-  // address page already publishes. Google kept such pages indexed and kept
-  // recrawling them for weeks under a canonical alone, so the duplicate now
-  // redirects to the property page. Only when the permit is linked to that
-  // same address, which guarantees the target renders: a failed read yields
-  // zero permits (safeAll) and falls through to the page below.
-  const duplicatesAddress = permits.length === 1 && Boolean(project.address_slug);
+  // projectPagePolicy (entity_hubs.js) is the JS twin of
+  // MULTI_PERMIT_PROJECT_SQL, which decides what the sitemap, hub and listings
+  // show. A one-permit cluster, or one holding every permit at its address,
+  // repeats the address page and redirects there; a small strict subset of the
+  // address is noindex; everything else is its own indexable page.
+  let addressPermitCount = null;
+  if (permits.length > 1 && projectIsWithinAddress(permits, project.address_id)) {
+    try {
+      const row = await strictFirst(env, `SELECT COUNT(*) AS total FROM permits WHERE address_id = ?`, [project.address_id]);
+      addressPermitCount = row ? Number(row.total) : null;
+    } catch (error) {
+      console.error("Project address count failed:", error);
+      return renderTemporarilyUnavailable();
+    }
+  }
+  const policy = projectPagePolicy({
+    permits,
+    addressId: project.address_id,
+    addressSlug: project.address_slug,
+    addressPermitCount,
+  });
   const addressUrl = project.address_slug ? `${BASE_URL}/address/${encodeURIComponent(project.address_slug)}` : null;
-  if (
-    duplicatesAddress &&
-    project.address_id != null &&
-    Number(permits[0].address_id) === Number(project.address_id)
-  ) {
-    // Short-lived: the URL becomes a real page again if the project gains a permit.
+  if (policy.action === "redirect") {
+    // Short-lived: the URL becomes a real page again if the project gains a
+    // permit or the address gains one outside this project.
     return new Response(null, {
       status: 301,
       headers: { Location: addressUrl, "Cache-Control": "public, max-age=3600" },
     });
   }
-  // A multi-permit cluster that holds every permit at its address, and only
-  // those, lists exactly what the address page lists. Google chose the address
-  // page as canonical over these, so they redirect there too. Same guard as
-  // above: every permit is linked to the project's address, and a failed count
-  // read (null) leaves the page in place rather than redirect blind.
-  if (
-    permits.length > 1 &&
-    addressUrl &&
-    project.address_id != null &&
-    permits.every((permit) => Number(permit.address_id) === Number(project.address_id))
-  ) {
-    const addressPermits = await safeFirst(
-      env,
-      `SELECT COUNT(*) AS total FROM permits WHERE address_id = ?`,
-      [project.address_id],
-    );
-    if (addressPermits && Number(addressPermits.total) === permits.length) {
-      // Short-lived: the URL becomes a real page again if the address gains a
-      // permit outside this project.
-      return new Response(null, {
-        status: 301,
-        headers: { Location: addressUrl, "Cache-Control": "public, max-age=3600" },
-      });
-    }
-  }
-  const canonical = duplicatesAddress ? addressUrl : selfUrl;
-  const title = `${project.name} | Seattle Construction Activity`;
-  const description = `Track permits, contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
+  const noindex = policy.action === "noindex";
+  const canonical = policy.canonical === "address" ? addressUrl : selfUrl;
+
+  // "Prefix at Street" names repeat when an address has several clusters of
+  // the same kind. Such pages are subsets of one address page and were the
+  // next likely "duplicate, Google chose a different canonical" group, so
+  // their titles and descriptions carry the permit span and lead permit.
+  const permitDates = permits.map((p) => p.issued_date || p.applied_date).filter(Boolean).sort();
+  const spanYears = [...new Set(permitDates.map((d) => String(d).slice(0, 4)))];
+  const span = spanYears.length > 1 ? `${spanYears[0]}–${spanYears.at(-1)}` : spanYears[0] || "";
+  const leadPermit = [...permits]
+    .sort((a, b) => String(a.issued_date || a.applied_date || "").localeCompare(String(b.issued_date || b.applied_date || "")) || String(a.permit_number).localeCompare(String(b.permit_number)))[0]?.permit_number || "";
+  const nameTwin = await safeFirst(env, `SELECT 1 AS taken FROM projects WHERE name = ? AND id != ? LIMIT 1`, [project.name, project.id]);
+  const title = nameTwin && leadPermit
+    ? `${project.name} — Permit ${leadPermit}`
+    : `${project.name} | Seattle Construction Activity`;
+  const description = `${countLabel(permits.length, "permit", "permits")}${span ? ` (${span})` : ""}${nameTwin && leadPermit ? ` led by permit ${leadPermit}` : ""}: track contractors, address history, estimated values, and recent construction activity for ${project.name}.`;
 
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
@@ -7783,7 +7866,7 @@ async function renderProjectPage(slug, env, request) {
         "@type": "CreativeWork",
         name: project.name,
         abstract: project.description_summary || undefined,
-        url: selfUrl,
+        url: canonical,
         dateCreated: project.first_seen_date || undefined,
         dateModified: project.latest_activity_date || undefined,
       },
@@ -7883,69 +7966,91 @@ async function renderProjectPage(slug, env, request) {
       ogType: "article",
       body: `${body}${renderDataTrustNote(project.latest_activity_date || latestPermitActivity(permits), "Projects are inferred permit groups, not verified completed developments.")}`,
     }),
-    { headers: { "Content-Type": "text/html" } },
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
   );
 }
 
 async function renderNeighborhoodPage(slug, env, request) {
   const canonical = `${BASE_URL}/neighborhood/${encodeURIComponent(slug)}`;
-  const nb = await safeFirst(env, "SELECT * FROM neighborhoods WHERE slug = ?", [slug]);
+  let nb;
+  try {
+    nb = await strictFirst(env, "SELECT * FROM neighborhoods WHERE slug = ?", [slug]);
+  } catch (error) {
+    console.error("Neighborhood lookup failed:", error);
+    return renderTemporarilyUnavailable();
+  }
   if (!nb) {
-    return render404({ heading: "Neighborhood not found", message: "We do not track that neighborhood yet." });
+    return entityNotFound(env, { heading: "Neighborhood not found", message: "We do not track that neighborhood yet." });
   }
 
-  const [recentPermits, projects, topContractors, totals, topAddresses] = await Promise.all([
-    safeAll(
-      env,
-      `SELECT p.*, a.slug AS addr_slug, a.display_address, c.name AS contractor_name, c.slug AS contractor_slug
-       FROM permits p
-       JOIN address_neighborhoods an ON an.address_id = p.address_id
-       JOIN addresses a ON a.id = p.address_id
-       LEFT JOIN contractors c ON c.id = p.contractor_id
-       WHERE an.neighborhood_id = ?
-       ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 15`,
-      [nb.id],
-    ),
-    safeAll(
-      env,
-      `SELECT pr.*, a.display_address, a.slug AS address_slug
-       FROM projects pr
-       JOIN address_neighborhoods an ON an.address_id = pr.address_id
-       LEFT JOIN addresses a ON a.id = pr.address_id
-       WHERE an.neighborhood_id = ? AND ${MULTI_PERMIT_PROJECT_SQL}
-       ORDER BY pr.latest_activity_date DESC LIMIT 10`,
-      [nb.id],
-    ),
-    safeAll(
-      env,
-      `SELECT o.name, o.slug, COUNT(*) AS cnt FROM permit_participants pp
-       JOIN permits p ON p.id = pp.permit_id
-       JOIN address_neighborhoods an ON an.address_id = p.address_id
-       JOIN people_orgs o ON o.id = pp.people_org_id
-       WHERE an.neighborhood_id = ? AND pp.role = 'contractor'
-       GROUP BY o.id ORDER BY cnt DESC LIMIT 10`,
-      [nb.id],
-    ),
-    safeFirst(
-      env,
-      `SELECT COUNT(DISTINCT p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
-       FROM permits p JOIN address_neighborhoods an ON an.address_id = p.address_id
-       WHERE an.neighborhood_id = ?`,
-      [nb.id],
-    ),
-    safeAll(
-      env,
-      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits
-       FROM addresses a JOIN address_neighborhoods an ON an.address_id = a.id
-       JOIN permits p ON p.address_id = a.id
-       WHERE an.neighborhood_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 10`,
-      [nb.id],
-    ),
-  ]);
+  // The permit list and totals decide status and robots, so they are strict;
+  // the side lists degrade to empty.
+  let recentPermits, projects, topContractors, totals, topAddresses;
+  try {
+    [recentPermits, projects, topContractors, totals, topAddresses] = await Promise.all([
+      strictAll(
+        env,
+        `SELECT p.*, a.slug AS addr_slug, a.display_address, c.name AS contractor_name, c.slug AS contractor_slug
+         FROM permits p
+         JOIN address_neighborhoods an ON an.address_id = p.address_id
+         JOIN addresses a ON a.id = p.address_id
+         LEFT JOIN contractors c ON c.id = p.contractor_id
+         WHERE an.neighborhood_id = ?
+         ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 15`,
+        [nb.id],
+      ),
+      safeAll(
+        env,
+        `SELECT pr.*, a.display_address, a.slug AS address_slug
+         FROM projects pr
+         JOIN address_neighborhoods an ON an.address_id = pr.address_id
+         LEFT JOIN addresses a ON a.id = pr.address_id
+         WHERE an.neighborhood_id = ? AND ${MULTI_PERMIT_PROJECT_SQL}
+         ORDER BY pr.latest_activity_date DESC LIMIT 10`,
+        [nb.id],
+      ),
+      safeAll(
+        env,
+        `SELECT o.name, o.slug, COUNT(*) AS cnt FROM permit_participants pp
+         JOIN permits p ON p.id = pp.permit_id
+         JOIN address_neighborhoods an ON an.address_id = p.address_id
+         JOIN people_orgs o ON o.id = pp.people_org_id
+         WHERE an.neighborhood_id = ? AND pp.role = 'contractor'
+         GROUP BY o.id ORDER BY cnt DESC LIMIT 10`,
+        [nb.id],
+      ),
+      strictFirst(
+        env,
+        `SELECT COUNT(DISTINCT p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
+         FROM permits p JOIN address_neighborhoods an ON an.address_id = p.address_id
+         WHERE an.neighborhood_id = ?`,
+        [nb.id],
+      ),
+      safeAll(
+        env,
+        `SELECT a.slug, a.display_address, COUNT(p.id) AS permits
+         FROM addresses a JOIN address_neighborhoods an ON an.address_id = a.id
+         JOIN permits p ON p.address_id = a.id
+         WHERE an.neighborhood_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 10`,
+        [nb.id],
+      ),
+    ]);
+  } catch (error) {
+    console.error("Neighborhood permit read failed:", error);
+    return renderTemporarilyUnavailable();
+  }
 
   const permitCount = Number(totals?.permits) || 0;
   const totalValue = Number(totals?.total_value) || 0;
-  const noindex = permitCount === 0;
+  if (permitCount === 0) {
+    return entityGone(env, {
+      heading: "This neighborhood has no permits on record",
+      message: "We no longer have construction permit records for this neighborhood in the public Seattle DCI data we publish. Browse all neighborhoods instead.",
+    });
+  }
+  // "Other Seattle" / "Other" are geocoder fallbacks, not places: reachable,
+  // never indexed, and kept out of the sitemap, hub and rankings.
+  const noindex = isPlaceholderNeighborhood(nb.name);
   const title = `${nb.name} Construction Permits — Seattle`;
   const description = `Recent permits, active projects, top contractors, estimated values, and the most active addresses in ${nb.name}, Seattle.`;
 
@@ -8042,7 +8147,7 @@ async function renderNeighborhoodPage(slug, env, request) {
       noindex,
       body: `${body}${renderDataTrustNote(latestPermitActivity(recentPermits), "Neighborhood totals aggregate public permit records and do not represent completed projects or housing units.")}`,
     }),
-    { headers: { "Content-Type": "text/html" } },
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
   );
 }
 
@@ -8050,51 +8155,88 @@ async function renderNeighborhoodPage(slug, env, request) {
 // contractor not present in the curated `contractors` table). Backed by
 // permit_participants so /contractor/:slug works for the whole graph.
 async function renderOrgContractorPage(slug, env, request) {
-  const canonical = `${BASE_URL}/contractor/${encodeURIComponent(slug)}`;
-  const org = await safeFirst(env, "SELECT * FROM people_orgs WHERE slug = ?", [slug]);
+  const selfUrl = `${BASE_URL}/contractor/${encodeURIComponent(slug)}`;
+  let org;
+  try {
+    org = await strictFirst(env, "SELECT * FROM people_orgs WHERE slug = ?", [slug]);
+  } catch (error) {
+    console.error("People/org lookup failed:", error);
+    return renderTemporarilyUnavailable();
+  }
   if (!org) {
-    return render404({
+    return entityNotFound(env, {
       heading: "Contractor not found",
       message: "We do not have a profile for that contractor yet.",
     });
   }
 
-  const [permits, addresses, projects, neighborhoods, roles] = await Promise.all([
-    safeAll(
-      env,
-      `SELECT p.*, a.slug AS addr_slug, a.display_address
-       FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
-       LEFT JOIN addresses a ON a.id = p.address_id
-       WHERE pp.people_org_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 50`,
-      [org.id],
-    ),
-    safeAll(
-      env,
-      `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
-       FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
-       JOIN addresses a ON a.id = p.address_id
-       WHERE pp.people_org_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 12`,
-      [org.id],
-    ),
-    safeAll(
-      env,
-      `SELECT DISTINCT pr.slug, pr.name, pr.latest_activity_date, pr.total_estimated_value
-       FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
-       JOIN projects pr ON pr.id = p.project_id AND ${MULTI_PERMIT_PROJECT_SQL}
-       WHERE pp.people_org_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 12`,
-      [org.id],
-    ),
-    safeAll(
-      env,
-      `SELECT n.name, n.slug, COUNT(*) AS cnt FROM permit_participants pp
-       JOIN permits p ON p.id = pp.permit_id
-       JOIN address_neighborhoods an ON an.address_id = p.address_id
-       JOIN neighborhoods n ON n.id = an.neighborhood_id
-       WHERE pp.people_org_id = ? GROUP BY n.id ORDER BY cnt DESC LIMIT 5`,
-      [org.id],
-    ),
-    safeAll(env, `SELECT DISTINCT role FROM permit_participants WHERE people_org_id = ?`, [org.id]),
-  ]);
+  // The permit list, the permit count and the index policy (trade role,
+  // curated duplicate) decide status, robots and canonical: strict reads.
+  let permits, addresses, projects, neighborhoods, roles, countRow, indexPolicy;
+  try {
+    [permits, addresses, projects, neighborhoods, roles, countRow, indexPolicy] = await Promise.all([
+      strictAll(
+        env,
+        `SELECT p.*, a.slug AS addr_slug, a.display_address
+         FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+         LEFT JOIN addresses a ON a.id = p.address_id
+         WHERE pp.people_org_id = ? ORDER BY COALESCE(p.issued_date, p.applied_date) DESC LIMIT 50`,
+        [org.id],
+      ),
+      safeAll(
+        env,
+        `SELECT a.slug, a.display_address, COUNT(p.id) AS permits, COALESCE(SUM(${countedValueSql("p")}),0) AS total_value
+         FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+         JOIN addresses a ON a.id = p.address_id
+         WHERE pp.people_org_id = ? GROUP BY a.id ORDER BY permits DESC LIMIT 12`,
+        [org.id],
+      ),
+      safeAll(
+        env,
+        `SELECT DISTINCT pr.slug, pr.name, pr.latest_activity_date, pr.total_estimated_value
+         FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+         JOIN projects pr ON pr.id = p.project_id AND ${MULTI_PERMIT_PROJECT_SQL}
+         WHERE pp.people_org_id = ? ORDER BY pr.latest_activity_date DESC LIMIT 12`,
+        [org.id],
+      ),
+      safeAll(
+        env,
+        `SELECT n.name, n.slug, COUNT(*) AS cnt FROM permit_participants pp
+         JOIN permits p ON p.id = pp.permit_id
+         JOIN address_neighborhoods an ON an.address_id = p.address_id
+         JOIN neighborhoods n ON n.id = an.neighborhood_id
+         WHERE pp.people_org_id = ? GROUP BY n.id ORDER BY cnt DESC LIMIT 5`,
+        [org.id],
+      ),
+      safeAll(env, `SELECT DISTINCT role FROM permit_participants WHERE people_org_id = ?`, [org.id]),
+      strictFirst(
+        env,
+        `SELECT COUNT(DISTINCT p.id) AS permit_count,
+                COUNT(DISTINCT CASE WHEN lower(COALESCE(p.status,'')) IN ('active','pending','new') THEN p.id END) AS active_count
+         FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
+         WHERE pp.people_org_id = ?`,
+        [org.id],
+      ),
+      strictFirst(env, ORG_INDEX_POLICY_SQL, [org.id]),
+    ]);
+  } catch (error) {
+    console.error("People/org permit read failed:", error);
+    return renderTemporarilyUnavailable();
+  }
+  if (permits.length === 0) {
+    return entityGone(env, {
+      heading: "No permits on record",
+      message: "We no longer have construction permit records for this name in the public Seattle DCI data we publish. Try browsing contractors instead.",
+    });
+  }
+  // Pages for owners and applicants (often private people) stay reachable but
+  // noindex and out of the sitemap; only trade roles are published. When a
+  // curated contractor publishes the same company under another slug, that
+  // page is the canonical one.
+  const noindex = !Number(indexPolicy?.has_role);
+  const canonical = indexPolicy?.curated_slug
+    ? `${BASE_URL}/contractor/${encodeURIComponent(indexPolicy.curated_slug)}`
+    : selfUrl;
 
   // Counted total over every permit this org is on (not just the 50 listed),
   // with repeated demolition valuations counted once (value_counting.js).
@@ -8107,14 +8249,6 @@ async function renderOrgContractorPage(slug, env, request) {
     [org.id],
   );
   const totalValue = valueRow ? Number(valueRow.total) || 0 : 0;
-  const countRow = await safeFirst(
-    env,
-    `SELECT COUNT(DISTINCT p.id) AS permit_count,
-            COUNT(DISTINCT CASE WHEN lower(COALESCE(p.status,'')) IN ('active','pending','new') THEN p.id END) AS active_count
-     FROM permit_participants pp JOIN permits p ON p.id = pp.permit_id
-     WHERE pp.people_org_id = ?`,
-    [org.id],
-  );
   const shownPermits = permits.length;
   const totalPermits = countRow ? Math.max(Number(countRow.permit_count) || 0, shownPermits) : shownPermits;
   const activeCount = countRow
@@ -8124,7 +8258,6 @@ async function renderOrgContractorPage(slug, env, request) {
     ? `Recent permits (${shownPermits} of ${totalPermits.toLocaleString("en-US")})`
     : `Permits (${shownPermits})`;
   const roleLabels = roles.map((r) => r.role).join(", ") || "participant";
-  const noindex = permits.length === 0;
   const isOrg = org.type_guess === "organization";
 
   const title = `${org.name} Seattle Permit & Construction Activity`;
@@ -8146,7 +8279,7 @@ async function renderOrgContractorPage(slug, env, request) {
         itemListElement: [
           { "@type": "ListItem", position: 1, name: "Home", item: `${BASE_URL}/` },
           { "@type": "ListItem", position: 2, name: "Permits", item: `${BASE_URL}/permits` },
-          { "@type": "ListItem", position: 3, name: org.name, item: canonical },
+          { "@type": "ListItem", position: 3, name: org.name, item: selfUrl },
         ],
       },
     ],
@@ -8214,7 +8347,7 @@ async function renderOrgContractorPage(slug, env, request) {
       ogType: "profile",
       body: `${body}${renderDataTrustNote(latestPermitActivity(permits), "Participant matching follows names in public permit records and may combine or separate similarly named entities.")}`,
     }),
-    { headers: { "Content-Type": "text/html" } },
+    { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" } },
   );
 }
 
@@ -9833,22 +9966,34 @@ const SITEMAP_SECTIONS = {
       ORDER BY permit_number
       LIMIT ? OFFSET ?`,
   },
+  // Only indexable addresses: more than one permit and a real street
+  // (addressIsIndexable). Single-permit and city-only pages are noindex.
   addresses: {
     numbered: true,
     urlPrefix: "/address/",
     statsSql: `/* sitemap:stats:addresses */
       SELECT
-        COUNT(DISTINCT a.id) AS total,
-        substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, a.updated_at)), 1, 10) AS lastmod
-      FROM addresses a
-      JOIN permits p ON p.address_id = a.id`,
+        COUNT(*) AS total,
+        substr(MAX(lastmod), 1, 10) AS lastmod
+      FROM (
+        SELECT
+          a.id,
+          MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, a.updated_at)) AS lastmod
+        FROM addresses a
+        JOIN permits p ON p.address_id = a.id
+        WHERE ${realAddressSql("a")}
+        GROUP BY a.id
+        HAVING COUNT(p.id) >= ${ADDRESS_MIN_INDEXABLE_PERMITS}
+      )`,
     rowsSql: `/* sitemap:rows:addresses */
       SELECT
         a.slug,
         substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at, a.updated_at)), 1, 10) AS lastmod
       FROM addresses a
       JOIN permits p ON p.address_id = a.id
+      WHERE ${realAddressSql("a")}
       GROUP BY a.id, a.slug
+      HAVING COUNT(p.id) >= ${ADDRESS_MIN_INDEXABLE_PERMITS}
       ORDER BY a.slug
       LIMIT ? OFFSET ?`,
   },
@@ -9883,10 +10028,15 @@ const SITEMAP_SECTIONS = {
       ORDER BY pr.slug
       LIMIT ? OFFSET ?`,
   },
+  // Curated contractors with at least one permit (zero-permit ones render
+  // noindex), plus people_orgs in PUBLISHED_ORGS_CTE: a trade role
+  // (contractor/architect, not private owners/applicants), a slug the curated
+  // table does not own, and no curated twin under another slug.
   contractors: {
     numbered: true,
     urlPrefix: "/contractor/",
     statsSql: `/* sitemap:stats:contractors */
+      WITH ${PUBLISHED_ORGS_CTE}
       SELECT
         COUNT(*) AS total,
         substr(MAX(lastmod), 1, 10) AS lastmod
@@ -9895,38 +10045,39 @@ const SITEMAP_SECTIONS = {
         FROM (
           SELECT c.slug, c.updated_at AS lastmod
           FROM contractors c
+          WHERE EXISTS (SELECT 1 FROM permits cp WHERE cp.contractor_id = c.id)
           UNION ALL
           SELECT c.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
           FROM contractors c
           JOIN permits p ON p.contractor_id = c.id
           UNION ALL
           SELECT o.slug, o.updated_at AS lastmod
-          FROM people_orgs o
-          WHERE EXISTS (SELECT 1 FROM permit_participants pp WHERE pp.people_org_id = o.id)
+          FROM published_orgs o
           UNION ALL
           SELECT o.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
-          FROM people_orgs o
+          FROM published_orgs o
           JOIN permit_participants pp ON pp.people_org_id = o.id
           JOIN permits p ON p.id = pp.permit_id
         )
         GROUP BY slug
       )`,
     rowsSql: `/* sitemap:rows:contractors */
+      WITH ${PUBLISHED_ORGS_CTE}
       SELECT slug, substr(MAX(lastmod), 1, 10) AS lastmod
       FROM (
         SELECT c.slug, c.updated_at AS lastmod
         FROM contractors c
+        WHERE EXISTS (SELECT 1 FROM permits cp WHERE cp.contractor_id = c.id)
         UNION ALL
         SELECT c.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
         FROM contractors c
         JOIN permits p ON p.contractor_id = c.id
         UNION ALL
         SELECT o.slug, o.updated_at AS lastmod
-        FROM people_orgs o
-        WHERE EXISTS (SELECT 1 FROM permit_participants pp WHERE pp.people_org_id = o.id)
+        FROM published_orgs o
         UNION ALL
         SELECT o.slug, COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at) AS lastmod
-        FROM people_orgs o
+        FROM published_orgs o
         JOIN permit_participants pp ON pp.people_org_id = o.id
         JOIN permits p ON p.id = pp.permit_id
       )
@@ -9943,7 +10094,8 @@ const SITEMAP_SECTIONS = {
         substr(MAX(COALESCE(p.updated_at, p.last_enriched_at, p.issued_date, p.created_at)), 1, 10) AS lastmod
       FROM neighborhoods n
       JOIN address_neighborhoods an ON an.neighborhood_id = n.id
-      JOIN permits p ON p.address_id = an.address_id`,
+      JOIN permits p ON p.address_id = an.address_id
+      WHERE ${realNeighborhoodSql("n.name")}`,
     rowsSql: `/* sitemap:rows:neighborhoods */
       SELECT
         n.slug,
@@ -9951,6 +10103,7 @@ const SITEMAP_SECTIONS = {
       FROM neighborhoods n
       JOIN address_neighborhoods an ON an.neighborhood_id = n.id
       JOIN permits p ON p.address_id = an.address_id
+      WHERE ${realNeighborhoodSql("n.name")}
       GROUP BY n.id, n.slug
       ORDER BY n.slug
       LIMIT ? OFFSET ?`,

@@ -134,20 +134,30 @@ test("a slug that does not exist is still a 404", async () => {
   assert.equal(response.status, 404);
 });
 
+const addressPermit = {
+  id: 100,
+  permit_number: "1000001-CN",
+  address: "1 EMPTY AVE",
+  address_id: 5,
+  status: "active",
+  type: "residential",
+  value: 25000,
+  issued_date: "2026-02-01",
+  description: "Alterations",
+};
+
+test("an address with one permit renders for people but is noindex,follow", async () => {
+  const response = await fetchAddress(createAddressEnv([addressPermit]));
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/buildingseattle\.com\/address\/1-empty-ave-seattle-wa">/);
+  assert.match(html, /1000001-CN/);
+});
+
 test("an address with permits still renders the indexable property page", async () => {
-  const env = createAddressEnv([
-    {
-      id: 100,
-      permit_number: "1000001-CN",
-      address: "1 EMPTY AVE",
-      address_id: 5,
-      status: "active",
-      type: "residential",
-      value: 25000,
-      issued_date: "2026-02-01",
-      description: "Alterations",
-    },
-  ]);
+  const env = createAddressEnv([addressPermit, { ...addressPermit, id: 101, permit_number: "1000002-CN" }]);
   const response = await worker.fetch(
     new Request("https://buildingseattle.com/address/1-empty-ave-seattle-wa"),
     env,
