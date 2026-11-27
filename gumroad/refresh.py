@@ -5,8 +5,12 @@ BuildingSeattle Data Refresh Script (Pro Tier)
 Pulls fresh building permit data from buildingseattle.com API
 and exports it as a CSV with the same 38 columns as the product.
 
-Usage:   python3 refresh.py [--output FILE] [--max-pages N]
+Usage:   python3 refresh.py [--output FILE] [--max-pages N] [--api-key KEY]
 Output:  buildingseattle_fresh.csv (default)
+
+The full 38-column API needs an API key: pass --api-key or set the
+BUILDINGSEATTLE_API_KEY environment variable. Without one the public API
+returns only a small sample.
 
 Requirements: Python 3.10+ (stdlib only — no pip installs needed)
 """
@@ -15,6 +19,7 @@ import json
 import csv
 import urllib.request
 import urllib.error
+import os
 import time
 import sys
 
@@ -25,6 +30,8 @@ MAX_RETRIES = 4
 RETRY_DELAY = 2  # seconds, doubled per attempt
 CONSECUTIVE_EMPTY_LIMIT = 3  # stop after this many empty pages in a row
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+API_KEY_ENV = "BUILDINGSEATTLE_API_KEY"
+API_KEY = os.environ.get(API_KEY_ENV, "").strip()
 
 # Same 38 columns as the shipped product (see data-dictionary.md)
 PERMIT_COLUMNS = [
@@ -93,10 +100,10 @@ def fetch_json(url):
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "BuildingSeattle-Refresh/1.1"},
-            )
+            headers = {"User-Agent": "BuildingSeattle-Refresh/1.2"}
+            if API_KEY:
+                headers["X-API-Key"] = API_KEY
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
@@ -105,6 +112,8 @@ def fetch_json(url):
             else:
                 # Other 4xx — the server is saying no; don't hammer it
                 sys.stderr.write(f"  HTTP {e.code}: {e.reason} ({url})\n")
+                if e.code in (401, 403):
+                    sys.stderr.write(f"  Full access needs a valid API key (--api-key or {API_KEY_ENV}).\n")
                 return None
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             last_error = e
@@ -128,7 +137,12 @@ def main():
                         help=f"Output CSV path (default: {DEFAULT_OUTPUT})")
     parser.add_argument("--max-pages", type=int, default=0,
                         help="Stop after N pages (0 = fetch everything)")
+    parser.add_argument("--api-key", default="",
+                        help=f"API key for full access (default: ${API_KEY_ENV})")
     args = parser.parse_args()
+    global API_KEY
+    if args.api_key:
+        API_KEY = args.api_key.strip()
 
     print("Refreshing BuildingSeattle permit data...")
     print(f"Source: {API_BASE}/api/permits (page size {PER_PAGE})")

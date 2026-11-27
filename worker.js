@@ -203,8 +203,21 @@ export default {
         return secure(await handleAlertUnsubscribe(request, env));
       }
 
+      // Public JSON API and MCP: resolve the caller's tier once (anonymous or
+      // API key) and apply the per-tier rate limit before any D1 work.
+      let apiAccess = null;
+      if (isPublicApiPath(path)) {
+        apiAccess = await resolveApiAccess(request, env);
+        if (apiAccess.tier === "invalid") {
+          return secure(apiErrorResponse("Invalid API key", 401));
+        }
+        if (!(await allowPublicApiRequest(request, env, apiAccess))) {
+          return secure(apiErrorResponse("Too many requests. Slow down or use an API key.", 429, { "Retry-After": "60" }));
+        }
+      }
+
       if (path === "/api/permits") {
-        return secure(await getPermits(request, env));
+        return secure(await getPermits(request, env, { access: apiAccess }));
       }
 
       const siteGeometryMatch = path.match(/^\/api\/development-sites\/([^/]+)\/geometry$/);
@@ -216,7 +229,12 @@ export default {
       }
 
       if (path === "/mcp") {
-        return secure(await handleMcpRequest(request, (name, args) => executeMcpTool(name, args, env, request.url)));
+        return secure(
+          await handleMcpRequest(request, (name, args) => executeMcpTool(name, args, env, request.url, apiAccess), {
+            allowedOrigins: env.MCP_ALLOWED_ORIGINS,
+            access: apiAccess,
+          }),
+        );
       }
 
       if (path === "/permits" || path === "/permits/") {
@@ -2405,8 +2423,24 @@ async function getPermits(request, env, { access = null } = {}) {
       .first(),
   ]);
 
-  return new Response(JSON.stringify({ total, page, per_page: perPage, results: (results || []).slice(0, perPage).map(row => siteContext ? withDevelopmentSiteFields(row) : row) }), {
-    headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "public, max-age=60" },
+  const rows = (results || []).slice(0, perPage).map((row) => (siteContext ? withDevelopmentSiteFields(row) : row));
+  const body = {
+    total,
+    page,
+    per_page: perPage,
+    access: tier,
+    max_page: limits.maxPage,
+    results: tier === "key" ? rows : rows.map(slimPermitRow),
+  };
+  if (tier !== "key") body.full_access = `${BASE_URL}/data`;
+  return new Response(JSON.stringify(body), {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+      // Keyed responses vary by caller, so they must not sit in a shared cache.
+      "Cache-Control": tier === "key" ? "private, no-store" : "public, max-age=60",
+      Vary: "X-API-Key, Authorization",
+    },
   });
 }
 
@@ -9631,7 +9665,7 @@ function renderApiSpecObject() {
       title: "Building Seattle API",
       version: "1.0.0",
       description:
-        "Read-only access to aggregated Seattle construction permit and contractor data. No authentication required.",
+        "Read-only access to aggregated Seattle construction permit and contractor data. Anonymous access returns a sample (/api/permits: up to 25 summary rows per page, first 10 pages); send an X-API-Key header for full rows and paging.",
     },
     servers: [{ url: BASE_URL }],
     paths: {
@@ -9651,7 +9685,12 @@ function renderApiSpecObject() {
                 "Free-text search across address, description, permit number, neighborhood, and contractor name.",
             },
             { name: "page", in: "query", schema: { type: "integer", minimum: 1, default: 1 } },
-            { name: "per_page", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 50 } },
+            {
+              name: "per_page",
+              in: "query",
+              schema: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+              description: "Results per page. Anonymous callers are capped at 25 and the first 10 pages.",
+            },
           ],
           responses: {
             200: {
@@ -9828,7 +9867,7 @@ function renderApiDocs() {
         <h1>API Documentation</h1>
         <p class="lede">Read-only JSON access to aggregated Seattle construction permit and contractor data. No authentication required. Base URL <code>${BASE_URL}</code>.</p>
         <h2>Endpoints</h2>
-        ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1)."), param("per_page", "Results per page (1-100, default 50).")].join(""))}
+        ${endpoint("GET", "/api/permits", "Query permits with optional filters and pagination. Returns { total, page, per_page, results[] }.", [param("neighborhood", "Filter by neighborhood."), param("type", "Filter by permit type."), param("status", "Filter by permit status."), param("q", "Free-text search across address, description, permit number, neighborhood, and contractor name."), param("page", "Page number (default 1). Anonymous callers can read the first 10 pages."), param("per_page", "Results per page (1-100 with an API key, default 50; anonymous callers get at most 25 summary rows). Send an X-API-Key header for full rows.")].join(""))}
         <p>Permit results include six nullable development-site fields: <code>development_site_id</code>, <code>development_site_sqft</code>, <code>development_site_status</code>, <code>development_site_source_updated_at</code>, <code>development_site_fetched_at</code>, and <code>development_site_geometry_url</code>. Source dates may be unknown. The existing <code>parcel_number</code> is an SDCI property reference, usually a development-site ID.</p>
         ${endpoint("GET", "/api/development-sites/{id}/geometry", "Current boundary as a GeoJSON Feature with source attribution and UTC timestamps. Returns 404 without a usable boundary. Geometry links are live: they may change or disappear after refresh and do not freeze the boundary to a CSV export date.", param("id", "SDCI development-site ID, such as DV0025961."))}
         ${endpoint("GET", "/api/contractors", "List the top 20 contractors ranked by active project count. Each record includes an active_projects count.", "")}
@@ -9845,20 +9884,34 @@ function renderApiDocs() {
   return new Response(html, { headers: { "Content-Type": "text/html" } });
 }
 
-async function executeMcpTool(name, args, env, requestUrl) {
+// Thrown for failures whose message is safe to show an MCP client.
+function mcpToolError(message) {
+  const error = new Error(message);
+  error.expose = true;
+  return error;
+}
+
+async function executeMcpTool(name, args, env, requestUrl, access = null) {
   let response;
   if (name === "search_permits") {
     const url = new URL("/api/permits", requestUrl);
     for (const [key, value] of Object.entries(args)) {
       if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
     }
-    response = await getPermits(new Request(url), env);
+    response = await getPermits(new Request(url), env, { access });
   } else if (name === "list_contractors") {
     response = await getContractors(new Request(new URL("/api/contractors", requestUrl)), env);
   } else {
     response = await getStats(env);
   }
-  if (!response.ok) throw new Error(`request failed with status ${response.status}`);
+  if (!response.ok) {
+    // 400/403 bodies are our own validation text (no internals); surface them.
+    if (response.status === 400 || response.status === 403) {
+      const body = await response.json().catch(() => ({}));
+      throw mcpToolError(String(body.error || "Request not allowed"));
+    }
+    throw new Error(`request failed with status ${response.status}`);
+  }
   return response.json();
 }
 

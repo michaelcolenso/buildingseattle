@@ -20,6 +20,7 @@ Data sources (picked automatically, or force with --source):
         BUILDINGSEATTLE_D1_ID overrides the default database ID.
   api   Public /api/permits pagination at per_page=100. Fallback when no
         Cloudflare credentials are available; dedupes by permit_number.
+        Needs BUILDINGSEATTLE_API_KEY (the anonymous API is a small sample).
 
 Usage:
   python3 gumroad/build_dataset.py                 # d1 if creds present, else api
@@ -138,7 +139,10 @@ def fetch_permits_api(base=API_BASE):
     records, seen = [], set()
     page = 1
     while True:
-        data = http_json(f"{base}/api/permits?per_page={API_PER_PAGE}&page={page}")
+        # Full rows and paging past the anonymous sample need an API key.
+        api_key = os.environ.get("BUILDINGSEATTLE_API_KEY", "").strip()
+        data = http_json(f"{base}/api/permits?per_page={API_PER_PAGE}&page={page}",
+                         headers={"X-API-Key": api_key} if api_key else None)
         results = data.get("results", [])
         if not results:
             return records
