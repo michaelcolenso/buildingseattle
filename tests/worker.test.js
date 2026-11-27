@@ -1133,7 +1133,9 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 21);
+  assert.equal((xml.match(/<url>/g) || []).length, 23);
+  assert.match(xml, /<loc>https:\/\/buildingseattle\.com\/alerts<\/loc>/);
+  assert.match(xml, /<loc>https:\/\/buildingseattle\.com\/privacy<\/loc>/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/api-docs/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/network/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
@@ -1159,7 +1161,7 @@ test("GET /sitemaps/static.xml omits the ADU tracker while its page is noindex",
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 20);
+  assert.equal((xml.match(/<url>/g) || []).length, 22);
   assert.doesNotMatch(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
 });
 

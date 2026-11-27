@@ -581,3 +581,13 @@ test("policy-noindex entity pages are edge-cached; a failed lookup's 503 never i
     else globalThis.caches = original;
   }
 });
+
+test("/alerts and /privacy are sitemapped and answer 200, index, self-canonical (N7)", async () => {
+  const env = createEnv(seededDatabase());
+  const urls = await sitemapUrls(env);
+  for (const path of ["/alerts", "/privacy"]) {
+    assert.ok(urls.includes(path), `${path} should be sitemapped`);
+    const page = await get(env, path);
+    assert.ok(isIndexedSelf(page, path), `${path} answers ${page.status} ${page.robots} ${page.canonical}`);
+  }
+});

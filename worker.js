@@ -10362,6 +10362,8 @@ const SITEMAP_STATIC_PATHS = [
   "/insights/contractors",
   "/insights/network",
   "/api-docs",
+  "/alerts",
+  "/privacy",
 ];
 
 const SITEMAP_SECTIONS = {
