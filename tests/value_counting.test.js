@@ -70,3 +70,27 @@ test("project totals in the entity graph count repeated demolition valuations on
   assert.equal(Math.max(...totals), 129000000);
   assert.equal(totals.reduce((a, b) => a + b, 0), 129000000);
 });
+
+test("/api/stats avg_value uses the counting rule, so avg_value x permits = total_value (C6)", async () => {
+  const { default: worker } = await import("../worker.js");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  for (const file of ["../schema.sql", "../migration_entity_graph.sql"]) {
+    db.exec(readFileSync(new URL(file, import.meta.url), "utf8"));
+  }
+  db.exec("DELETE FROM permits; DELETE FROM contractors;");
+  const insert = db.prepare("INSERT INTO permits (id, permit_number, address_id, value, address) VALUES (?, ?, ?, ?, 'x')");
+  for (const p of fixtures) insert.run(p.id, p.permit_number, p.address_id, p.value);
+  const wrap = (sql, binds = []) => ({
+    bind: (...next) => wrap(sql, next),
+    all: async () => ({ results: db.prepare(sql).all(...binds) }),
+    first: async () => db.prepare(sql).get(...binds) ?? null,
+    run: async () => ({ meta: { changes: Number(db.prepare(sql).run(...binds).changes) } }),
+  });
+  const env = { DB: { prepare: (sql) => wrap(sql), batch: async (s) => Promise.all(s.map((x) => x.run())) } };
+  const response = await worker.fetch(new Request("https://buildingseattle.com/api/stats"), env, { waitUntil() {} });
+  const stats = await response.json();
+  assert.equal(stats.permits, fixtures.length);
+  assert.equal(stats.total_value, countedTotal(fixtures));
+  assert.equal(stats.avg_value, countedTotal(fixtures) / fixtures.length);
+});
