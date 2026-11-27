@@ -166,6 +166,17 @@ export default {
         return secure(Response.redirect(url.toString(), 301));
       }
 
+      // One URL per page: strip a trailing slash and fold letter case with a
+      // 301, so /contractors/, /Address/X and /permits/1234567-cn do not 404
+      // or split signals. GET/HEAD only; a redirected POST would lose its body.
+      if (request.method === "GET" || request.method === "HEAD") {
+        const normalizedPath = canonicalRequestPath(path);
+        if (normalizedPath !== path) {
+          url.pathname = normalizedPath;
+          return secure(Response.redirect(url.toString(), 301));
+        }
+      }
+
       if (path === "/" || path === "") {
         ctx.waitUntil(logPageView(request, env, "/"));
         return secure(await handleRoot(request, env));
@@ -607,6 +618,32 @@ export default {
     ctx.waitUntil(runScheduledIngest(env));
   },
 };
+
+// Entity slugs are lowercase (makeSlug/slugify); SDCI permit numbers are
+// digits plus an uppercase suffix.
+const CASE_FOLDED_PREFIXES = ["/address/", "/project/", "/neighborhood/", "/contractor/"];
+const CASE_FOLDED_PATHS = new Set([
+  "/permits", "/data", "/about", "/methodology", "/contractors", "/neighborhoods", "/projects", "/addresses",
+  "/insights", "/insights/plan-review", "/insights/pipeline", "/insights/housing", "/insights/adu-dadu",
+  "/insights/multifamily-pipeline", "/insights/commercial-projects", "/insights/tenant-improvements",
+  "/insights/map", "/insights/contractors", "/insights/network", "/insights/basis-reset", "/api-docs",
+]);
+
+// The canonical form of a request path: no trailing slash (except "/"),
+// lowercase entity slugs and page routes, uppercase permit-number suffixes.
+// Other paths (assets, API, verification files) are left as they are.
+export function canonicalRequestPath(path) {
+  let next = path.length > 1 ? path.replace(/\/+$/, "") || "/" : path;
+  const lower = next.toLowerCase();
+  const permit = next.match(/^\/permits\/(.+)$/i);
+  if (permit) {
+    const number = permit[1];
+    next = `/permits/${/^\d+-[a-z]+$/i.test(number) ? number.toUpperCase() : number}`;
+  } else if (CASE_FOLDED_PREFIXES.some((prefix) => lower.startsWith(prefix)) || CASE_FOLDED_PATHS.has(lower)) {
+    next = lower;
+  }
+  return next;
+}
 
 const DISCOVERY_LINKS = [
   `<${BASE_URL}/.well-known/api-catalog>; rel="api-catalog"`,
