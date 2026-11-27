@@ -51,7 +51,7 @@ import {
   ALERT_CONFIRMATION_TTL_DAYS, ALERT_EMAIL_DAILY_LIMIT, ALERT_IP_HOURLY_LIMIT, ALERT_RESEND_COOLDOWN_MINUTES,
   ALERT_SEND_BATCH_LIMIT, ANON_API_MAX_PAGE, FILTER_PARAM_MAX_LENGTH, LEAD_IP_HOURLY_LIMIT, LEAD_TEXT_MAX_LENGTH,
   PERMIT_NUMBER_MAX_LENGTH, SEARCH_QUERY_MAX_LENGTH, THEME_BOOT_SCRIPT_SHA256,
-  apiLimits, clientIp, consumeRateLimit, isCrossSiteRequest, isJsonContentType, parseIntegerParam,
+  apiLimits, checkRateLimit, clientIp, isCrossSiteRequest, isJsonContentType, parseIntegerParam,
   rateLimitKey, resolveApiAccess, slimPermitRow, timingSafeEqualString, turnstileEnabled, verifyTurnstile,
 } from "./security.js";
 import {
@@ -1734,7 +1734,9 @@ async function handleRoot(request, env) {
 }
 
 // Shared front door for the public same-origin forms (leads, alert sign-up):
-// JSON only, same-site Origin only, then a per-IP throttle.
+// JSON only, same-site Origin only, then a per-IP throttle: the Workers Rate
+// Limiting binding as a per-minute burst limit when it exists, and the hourly
+// cap in D1 always (checkRateLimit, review S2).
 async function checkPublicFormRequest(request, env, { scope, binding, hourlyLimit }) {
   if (!isJsonContentType(request)) {
     return formJsonResponse({ error: "Content-Type must be application/json" }, 415);
@@ -1742,16 +1744,26 @@ async function checkPublicFormRequest(request, env, { scope, binding, hourlyLimi
   if (isCrossSiteRequest(request)) {
     return formJsonResponse({ error: "Cross-site requests are not allowed" }, 403);
   }
-  const allowed = await consumeRateLimit(env, {
+  const { allowed, reason } = await checkRateLimit(env, {
     binding,
     key: await rateLimitKey(`${scope}:ip`, clientIp(request)),
     limit: hourlyLimit,
     windowSeconds: 3600,
   });
-  if (!allowed) {
-    return formJsonResponse({ error: "Too many requests. Try again later." }, 429, { "Retry-After": "3600" });
-  }
+  if (!allowed) return rateLimitedFormResponse(reason, reason === "burst" ? 60 : 3600);
   return null;
+}
+
+function rateLimitedFormResponse(reason, retryAfterSeconds) {
+  if (reason === "unavailable") {
+    return formJsonResponse({ error: "This form is temporarily unavailable. Please try again in a few minutes." }, 503, { "Retry-After": "300" });
+  }
+  const wait = retryAfterSeconds <= 60 ? "a minute" : "an hour";
+  return formJsonResponse(
+    { error: `Too many requests from your connection. Please wait ${wait} and try again.` },
+    429,
+    { "Retry-After": String(retryAfterSeconds) },
+  );
 }
 
 async function readJsonObject(request) {
@@ -1908,7 +1920,8 @@ async function handleAlertSubscription(request, env) {
     return formJsonResponse({ error: "A valid email and permit number are required" }, 400);
   }
 
-  // Turnstile is enforced only once TURNSTILE_SECRET_KEY is configured.
+  // Turnstile is enforced only when both TURNSTILE_SITE_KEY and
+  // TURNSTILE_SECRET_KEY are configured (turnstileEnabled).
   let humanVerified = false;
   if (turnstileEnabled(env)) {
     humanVerified = await verifyTurnstile(env, data.turnstile_token, clientIp(request));
@@ -1956,14 +1969,25 @@ async function handleAlertSubscription(request, env) {
     return formJsonResponse(ALERT_ACCEPTED, 202);
   }
 
-  // Per-address cap across all permits, counted only when we would send.
-  const underEmailCap = await consumeRateLimit(env, {
+  // Per-address cap across all permits, counted only when we would send. Say
+  // so plainly (review S2): a silent 202 left people waiting for an email that
+  // was never sent.
+  const emailCap = await checkRateLimit(env, {
     key: await rateLimitKey("alerts:email", email),
     limit: ALERT_EMAIL_DAILY_LIMIT,
     windowSeconds: 86400,
   });
-  if (!underEmailCap) {
-    return formJsonResponse(ALERT_ACCEPTED, 202);
+  if (!emailCap.allowed) {
+    if (emailCap.reason === "unavailable") return rateLimitedFormResponse("unavailable");
+    return formJsonResponse(
+      {
+        error:
+          `This email address has already been sent ${ALERT_EMAIL_DAILY_LIMIT} alert confirmations today. ` +
+          "Check your inbox (and spam folder) for an earlier confirmation link, or try again tomorrow.",
+      },
+      429,
+      { "Retry-After": "86400" },
+    );
   }
 
   const confirmationToken = createAlertToken();
@@ -3279,7 +3303,8 @@ async function renderPermitDetail(permitNumber, env, request) {
   const permitAddressLabel = entStreet(addressLabel) || "Seattle";
   const safePermitNumber = escapeHtml(permit.permit_number || "Unknown permit");
   // Rendered only when the site key is set; enforced only when the secret is.
-  const turnstileSiteKey = String(env?.TURNSTILE_SITE_KEY || "").trim();
+  // Widget only when Turnstile is fully configured (both keys; review S3).
+  const turnstileSiteKey = turnstileEnabled(env) ? String(env.TURNSTILE_SITE_KEY).trim() : "";
   const safeAddress = escapeHtml(smartTitleCase(addressLabel) || "Unknown Address");
   const safeNeighborhood = escapeHtml(neighborhood);
   const safePermitType = escapeHtml(permitType);

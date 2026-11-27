@@ -48,9 +48,10 @@ allowed_sender_addresses = ["alerts@buildingseattle.com"]
 
 # Workers Rate Limiting bindings (audit A1/A7/A8/B3/F2). Counters are
 # approximate and per Cloudflare location; period must be 10 or 60 seconds.
-# Each namespace_id is an account-unique integer chosen here. The worker
-# falls back to a D1 counter (request_rate_limits) for forms when a binding
-# is missing; the API is only throttled when its binding exists.
+# Each namespace_id is an account-unique integer chosen here. For the forms
+# (alerts, leads) these are only the per-minute burst limit: the hourly caps in
+# security.js are always enforced with a D1 counter (request_rate_limits). The
+# API is only throttled when its binding exists.
 [[ratelimits]]
 name = "ALERTS_RATE_LIMITER"
 namespace_id = "261127001"

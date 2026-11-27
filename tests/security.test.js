@@ -13,6 +13,7 @@ import {
   LEAD_IP_HOURLY_LIMIT,
   THEME_BOOT_SCRIPT_SHA256,
   consumeD1RateLimit,
+  turnstileEnabled,
   isCrossSiteRequest,
   parseIntegerParam,
   sha256Hex,
@@ -166,11 +167,18 @@ test("repeated sign-ups for one address and permit send one confirmation (cooldo
 test("one address gets at most the daily cap of confirmations across permits", async () => {
   const db = openDatabase();
   const env = createEnv(db);
+  const statuses = [];
+  let overCap = null;
   for (let i = 1; i <= ALERT_EMAIL_DAILY_LIMIT + 3; i++) {
     const response = await subscribe(env, { email: "victim@example.com", permit_number: `P-${i}` }, { "CF-Connecting-IP": `198.51.100.${i}` });
-    assert.equal(response.status, 202);
+    statuses.push(response.status);
+    if (response.status === 429) overCap = { body: await response.json(), retryAfter: response.headers.get("Retry-After") };
   }
   assert.equal(env.sentEmails.length, ALERT_EMAIL_DAILY_LIMIT);
+  assert.deepEqual(statuses, [...Array(ALERT_EMAIL_DAILY_LIMIT).fill(202), 429, 429, 429]);
+  // Over the cap the person is told why, instead of a 202 for an email that never comes (S2).
+  assert.match(overCap.body.error, /already been sent \d+ alert confirmations today.*try again tomorrow/);
+  assert.equal(overCap.retryAfter, "86400");
 });
 
 test("one IP is throttled after the hourly limit (D1 fallback limiter)", async () => {
@@ -187,6 +195,30 @@ test("one IP is throttled after the hourly limit (D1 fallback limiter)", async (
   const keys = db.prepare("SELECT bucket_key FROM request_rate_limits").all().map((row) => row.bucket_key);
   assert.ok(keys.length > 0);
   assert.ok(keys.every((key) => !key.includes("203.0.113.7") && !key.includes("@")));
+});
+
+test("the hourly cap still applies when the per-minute binding allows every request (S2)", async () => {
+  const db = openDatabase();
+  const env = createEnv(db, { ALERTS_RATE_LIMITER: { limit: async () => ({ success: true }) } });
+  const statuses = [];
+  for (let i = 1; i <= ALERT_IP_HOURLY_LIMIT + 2; i++) {
+    statuses.push((await subscribe(env, { email: `user${i}@example.com`, permit_number: "P-1" })).status);
+  }
+  assert.deepEqual(statuses, [...Array(ALERT_IP_HOURLY_LIMIT).fill(202), 429, 429]);
+});
+
+test("a D1 counter outage fails closed with a 503, not a 'too many requests' (S2)", async () => {
+  const db = openDatabase();
+  const env = createEnv(db);
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    if (/request_rate_limits/.test(sql)) throw new Error("D1_ERROR: unavailable");
+    return prepare(sql);
+  };
+  const response = await subscribe(env, { email: "a@example.com", permit_number: "P-1" });
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error, /temporarily unavailable/);
+  assert.equal(env.sentEmails.length, 0);
 });
 
 test("the Workers Rate Limiting binding is used when configured", async () => {
@@ -267,9 +299,9 @@ test("unsubscribed pairs and suppressed addresses are never re-mailed", async ()
   assert.equal(env.sentEmails.length, count);
 });
 
-test("Turnstile is enforced only when its secret is set", async () => {
+test("Turnstile is enforced only when both keys are set", async () => {
   const db = openDatabase();
-  const env = createEnv(db, { TURNSTILE_SECRET_KEY: "secret" });
+  const env = createEnv(db, { TURNSTILE_SECRET_KEY: "secret", TURNSTILE_SITE_KEY: "site-key-1" });
   const realFetch = globalThis.fetch;
   const verifications = [];
   globalThis.fetch = async (url, init) => {
@@ -287,11 +319,30 @@ test("Turnstile is enforced only when its secret is set", async () => {
   assert.equal(verifications.at(-1).url, "https://challenges.cloudflare.com/turnstile/v0/siteverify");
 });
 
-test("the permit page renders the Turnstile widget only when the site key is set", async () => {
+test("one Turnstile key alone turns Turnstile off instead of refusing every sign-up (S3)", async () => {
+  const db = openDatabase();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const secretOnly = createEnv(db, { TURNSTILE_SECRET_KEY: "secret" });
+    assert.equal(turnstileEnabled(secretOnly), false);
+    assert.equal((await subscribe(secretOnly, { email: "a@example.com", permit_number: "P-1" })).status, 202);
+    assert.equal(secretOnly.sentEmails.length, 1);
+    const siteOnly = createEnv(db, { TURNSTILE_SITE_KEY: "site-key-1" });
+    assert.equal(turnstileEnabled(siteOnly), false);
+    assert.doesNotMatch(await (await call(siteOnly, "/permits/P-1")).text(), /cf-turnstile/);
+    assert.equal(turnstileEnabled({ TURNSTILE_SITE_KEY: "a", TURNSTILE_SECRET_KEY: "b" }), true);
+    assert.equal(turnstileEnabled({}), false);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("the permit page renders the Turnstile widget only when both keys are set", async () => {
   const db = openDatabase();
   const plain = await (await call(createEnv(db), "/permits/P-1")).text();
   assert.doesNotMatch(plain, /cf-turnstile|challenges\.cloudflare\.com/);
-  const withKey = await (await call(createEnv(db, { TURNSTILE_SITE_KEY: "site-key-1" }), "/permits/P-1")).text();
+  const withKey = await (await call(createEnv(db, { TURNSTILE_SITE_KEY: "site-key-1", TURNSTILE_SECRET_KEY: "secret" }), "/permits/P-1")).text();
   assert.match(withKey, /class="cf-turnstile" data-sitekey="site-key-1"/);
   assert.match(withKey, /<script src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js" async defer><\/script>/);
 });

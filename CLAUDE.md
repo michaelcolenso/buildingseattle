@@ -219,11 +219,14 @@ opt-in, one-click unsubscribe) backed by `permit_alert_subscriptions` and
 ingest. This is the free top-of-funnel product; there is no paid alert tier yet.
 
 Abuse controls: sign-up is JSON-only, same-origin (no CORS), throttled per IP
-(`ALERTS_RATE_LIMITER` binding, else a D1 counter in `request_rate_limits`) and
-per address (daily cap), with a resend cooldown, a suppression list
-(`alert_email_suppressions`) and optional Turnstile (`TURNSTILE_SITE_KEY` renders
-the widget, `TURNSTILE_SECRET_KEY` enforces it). Every accepted sign-up answers
-the same 202. GET `/alerts/confirm` and `/alerts/unsubscribe` only render a page;
+(the `ALERTS_RATE_LIMITER` binding as a per-minute burst limit when it exists,
+plus the hourly cap in a D1 counter, `request_rate_limits`, always; `/leads`
+works the same way) and per address (daily cap; over it the sign-up answers 429
+with a message that says so), with a resend cooldown, a suppression list
+(`alert_email_suppressions`) and optional Turnstile, which is on only when both
+`TURNSTILE_SITE_KEY` (renders the widget) and `TURNSTILE_SECRET_KEY` (verifies)
+are set; one alone is ignored with a warning. If the D1 counter is down the
+forms fail closed with a 503. Every other accepted sign-up answers the same 202. GET `/alerts/confirm` and `/alerts/unsubscribe` only render a page;
 the state change is the page's POST (RFC 8058 one-click POST still works).
 Confirmation links expire after 7 days. Each alert is claimed in
 `permit_alert_deliveries` before sending, so overlapping runs never double-send.

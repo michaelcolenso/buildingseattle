@@ -128,26 +128,36 @@ export function isJsonContentType(request) {
 // --- Rate limiting -----------------------------------------------------------
 
 /**
- * Count one hit against `key`. Uses the Workers Rate Limiting binding named
- * `binding` when it is configured (its own limit/period from wrangler.toml
- * apply), otherwise a fixed-window counter in D1 (`request_rate_limits`).
- * Returns true when the request is allowed. Fails closed if D1 is unavailable,
- * because every caller guards something that sends email or stores data.
+ * Count one hit against `key` and say whether the request may proceed.
+ * Two layers (review S2):
+ * - `binding`: a Workers Rate Limiting binding, when configured, is the
+ *   short burst limit (its own limit/period from wrangler.toml, e.g. 5/60s);
+ * - `limit` per `windowSeconds` (e.g. 10/hour) is always enforced through a
+ *   fixed-window counter in D1 (`request_rate_limits`), binding or not, so
+ *   the hourly/daily caps hold everywhere.
+ * Returns { allowed, reason }: reason "burst" or "limit" when refused, or
+ * "unavailable" when D1 could not count (fails closed, because every caller
+ * guards something that sends email or stores data).
  */
-export async function consumeRateLimit(env, { binding, key, limit, windowSeconds, nowMs = Date.now() }) {
+export async function checkRateLimit(env, { binding, key, limit, windowSeconds, nowMs = Date.now() }) {
   const limiter = binding ? env?.[binding] : null;
   if (limiter && typeof limiter.limit === "function") {
     try {
       const { success } = await limiter.limit({ key });
-      return Boolean(success);
+      if (!success) return { allowed: false, reason: "burst" };
     } catch (error) {
-      console.warn(`Rate limiter ${binding} failed; using D1 fallback:`, error?.message || error);
+      console.warn(`Rate limiter ${binding} failed; relying on the D1 counter:`, error?.message || error);
     }
   }
-  return consumeD1RateLimit(env, key, limit, windowSeconds, nowMs);
+  return countD1RateLimit(env, key, limit, windowSeconds, nowMs);
 }
 
-export async function consumeD1RateLimit(env, key, limit, windowSeconds, nowMs = Date.now()) {
+/** Boolean form of checkRateLimit. */
+export async function consumeRateLimit(env, options) {
+  return (await checkRateLimit(env, options)).allowed;
+}
+
+async function countD1RateLimit(env, key, limit, windowSeconds, nowMs = Date.now()) {
   const windowStart = Math.floor(nowMs / 1000 / windowSeconds) * windowSeconds;
   try {
     const row = await env.DB.prepare(
@@ -159,11 +169,16 @@ export async function consumeD1RateLimit(env, key, limit, windowSeconds, nowMs =
       .bind(key, windowStart)
       .first();
     if (Math.random() < 0.02) await pruneRateLimits(env, nowMs);
-    return Number(row?.hits || 0) <= limit;
+    const allowed = Number(row?.hits || 0) <= limit;
+    return { allowed, reason: allowed ? null : "limit" };
   } catch (error) {
     console.error("D1 rate limiter unavailable:", error?.message || error);
-    return false;
+    return { allowed: false, reason: "unavailable" };
   }
+}
+
+export async function consumeD1RateLimit(env, key, limit, windowSeconds, nowMs = Date.now()) {
+  return (await countD1RateLimit(env, key, limit, windowSeconds, nowMs)).allowed;
 }
 
 // Opportunistic cleanup keeps the table small without a cron step; a failure
@@ -185,8 +200,25 @@ export async function rateLimitKey(scope, value) {
 
 // --- Turnstile ---------------------------------------------------------------
 
+// Turnstile is on only when BOTH keys are set (review S3): the page renders
+// the widget from TURNSTILE_SITE_KEY and the server verifies with
+// TURNSTILE_SECRET_KEY. With only the secret, the server would demand a token
+// the page never produces and refuse every sign-up; with only the site key,
+// the widget would show and nothing would check it. One key alone is ignored,
+// with a warning (logged once per isolate).
+let turnstileHalfConfiguredWarned = false;
+
 export function turnstileEnabled(env) {
-  return Boolean(env?.TURNSTILE_SECRET_KEY);
+  const site = Boolean(String(env?.TURNSTILE_SITE_KEY || "").trim());
+  const secret = Boolean(String(env?.TURNSTILE_SECRET_KEY || "").trim());
+  if (site !== secret && !turnstileHalfConfiguredWarned) {
+    turnstileHalfConfiguredWarned = true;
+    console.warn(
+      `Turnstile disabled: ${site ? "TURNSTILE_SITE_KEY" : "TURNSTILE_SECRET_KEY"} is set but ` +
+        `${site ? "TURNSTILE_SECRET_KEY" : "TURNSTILE_SITE_KEY"} is not. Set both or neither.`,
+    );
+  }
+  return site && secret;
 }
 
 export async function verifyTurnstile(env, token, ip) {
