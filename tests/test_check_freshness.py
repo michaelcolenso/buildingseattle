@@ -65,3 +65,16 @@ def test_parse_timestamp_formats():
     assert freshness.parse_timestamp("2026-11-25") == dt.datetime(2026, 11, 25, tzinfo=dt.timezone.utc)
     assert freshness.parse_timestamp("2026-11-27 13:02:11").hour == 13
     assert freshness.parse_timestamp("not a date") is None
+
+
+def test_degraded_feed_run_fails_unless_allowed():
+    stats = {"latest_record_date": "2026-11-26", "last_ingest_at": "2026-11-27 13:02:11",
+             "last_feed_status": "degraded"}
+    ok, lines = freshness.evaluate(stats, NOW)
+    assert not ok
+    assert lines[-1].startswith("FAIL base-feed run: degraded")
+    ok, lines = freshness.evaluate(stats, NOW, allow_degraded=True)
+    assert ok, lines
+    assert lines[-1].startswith("warn")
+    stats["last_feed_status"] = "success"
+    assert freshness.evaluate(stats, NOW)[0]

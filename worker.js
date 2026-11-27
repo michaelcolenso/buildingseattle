@@ -30,8 +30,8 @@ import {
 } from "./entity_hubs.js";
 import { detectNeighborhood, legacyMapPermitStatus, mapSdciStatus, NEIGHBORHOOD_BOUNDS } from "./sdci_mappings.js";
 import {
-  assertFeedPage, assertMappingHealth, buildFeedQuery, cursorAfterPage, DEFAULT_COVERAGE_FLOOR, encodeCursor,
-  FEED_LIMITS, feedPageUrl, fetchFeedPage, planFeedRun, SDCI_PERMIT_URL,
+  assertFeedPage, assertMappingHealth, buildFeedQuery, cursorAfterPage, DEFAULT_COVERAGE_FLOOR, detectFullReplace,
+  encodeCursor, FEED_LIMITS, feedPageUrl, fetchFeedPage, planFeedRun, SDCI_PERMIT_URL,
 } from "./sdci_feed.js";
 import { PERMIT_UPSERT_SQL, permitUpsertBinds, STATUS_CHANGE_INSERT_SQL, statusChangeBinds } from "./permit_upsert.js";
 import { countedValueSql, countedValues } from "./value_counting.js";
@@ -1359,9 +1359,13 @@ export async function getCanonicalStats(env) {
     ),
     dbFirst(
       env,
+      // 'degraded' (see runScheduledIngest) still ingested data, so it counts
+      // for the "last ingest" label; last_feed_status surfaces it.
       `/* homepage:last-ingest */
-       SELECT end_time FROM ingest_logs
-       WHERE status = 'success' AND run_type NOT IN ('entity_graph', 'development_sites')
+       SELECT end_time,
+         (SELECT status FROM ingest_logs WHERE run_type = 'scheduled' ORDER BY start_time DESC, id DESC LIMIT 1) AS feed_status
+       FROM ingest_logs
+       WHERE status IN ('success', 'degraded') AND run_type NOT IN ('entity_graph', 'development_sites')
        ORDER BY end_time DESC LIMIT 1`,
     ),
   ]);
@@ -1374,6 +1378,7 @@ export async function getCanonicalStats(env) {
     total_value: Number(stats?.total_value) || 0,
     latest_record_date: stats?.latest_record_date || null,
     last_ingest_at: ingest?.end_time || null,
+    last_feed_status: ingest?.feed_status || null,
   };
 }
 
@@ -2623,7 +2628,7 @@ async function renderPermitBrowser(request, env) {
       `SELECT DISTINCT status FROM permits WHERE status IS NOT NULL AND status != '' ORDER BY status ASC`,
     ).all(),
     env.DB.prepare(
-      `SELECT end_time FROM ingest_logs WHERE status = 'success' AND run_type NOT IN ('entity_graph', 'development_sites') ORDER BY end_time DESC LIMIT 1`,
+      `SELECT end_time FROM ingest_logs WHERE status IN ('success', 'degraded') AND run_type NOT IN ('entity_graph', 'development_sites') ORDER BY end_time DESC LIMIT 1`,
     ).first(),
     getRecentStatusChanges(env, 8),
   ]);
@@ -3788,6 +3793,7 @@ async function getStats(env) {
       avg_value: Number(avgValue?.avg_value) || 0,
       latest_record_date: stats.latest_record_date,
       last_ingest_at: stats.last_ingest_at,
+      last_feed_status: stats.last_feed_status,
       timestamp: new Date().toISOString(),
     }),
     {
@@ -8852,13 +8858,20 @@ async function logIngest(
 // mappings in sdci_mappings.js (data/sdci_mappings.json, shared with
 // sdci_scraper.py); the permit upsert in permit_upsert.js.
 //
-// Each run (1) pulls records whose Socrata :updated_at moved since the last
-// successful `scheduled` run (start time minus an overlap, or the cursor that
-// run stopped at when it hit its page cap), then (2) spends any page budget
-// left on the weekly full sweep (`full_sweep` rows; resumes until it reaches
-// the end of the coverage window). Pages are upserted as they arrive, so a
-// failure keeps every page already written; the next run re-reads from the
-// last success and the upsert is idempotent.
+// Each run (1) reads the newest page by applieddate DESC and by issueddate
+// DESC, so new and newly issued permits land the day they appear; (2) pulls
+// records whose Socrata :updated_at moved since the last successful
+// `scheduled` run (start time minus an overlap, or the cursor that run stopped
+// at when it hit its page cap); (3) spends any page budget left on the weekly
+// full sweep (`full_sweep` rows; resumes until it reaches the end of the
+// coverage window). If (2)'s first page looks like a full dataset replace
+// (detectFullReplace), the `scheduled` row is logged 'degraded' instead of
+// 'success', the rest of (2)'s budget is read newest-first, and no cursor is
+// kept. 'degraded' counts as a completed run for planning and freshness
+// labels; /api/stats reports it as last_feed_status so the daily freshness
+// check fails loudly. Pages are upserted as they arrive, so a failure keeps
+// every page already written; the next run re-reads from the last success and
+// the upsert is idempotent.
 async function logFeedRun(env, { run_type, status, added = 0, updated = 0, unchanged = 0, error_message = null, cursor = null, start_time, end_time }) {
   const fmt = (date) => date.toISOString().replace("T", " ").split(".")[0];
   // Needs migrations/0003_permit_feed_fields.sql (cursor, records_unchanged).
@@ -8873,7 +8886,7 @@ async function logFeedRun(env, { run_type, status, added = 0, updated = 0, uncha
 async function latestFeedRun(env, runType) {
   return env.DB.prepare(
     `SELECT start_time, cursor FROM ingest_logs
-     WHERE run_type = ? AND status = 'success'
+     WHERE run_type = ? AND status IN ('success', 'degraded')
      ORDER BY start_time DESC, id DESC LIMIT 1`,
   )
     .bind(runType)
@@ -8901,26 +8914,56 @@ export async function runScheduledIngest(env, options = {}) {
       feedCoverageFloor(env),
     ]);
     const plan = planFeedRun({ lastIncremental, lastSweep, now: options.now || startTime, limits });
-    const context = { env, floor, limits, fetchOptions, totals, contractorMap: null };
+    const context = { env, floor, limits, fetchOptions, totals, contractorMap: null, seen: new Map() };
 
-    const incremental = await pullFeedPages(context, plan.incremental, plan.incremental.maxPages);
+    // Newest-first pages: every run, before the :updated_at pull, so they land
+    // even when that pull is stuck in a full-replace bucket (review B2).
+    const newest = { pages: 0, added: 0, updated: 0, unchanged: 0, cursors: {} };
+    for (const step of plan.newest) {
+      const pulled = await pullFeedPages(context, step, step.maxPages);
+      newest.pages += pulled.pages;
+      for (const key of ["added", "updated", "unchanged"]) newest[key] += pulled[key];
+      newest.cursors[step.field] = pulled.cursor;
+    }
+
+    const incremental = await pullFeedPages(context, plan.incremental, plan.incremental.maxPages, { detectReplace: true });
+    let degradedPages = 0;
+    if (incremental.replace) {
+      // The dataset looks fully replaced: paging on :updated_at would re-read
+      // the lowest permit numbers forever. Spend the rest of the incremental
+      // budget newest-first, continuing the applieddate page read above.
+      const budget = plan.incremental.maxPages - incremental.pages;
+      const cursor = newest.cursors.applieddate;
+      if (budget > 0 && cursor) {
+        const more = await pullFeedPages(context, { mode: "newest", field: "applieddate", cursor }, budget);
+        degradedPages = more.pages;
+        for (const key of ["added", "updated", "unchanged"]) incremental[key] += more[key];
+      }
+    }
+    const replaceNote = incremental.replace
+      ? `degraded: ${incremental.replace.rows} of the first ${limits.pageSize}-row :updated_at page share :updated_at ` +
+        `${incremental.replace.stamp}, ${incremental.replace.gapMinutes} min after the watermark; looks like a full ` +
+        `dataset replace. Read newest-first instead; older permits refresh in the weekly sweep.`
+      : null;
     await logFeedRun(env, {
       run_type: "scheduled",
-      status: "success",
-      added: incremental.added,
-      updated: incremental.updated,
-      unchanged: incremental.unchanged,
-      error_message: unknownStatusNote(totals.unknownStatuses),
-      cursor: encodeCursor(incremental.cursor),
+      status: incremental.replace ? "degraded" : "success",
+      added: incremental.added + newest.added,
+      updated: incremental.updated + newest.updated,
+      unchanged: incremental.unchanged + newest.unchanged,
+      error_message: [replaceNote, unknownStatusNote(totals.unknownStatuses)].filter(Boolean).join(" | ").slice(0, 1000) || null,
+      cursor: incremental.replace ? null : encodeCursor(incremental.cursor),
       start_time: startTime,
       end_time: new Date(),
     });
     incrementalLogged = true;
+    if (incremental.replace) console.warn(`Scheduled ingest degraded: ${replaceNote}`);
 
+    const pagesUsed = newest.pages + incremental.pages + degradedPages;
     let sweep = null;
     if (plan.sweep) {
       const sweepStart = new Date();
-      const pages = Math.max(plan.sweep.maxPages, limits.maxPagesPerRun - incremental.pages);
+      const pages = Math.max(plan.sweep.maxPages, limits.maxPagesPerRun - pagesUsed);
       try {
         sweep = await pullFeedPages(context, plan.sweep, pages);
         await logFeedRun(env, {
@@ -8955,7 +8998,9 @@ export async function runScheduledIngest(env, options = {}) {
       updated: totals.updated,
       unchanged: totals.unchanged,
       contractors: totals.contractors,
-      incremental: { pages: incremental.pages, complete: !incremental.cursor },
+      newest: { pages: newest.pages },
+      incremental: { pages: incremental.pages + degradedPages, complete: !incremental.cursor || Boolean(incremental.replace) },
+      degraded: Boolean(incremental.replace),
       sweep: sweep ? { pages: sweep.pages, complete: !sweep.cursor } : null,
       unknown_statuses: Object.fromEntries(totals.unknownStatuses),
       alerts_sent: alertDelivery.sent,
@@ -8987,13 +9032,15 @@ function unknownStatusNote(unknownStatuses) {
   return `warning: unmapped SDCI statuses stored as pending: ${list}`.slice(0, 500);
 }
 
-// Pull up to `maxPages` pages for one plan step, upserting each page.
-async function pullFeedPages(context, step, maxPages) {
+// Pull up to `maxPages` pages for one plan step, upserting each page. With
+// detectReplace, a first page that looks like a full dataset replace is
+// upserted and then ends the step (result.replace set, cursor dropped).
+async function pullFeedPages(context, step, maxPages, { detectReplace = false } = {}) {
   const { env, floor, limits, fetchOptions, totals } = context;
-  const result = { pages: 0, added: 0, updated: 0, unchanged: 0, cursor: step.cursor };
+  const result = { pages: 0, added: 0, updated: 0, unchanged: 0, cursor: step.cursor, replace: null };
   let cursor = step.cursor;
   for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
-    const query = buildFeedQuery({ mode: step.mode, since: step.since, cursor, floor, pageSize: limits.pageSize });
+    const query = buildFeedQuery({ mode: step.mode, field: step.field, since: step.since, cursor, floor, pageSize: limits.pageSize });
     const page = await fetchFeedPage(feedPageUrl(query, limits.feedUrl || SDCI_PERMIT_URL), fetchOptions);
     result.pages++;
     if (!page.length) {
@@ -9001,7 +9048,11 @@ async function pullFeedPages(context, step, maxPages) {
       break;
     }
     assertFeedPage(page);
-    const { permits, contractors } = normalizeSdciPermits(page, totals.unknownStatuses);
+    // The newest-first pages, the incremental pull and the sweep overlap; a
+    // row already written in this run with the same :updated_at is skipped.
+    const fresh = page.filter((row) => context.seen?.get(row.permitnum) !== row[":updated_at"]);
+    for (const row of fresh) context.seen?.set(row.permitnum, row[":updated_at"]);
+    const { permits, contractors } = normalizeSdciPermits(fresh, totals.unknownStatuses);
     assertMappingHealth(permits, { minRows: limits.mappingGuardMinRows, maxRatio: limits.mappingGuardMaxOtherRatio });
 
     if (contractors.length) {
@@ -9016,7 +9067,14 @@ async function pullFeedPages(context, step, maxPages) {
       totals[key] += counts[key];
     }
 
-    cursor = cursorAfterPage(step.mode, page);
+    if (detectReplace && pageIndex === 0) {
+      result.replace = detectFullReplace(page, step, limits);
+      if (result.replace) {
+        cursor = null;
+        break;
+      }
+    }
+    cursor = cursorAfterPage(step.mode, page, step.field);
     if (page.length < limits.pageSize) {
       cursor = null;
       break;

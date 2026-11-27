@@ -7,6 +7,7 @@ import {
   buildFeedQuery,
   cursorAfterPage,
   decodeCursor,
+  detectFullReplace,
   encodeCursor,
   FEED_LIMITS,
   fetchFeedPage,
@@ -75,7 +76,8 @@ test("planFeedRun: watermark, resume, and a weekly sweep", () => {
   const fresh = planFeedRun({ now });
   assert.equal(fresh.incremental.since, null, "first run ever pulls the whole window");
   assert.ok(fresh.sweep && fresh.sweep.cursor === null, "no sweep yet -> start one");
-  assert.equal(fresh.incremental.maxPages + fresh.sweep.maxPages, FEED_LIMITS.maxPagesPerRun);
+  assert.equal(fresh.newest.length, FEED_LIMITS.newestPages);
+  assert.equal(fresh.incremental.maxPages + fresh.sweep.maxPages + fresh.newest.length, FEED_LIMITS.maxPagesPerRun);
 
   const daily = planFeedRun({
     now,
@@ -84,7 +86,7 @@ test("planFeedRun: watermark, resume, and a weekly sweep", () => {
   });
   assert.equal(daily.incremental.since, "2026-11-27T11:00:00.000Z");
   assert.equal(daily.sweep, null, "sweep finished three days ago");
-  assert.equal(daily.incremental.maxPages, FEED_LIMITS.maxPagesPerRun);
+  assert.equal(daily.incremental.maxPages, FEED_LIMITS.maxPagesPerRun - FEED_LIMITS.newestPages);
 
   const resumed = planFeedRun({
     now,
@@ -172,4 +174,73 @@ test("assertMappingHealth fails a batch where classification collapses", () => {
   const badHood = ok.map((p, i) => (i < 11 ? { ...p, neighborhood: "Other" } : p));
   assert.throws(() => assertMappingHealth(badHood), /neighborhood "Other"/);
   assert.doesNotThrow(() => assertMappingHealth(badHood.slice(0, 50)), "small batches are not judged");
+});
+
+test("newest-first queries order by a date field DESC and keyset backwards (B2)", () => {
+  const applied = buildFeedQuery({ mode: "newest", field: "applieddate", floor: "2024-05-15" });
+  assert.equal(applied.get("$where"), "applieddate >= '2024-05-15T00:00:00.000'");
+  assert.equal(applied.get("$order"), "applieddate DESC, permitnum DESC");
+  assert.equal(applied.get("$offset"), null);
+  const issued = buildFeedQuery({
+    mode: "newest",
+    field: "issueddate",
+    cursor: { value: "2026-11-20T00:00:00.000", permitnum: "7100'01" },
+    floor: "2024-05-15",
+  });
+  assert.equal(
+    issued.get("$where"),
+    "applieddate >= '2024-05-15T00:00:00.000' AND issueddate IS NOT NULL AND " +
+      "(issueddate < '2026-11-20T00:00:00.000' OR (issueddate = '2026-11-20T00:00:00.000' AND permitnum < '7100''01'))",
+  );
+  assert.equal(issued.get("$order"), "issueddate DESC, permitnum DESC");
+  assert.throws(() => buildFeedQuery({ mode: "newest", field: "permitnum" }), /Unknown newest-first field/);
+  assert.throws(() => buildFeedQuery({ mode: "newest", field: "applieddate", cursor: { value: "x' OR 1=1" } }), /Invalid Socrata timestamp/);
+  const page = [{ permitnum: "B", applieddate: "2026-11-02T00:00:00.000" }, { permitnum: "A", applieddate: "2026-11-01T00:00:00.000" }];
+  assert.deepEqual(cursorAfterPage("newest", page, "applieddate"), { value: "2026-11-01T00:00:00.000", permitnum: "A" });
+});
+
+test("planFeedRun keeps newest-first pages inside the per-run budget and at least one incremental page", () => {
+  const now = new Date("2026-11-28T13:00:00Z");
+  for (const limits of [
+    { ...FEED_LIMITS },
+    { ...FEED_LIMITS, maxPagesPerRun: 3, sweepReservedPages: 2 },
+    { ...FEED_LIMITS, maxPagesPerRun: 1, sweepReservedPages: 0 },
+    { ...FEED_LIMITS, newestPages: 0 },
+  ]) {
+    const plan = planFeedRun({ now, limits });
+    const total = plan.newest.length + plan.incremental.maxPages + (plan.sweep?.maxPages || 0);
+    assert.ok(total <= limits.maxPagesPerRun, JSON.stringify(limits));
+    assert.ok(plan.incremental.maxPages >= 1 || limits.maxPagesPerRun <= (plan.sweep?.maxPages || 0));
+    plan.newest.forEach((step, i) => assert.deepEqual(step, { mode: "newest", field: ["applieddate", "issueddate"][i], cursor: null, maxPages: 1 }));
+  }
+  assert.equal(planFeedRun({ now, limits: { ...FEED_LIMITS, newestPages: 0 } }).newest.length, 0);
+});
+
+test("detectFullReplace flags one dominant :updated_at far past the watermark, nothing else (B2)", () => {
+  const limits = { ...FEED_LIMITS, replaceGuardMinRows: 10 };
+  const rows = (n, stamp) => Array.from({ length: n }, (_, i) => ({ permitnum: String(i).padStart(4, "0"), ":updated_at": stamp }));
+  const replaced = rows(10, "2026-11-28T06:00:00.000Z");
+  const since = "2026-11-27T11:00:00.000Z";
+  assert.deepEqual(detectFullReplace(replaced, { since }, limits), {
+    stamp: "2026-11-28T06:00:00.000Z",
+    share: 1,
+    rows: 10,
+    gapMinutes: 1140,
+  });
+  // A stored cursor in yesterday's bucket, today's replace restamped every row.
+  assert.ok(detectFullReplace(replaced, { cursor: { updated_at: "2026-11-27T06:00:00.000Z", permitnum: "0500" } }, limits));
+  // Resuming inside the same big bucket is legitimate paging, not a replace.
+  assert.equal(detectFullReplace(replaced, { cursor: { updated_at: "2026-11-28T06:00:00.000Z", permitnum: "0001" } }, limits), null);
+  // First run ever: no reference point.
+  assert.equal(detectFullReplace(replaced, {}, limits), null);
+  // Too few rows to judge.
+  assert.equal(detectFullReplace(replaced.slice(0, 9), { since }, limits), null);
+  // Ordinary daily churn: many different stamps.
+  const churn = replaced.map((row, i) => ({ ...row, ":updated_at": `2026-11-28T0${i}:00:00.000Z` }));
+  assert.equal(detectFullReplace(churn, { since }, limits), null);
+  // Below the ratio (7 of 10 share a stamp).
+  const mostly = replaced.map((row, i) => (i < 3 ? { ...row, ":updated_at": `2026-11-28T0${i}:30:00.000Z` } : row));
+  assert.equal(detectFullReplace(mostly, { since }, limits), null);
+  // Dominant stamp right at the watermark (within the gap).
+  assert.equal(detectFullReplace(rows(10, "2026-11-27T11:30:00.000Z"), { since }, limits), null);
 });

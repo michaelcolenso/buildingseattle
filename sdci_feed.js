@@ -12,9 +12,16 @@
 // record was last updated", usable in $where to get recent updates; a full
 // dataset *replace* bumps it on every row (dev.socrata.com/docs/system-fields).
 // How Seattle publishes k44w-2dcq (row upserts vs. daily replace) is not
-// verified here: on a daily replace the incremental pull degrades to a rolling
-// full refresh of PAGE_SIZE * pages rows a day, which is still bounded and
-// still correct, just slower to converge. Tests: tests/sdci_feed.test.js.
+// verified. On a daily replace the keyset on `:updated_at, permitnum` restarts
+// inside one giant bucket every day and only ever re-reads the lowest permit
+// numbers (audit review B2), so it does NOT converge. Two defences:
+//   1. every run also reads the newest page by applieddate DESC and by
+//      issueddate DESC ("newest" mode), so a new or newly issued permit is
+//      never stuck waiting for the weekly sweep;
+//   2. detectFullReplace() spots the replace pattern on the incremental pull's
+//      first page; the run then logs status 'degraded', spends its remaining
+//      incremental budget newest-first, and older permits are refreshed by the
+//      weekly sweep. Tests: tests/sdci_feed.test.js, tests/scheduled_ingest.test.js.
 
 export const SDCI_PERMIT_URL = "https://data.seattle.gov/resource/k44w-2dcq.json";
 
@@ -77,6 +84,16 @@ export const FEED_LIMITS = Object.freeze({
   // starve it.
   sweepReservedPages: 2,
   overlapMinutes: 120,
+  // Newest-first pages read on every run, one per NEWEST_FIELDS entry (0-2),
+  // inside maxPagesPerRun. The incremental pull always keeps at least 1 page.
+  newestPages: 2,
+  // Full-replace detection on the incremental pull's first page: at least
+  // replaceGuardMinRows rows, replaceGuardRatio of them sharing one
+  // :updated_at that is more than replaceGuardGapMinutes after the watermark
+  // or cursor the pull started from.
+  replaceGuardMinRows: 200,
+  replaceGuardRatio: 0.8,
+  replaceGuardGapMinutes: 60,
   sweepIntervalDays: 7,
   fetchAttempts: 3,
   backoffMs: 1000,
@@ -84,6 +101,9 @@ export const FEED_LIMITS = Object.freeze({
   mappingGuardMinRows: 200,
   mappingGuardMaxOtherRatio: 0.05,
 });
+
+// Date fields "newest" mode orders by (DESC), in the order they are read.
+export const NEWEST_FIELDS = Object.freeze(["applieddate", "issueddate"]);
 
 // Used only when D1 has no permits yet (a fresh database).
 export const DEFAULT_COVERAGE_FLOOR = "2022-01-01";
@@ -130,9 +150,11 @@ export function decodeCursor(text) {
  * Query string for one page.
  * - incremental: { mode: "incremental", since, cursor: { updated_at, permitnum } | null }
  * - sweep:       { mode: "sweep", cursor: { permitnum } | null }
- * Both are restricted to applieddate >= floor (the coverage window).
+ * - newest:      { mode: "newest", field: "applieddate" | "issueddate",
+ *                  cursor: { value, permitnum } | null } (field DESC, permitnum DESC)
+ * All are restricted to applieddate >= floor (the coverage window).
  */
-export function buildFeedQuery({ mode, since = null, cursor = null, floor = DEFAULT_COVERAGE_FLOOR, pageSize = FEED_LIMITS.pageSize }) {
+export function buildFeedQuery({ mode, field = null, since = null, cursor = null, floor = DEFAULT_COVERAGE_FLOOR, pageSize = FEED_LIMITS.pageSize }) {
   if (!DATE_RE.test(String(floor))) throw new Error(`Invalid coverage floor: ${floor}`);
   const where = [`applieddate >= ${soqlString(`${floor}T00:00:00.000`)}`];
   let order;
@@ -147,6 +169,14 @@ export function buildFeedQuery({ mode, since = null, cursor = null, floor = DEFA
   } else if (mode === "sweep") {
     if (cursor?.permitnum) where.push(`permitnum > ${soqlString(cursor.permitnum)}`);
     order = "permitnum";
+  } else if (mode === "newest") {
+    if (!NEWEST_FIELDS.includes(field)) throw new Error(`Unknown newest-first field: ${field}`);
+    if (field !== "applieddate") where.push(`${field} IS NOT NULL`);
+    if (cursor?.value) {
+      const v = soqlTimestamp(cursor.value);
+      where.push(`(${field} < ${v} OR (${field} = ${v} AND permitnum < ${soqlString(cursor.permitnum || "")}))`);
+    }
+    order = `${field} DESC, permitnum DESC`;
   } else {
     throw new Error(`Unknown feed mode: ${mode}`);
   }
@@ -163,12 +193,47 @@ export function feedPageUrl(query, baseUrl = SDCI_PERMIT_URL) {
 }
 
 /** Cursor after the last row of a page (rows arrive in keyset order). */
-export function cursorAfterPage(mode, page) {
+export function cursorAfterPage(mode, page, field = null) {
   const last = page[page.length - 1];
   if (!last) return null;
+  if (mode === "newest") return last[field] ? { value: last[field], permitnum: last.permitnum } : null;
   return mode === "incremental"
     ? { updated_at: last[":updated_at"], permitnum: last.permitnum }
     : { permitnum: last.permitnum };
+}
+
+function timestampMs(text) {
+  const value = String(text || "");
+  return Date.parse(/Z$|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`);
+}
+
+/**
+ * Does the incremental pull's first page look like a full dataset replace?
+ * A replace stamps (nearly) every row with one :updated_at, so the page is
+ * full, dominated by one stamp, and that stamp is well after the watermark or
+ * cursor the pull started from. Resuming inside a big bucket (stamp equal to
+ * the cursor) and the first run ever (no reference) are not replaces.
+ * Returns { stamp, share, rows, gapMinutes } or null.
+ */
+export function detectFullReplace(page, { since = null, cursor = null } = {}, limits = FEED_LIMITS) {
+  const reference = cursor?.updated_at || since;
+  if (!reference || !Array.isArray(page)) return null;
+  if (page.length < Math.max(1, limits.replaceGuardMinRows)) return null;
+  const counts = new Map();
+  for (const row of page) {
+    const stamp = row?.[":updated_at"];
+    if (stamp) counts.set(stamp, (counts.get(stamp) || 0) + 1);
+  }
+  let stamp = null;
+  let rows = 0;
+  for (const [value, count] of counts) {
+    if (count > rows) [stamp, rows] = [value, count];
+  }
+  const share = rows / page.length;
+  if (!stamp || share < limits.replaceGuardRatio) return null;
+  const gapMinutes = (timestampMs(stamp) - timestampMs(reference)) / 60000;
+  if (!(gapMinutes > limits.replaceGuardGapMinutes)) return null;
+  return { stamp, share, rows, gapMinutes: Math.round(gapMinutes) };
 }
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -261,14 +326,19 @@ function logTimeMs(text) {
 }
 
 /**
- * Decide what this run pulls, from the latest successful ingest_logs rows.
+ * Decide what this run pulls, from the latest successful (or degraded)
+ * ingest_logs rows.
  * `lastIncremental` / `lastSweep`: { start_time, cursor } or null.
+ * - newest: one page per NEWEST_FIELDS entry (limits.newestPages of them),
+ *   newest-first, every run.
  * - incremental: resume from a stored cursor (the last run hit its page cap),
  *   else everything updated since the last success's start minus the overlap,
  *   else (first run ever) since the last success of any scheduled run / null
  *   = everything in the window.
  * - sweep: continue a stored cursor; start a new one when the last completed
  *   sweep started more than sweepIntervalDays ago (or never ran).
+ * Pages across all three never exceed maxPagesPerRun; the incremental pull
+ * keeps at least one.
  */
 export function planFeedRun({ lastIncremental = null, lastSweep = null, now = new Date(), limits = FEED_LIMITS } = {}) {
   const incCursor = decodeCursor(lastIncremental?.cursor);
@@ -288,8 +358,15 @@ export function planFeedRun({ lastIncremental = null, lastSweep = null, now = ne
   }
 
   const sweepPages = sweep ? Math.min(limits.sweepReservedPages, limits.maxPagesPerRun) : 0;
+  const newestCount = Math.max(0, Math.min(
+    Number(limits.newestPages) || 0,
+    NEWEST_FIELDS.length,
+    limits.maxPagesPerRun - sweepPages - 1,
+  ));
+  const newest = NEWEST_FIELDS.slice(0, newestCount).map((field) => ({ mode: "newest", field, cursor: null, maxPages: 1 }));
   return {
-    incremental: { ...incremental, maxPages: limits.maxPagesPerRun - sweepPages },
+    newest,
+    incremental: { ...incremental, maxPages: limits.maxPagesPerRun - sweepPages - newestCount },
     sweep: sweep ? { ...sweep, maxPages: sweepPages } : null,
   };
 }
