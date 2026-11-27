@@ -1,6 +1,12 @@
 name = "buildingseattle"
 main = "worker.js"
 compatibility_date = "2026-03-14"
+# Serve only on buildingseattle.com (review S8): the *.workers.dev mirror and
+# per-version preview URLs sit outside the zone's protections and serve a
+# duplicate site. Set here because a dashboard toggle is reset by each deploy.
+# Nothing in the repo calls a workers.dev host (tests/wrangler_config.test.js).
+workers_dev = false
+preview_urls = false
 
 [vars]
 # Enable after the migration and verified backfill; cache keys change with this flag.
