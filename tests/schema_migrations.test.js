@@ -92,3 +92,21 @@ test("wrangler.toml points the D1 binding at migrations/", () => {
   const toml = read("wrangler.toml");
   assert.match(toml, /\[\[d1_databases\]\][\s\S]*?migrations_dir\s*=\s*"migrations"/);
 });
+
+test("the permit list query is served by an index, with no full scan or temp sort (F8)", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(read("schema.sql"));
+  const list = (where) =>
+    `SELECT p.*, c.name FROM permits p LEFT JOIN contractors c ON p.contractor_id = c.id LEFT JOIN addresses a ON a.id = p.address_id ${where} ORDER BY p.issued_date DESC LIMIT 50 OFFSET 0`;
+  for (const [where, args] of [
+    ["WHERE 1=1", []],
+    ["WHERE 1=1 AND p.type = ?", ["residential"]],
+    ["WHERE 1=1 AND p.neighborhood = ?", ["Ballard"]],
+    ["WHERE 1=1 AND p.status = ?", ["active"]],
+  ]) {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${list(where)}`).all(...args).map((row) => row.detail).join(" | ");
+    assert.match(plan, /USING INDEX idx_permits_\w*issued_date/, `${where}: ${plan}`);
+    assert.doesNotMatch(plan, /TEMP B-TREE/, `${where}: ${plan}`);
+  }
+  db.close();
+});
