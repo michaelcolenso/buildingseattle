@@ -27,14 +27,12 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.DEVELOPMENT_SITES_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@v3
       - run: uv sync --frozen
       - name: Refresh development sites
         env:
@@ -47,14 +45,3 @@ jobs:
           args=(--limit-sites "$LIMIT_SITES")
           if [[ "$DRY_RUN" == "true" ]]; then args+=(--dry-run); fi
           uv run python scripts/enrich_development_sites.py "${args[@]}"
-
-  notify:
-    needs: [enrich]
-    # Skipped runs (repository variable off) are not failures.
-    if: always() && needs.enrich.result != 'skipped'
-    permissions:
-      issues: write
-    uses: ./.github/workflows/notify-failure.yml
-    with:
-      workflow: ${{ github.workflow }}
-      result: ${{ needs.enrich.result }}
