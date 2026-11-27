@@ -2867,6 +2867,17 @@ async function renderPermitDetail(permitNumber, env, request) {
       `
     : "";
   const primaryLeadLabel = "Email Me Permit Updates";
+  const alertsOpen = !isClosedPermitStatus(permit.status);
+  const permitAlertCard = alertsOpen
+    ? `<div class="bs-card card-full" id="permit-alerts">
+                    <div class="card-label">Status alerts</div>
+                    <p style="margin:0.5rem 0 0.75rem;font-size:0.9rem;color:var(--text-muted);">Get a free email when this permit changes status. You confirm your address first, and every email has a one-click unsubscribe. <a href="/alerts" style="color:var(--accent);">How alerts work</a> &middot; <a href="/privacy" style="color:var(--accent);">Privacy</a></p>
+                    <button type="button" class="bs-btn bs-btn--primary" onclick="openModal()">${primaryLeadLabel}</button>
+                </div>`
+    : `<div class="bs-card card-full" id="permit-alerts">
+                    <div class="card-label">Status alerts</div>
+                    <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--text-muted);">This permit is ${escapeHtml(statusLabel(permit.status).toLowerCase())}, so it has no status changes left to email about. <a href="/alerts" style="color:var(--accent);">How permit alerts work</a></p>
+                </div>`;
   const timelineCard = renderPermitTimeline(permit);
 
   const valueFormatted = permit.value ? `$${parseInt(permit.value).toLocaleString()}` : "N/A";
@@ -2897,17 +2908,20 @@ async function renderPermitDetail(permitNumber, env, request) {
     .replace(/[.,\s]+$/, "");
   const streetOnly = permit.address ? entStreet(permit.address) : "";
   const titleLocation = streetOnly ? `${smartTitleCase(streetOnly)}, Seattle` : "Seattle";
-  const rawTitleHighlight =
-    permitDescriptor || rawWorkText || `${permitType} (${permit.status || "Unknown"})`;
+  const rawTitleHighlight = permitDescriptor || rawWorkText || `${permitType} permit`;
   // Keep the <title> reasonably tight so it isn't truncated in SERPs: the
   // work highlight absorbs the overflow, but the brand suffix always ships —
   // Google truncates long titles for display on its own, so a missing brand
   // suffix is worse than a slightly long title.
-  const PERMIT_TITLE_MAX = 90;
+  // The permit number always ships too: several permits at one address (a
+  // multi-unit site, a building with many tenant improvements) otherwise share
+  // the same address + work-type title and H1.
+  const PERMIT_TITLE_MAX = 100;
   const brandSuffix = " | Building Seattle";
   const titlePrefix = `${titleLocation} — `;
-  const highlightBudget = Math.max(20, PERMIT_TITLE_MAX - titlePrefix.length - brandSuffix.length);
-  const pageTitle = `${titlePrefix}${truncateMetaDescription(rawTitleHighlight, highlightBudget)}${brandSuffix}`;
+  const permitSuffix = permit.permit_number ? ` (#${permit.permit_number})` : "";
+  const highlightBudget = Math.max(20, PERMIT_TITLE_MAX - titlePrefix.length - permitSuffix.length - brandSuffix.length);
+  const pageTitle = `${titlePrefix}${truncateMetaDescription(rawTitleHighlight, highlightBudget)}${permitSuffix}${brandSuffix}`;
   const safeTitle = escapeHtml(pageTitle);
 
   // Build the meta description with the required facts (permit number/status)
@@ -2915,8 +2929,8 @@ async function renderPermitDetail(permitNumber, env, request) {
   // truncate the tail mid-name. Only the leading work/address snippet, which
   // is already word-boundary truncated, absorbs any remaining length overflow.
   const META_MAX = 165;
-  const permitCore = `Permit ${permit.permit_number} (${permit.status || "status unknown"}).`;
-  const contractorSuffix = permit.contractor_name ? ` Contractor: ${permit.contractor_name}.` : "";
+  const permitCore = `Permit ${permit.permit_number} (${permit.status ? statusLabel(permit.status).toLowerCase() : "status unknown"}).`;
+  const contractorSuffix = permit.contractor_name ? ` Contractor: ${displayName(permit.contractor_name)}.` : "";
   const coreWithContractor = `${permitCore}${contractorSuffix}`;
   const metaCore = coreWithContractor.length <= META_MAX - 30 ? coreWithContractor : permitCore;
   const metaLeadBudget = Math.max(20, META_MAX - metaCore.length - 1);
@@ -2936,14 +2950,16 @@ async function renderPermitDetail(permitNumber, env, request) {
   const summaryAddressHtml = permit.address_slug
     ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${safeAddress}</a>`
     : safeAddress;
+  const permitClosed = isClosedPermitStatus(permit.status);
+  const workVerb = permitClosed ? "Work was performed by" : "Work is being performed by";
   const summaryContractorHtml = permit.contractor_name
-    ? ` Work is being performed by ${
+    ? ` ${workVerb} ${
         permit.contractor_slug
-          ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name)}</a>`
-          : escapeHtml(permit.contractor_name)
+          ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(displayName(permit.contractor_name))}</a>`
+          : escapeHtml(displayName(permit.contractor_name))
       }.`
     : permit.work_performed_by === "Owner/Lessee"
-      ? " Work is being performed by the property owner/lessee."
+      ? ` ${workVerb} the property owner/lessee.`
       : "";
   // Cap the lead clause so an unusually long scraped description can't turn
   // this "concise summary below the H1" into a duplicate of the full Project
@@ -2952,7 +2968,7 @@ async function renderPermitDetail(permitNumber, env, request) {
   const summaryLeadText = summaryWorkSnippet
     ? summaryWorkSnippet.charAt(0).toUpperCase() + summaryWorkSnippet.slice(1)
     : `A ${permitType.toLowerCase()} project`;
-  const permitSummaryHtml = `${escapeHtml(summaryLeadText)} at ${summaryAddressHtml}${neighborhoodPhrase}. Permit ${safePermitNumber} is ${escapeHtml((permit.status || "under review").toLowerCase())}${valueFormatted !== "N/A" ? `, valued at ${valueFormatted}` : ""}.${summaryContractorHtml}`;
+  const permitSummaryHtml = `${escapeHtml(summaryLeadText)} at ${summaryAddressHtml}${neighborhoodPhrase}. Permit ${safePermitNumber} is ${escapeHtml(permit.status ? statusLabel(permit.status).toLowerCase() : "under review")}${valueFormatted !== "N/A" ? `, valued at ${valueFormatted}` : ""}.${summaryContractorHtml}`;
   const permitJsonLd = JSON.stringify({
     "@context": "https://schema.org",
     "@graph": [
@@ -3107,6 +3123,13 @@ async function renderPermitDetail(permitNumber, env, request) {
             margin-bottom: 1rem;
             line-height: 1.2;
         }
+        .permit-title-id {
+            display: block;
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
         .permit-summary {
             font-size: 1.0625rem;
             line-height: 1.65;
@@ -3216,15 +3239,16 @@ async function renderPermitDetail(permitNumber, env, request) {
     <main id="main-content">
         <div class="container">
             <div class="permit-header">
-	                <div class="permit-number">PERMIT #<span class="bs-id">${safePermitNumber}</span></div>
-	                <h1 class="permit-title">${safeAddress}</h1>
-	                ${bsStatusPill(permit.status, humanize(permit.status, "Unknown"))}
+	                <div class="permit-number">${safePermitType} permit</div>
+	                <h1 class="permit-title">${safeAddress} <span class="permit-title-id">Permit <span class="bs-id">${safePermitNumber}</span></span></h1>
+	                ${bsStatusPill(permit.status, statusLabel(permit.status))}
                 <p class="permit-summary">${permitSummaryHtml}</p>
 	                ${firstScreenLinks ? `<nav aria-label="Related permit records" style="display:flex;flex-wrap:wrap;gap:0.5rem 0.9rem;margin:1rem 0 0;font-size:0.84rem;">${firstScreenLinks}</nav>` : ""}
             </div>
             <div class="detail-grid">
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Permit Timeline &amp; Status</h2>
                 ${timelineCard}
+                ${permitAlertCard}
                 ${entityLinksCard}
                 <h2 class="card-full" style="font-size:1.5rem;font-weight:700;margin:1.5rem 0 0;color:var(--primary);grid-column:1/-1;">Project Overview</h2>
                 <div class="bs-card">
@@ -3252,7 +3276,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                         : `
 	                        <div class="bs-card__title" style="color: var(--text-muted); margin-top: 0.5rem;">${permit.work_performed_by === "Owner/Lessee" ? "Owner/Lessee" : "Not published by SDCI"}</div>
 	                        ${permit.contractor_license ? `<div style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">License ${escapeHtml(permit.contractor_license)}</div>` : ""}
-	                        ${permit.work_performed_by === "Owner/Lessee" ? "" : `<button type="button" onclick="openModal()" style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
+	                        ${permit.work_performed_by === "Owner/Lessee" || !alertsOpen ? "" : `<button type="button" onclick="openModal()" style="margin-top:0.75rem;background:none;border:none;padding:0;color:var(--accent);font-size:0.875rem;font-weight:600;cursor:pointer;text-align:left;">Get an email if a contractor is attached &rarr;</button>`}
                     `
                     }
                     ${peopleCards}
@@ -3277,7 +3301,7 @@ async function renderPermitDetail(permitNumber, env, request) {
             </div>
 
             <div class="actions">
-                <button class="bs-btn bs-btn--primary" onclick="openModal()">${primaryLeadLabel}</button>
+                ${alertsOpen ? `<button class="bs-btn bs-btn--primary" onclick="openModal()">${primaryLeadLabel}</button>` : ""}
                 ${
                   permit.contractor_slug
                     ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" class="bs-btn bs-btn--secondary">View Contractor</a>`
@@ -3288,7 +3312,7 @@ async function renderPermitDetail(permitNumber, env, request) {
         </div>
     </main>
 
-    <dialog id="leadModal" class="modal" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
+    ${alertsOpen ? `<dialog id="leadModal" class="modal" aria-labelledby="leadModalTitle" aria-describedby="leadModalDescription">
         <div class="modal-content">
             <button class="modal-close" onclick="closeModal()" aria-label="Close dialog">&times;</button>
             <h3 id="leadModalTitle" style="margin-bottom:0.5rem;">${primaryLeadLabel}</h3>
@@ -3309,11 +3333,12 @@ async function renderPermitDetail(permitNumber, env, request) {
                 <h4 id="formSuccessTitle" tabindex="-1">Check your inbox to confirm</h4>
                 <p style="color:var(--text-muted);">The alert starts after you confirm your email address.</p>
             </div>
+            <p style="margin:1rem 0 0;font-size:0.8rem;color:var(--text-muted);">We store your email and this permit number only to send these alerts. <a href="/privacy" style="color:var(--accent);">Privacy notice</a></p>
         </div>
-    </dialog>
+    </dialog>` : ""}
 
     ${renderFooter()}
-    <script>
+    ${alertsOpen ? `<script>
         var leadModal = document.getElementById('leadModal');
         var leadTrigger;
         function openModal() { leadTrigger = document.activeElement; leadModal.showModal(); var field = document.getElementById('lead-email'); if (field) field.focus(); }
@@ -3360,7 +3385,7 @@ async function renderPermitDetail(permitNumber, env, request) {
                 submitBtn.disabled = false;
             }
         }
-    </script>
+    </script>` : ""}
 </body>
 </html>`;
 

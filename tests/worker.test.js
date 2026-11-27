@@ -2316,7 +2316,7 @@ test("GET /permits/:permit_number builds a specific title, meta description, and
   // to the verified address and contractor entity pages.
   const h1Matches = html.match(/<h1[^>]*>/g) || [];
   assert.equal(h1Matches.length, 1);
-  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>\s*<span class="bs-status"[^>]*>[^<]*<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA <span class="permit-title-id">Permit <span class="bs-id">PERM123<\/span><\/span><\/h1>\s*<span class="bs-status"[^>]*>[^<]*<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
   const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
   assert.ok(summaryMatch);
   const summaryHtml = summaryMatch[1];
@@ -2772,10 +2772,10 @@ test("permit and address pages promote source-backed project descriptors and ent
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/7120268-CN"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices \(#7120268-CN\) \| Building Seattle<\/title>/);
   assert.doesNotMatch(permitHtml, /<title>[^<]*MangoApps Tenant improvement for offices \(MangoApps\)/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*MangoApps[^>]*760 ALOHA ST/);
-  assert.match(permitHtml, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>[\s\S]*MangoApps/);
+  assert.match(permitHtml, /<h1 class="permit-title">760 Aloha St, Seattle, WA <span class="permit-title-id">Permit <span class="bs-id">7120268-CN<\/span><\/span><\/h1>[\s\S]*MangoApps/);
   assert.match(permitHtml, /href="\/address\/760-aloha-st"/);
   assert.match(permitHtml, /href="\/contractor\/d-p-inc-general-contractors"/);
   assert.match(permitHtml, /href="\/project\/tenant-improvement-at-760-aloha-st"/);
@@ -2895,8 +2895,8 @@ test("permit and address pages use safe, useful fallbacks for sparse records", a
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/SPARSE-1"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<h1 class="permit-title">Seattle<\/h1>/);
-  assert.match(permitHtml, /<title>Seattle — General Construction \(Unknown\) \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<h1 class="permit-title">Seattle <span class="permit-title-id">Permit <span class="bs-id">SPARSE-1<\/span><\/span><\/h1>/);
+  assert.match(permitHtml, /<title>Seattle — General Construction permit \(#SPARSE-1\) \| Building Seattle<\/title>/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*Permit SPARSE-1/);
   assert.doesNotMatch(permitHtml, /undefined|null|NaN/);
 
@@ -3311,4 +3311,43 @@ test("org contractor pages count every permit, not the 50-row list", async () =>
   assert.match(html, />118<\/span><span class="bs-metric__label">Permits/);
   assert.match(html, /Recent permits \(50 of 118\)/);
   assert.doesNotMatch(html, />50<\/span><span class="bs-metric__label">Permits/);
+});
+
+test("permit pages at one address get distinct titles and H1s (audit E6)", async () => {
+  const titles = new Set();
+  const h1s = new Set();
+  for (const permitNumber of ["UNIT-A", "UNIT-B"]) {
+    const env = createEnv();
+    Object.assign(env._state.permits[0], {
+      permit_number: permitNumber,
+      address: "4500 Rainier Ave S, Seattle, WA",
+      description: "Construct townhouse unit per plan.",
+      detailed_description: null,
+    });
+    const html = await (await worker.fetch(new Request(`http://example.com/permits/${permitNumber}`), env, createCtx())).text();
+    titles.add(html.match(/<title>([^<]*)<\/title>/)[1]);
+    h1s.add(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/)[1]);
+  }
+  assert.equal(titles.size, 2);
+  assert.equal(h1s.size, 2);
+});
+
+test("open permits offer alerts beside the timeline; closed permits do not (audit E5/G13)", async () => {
+  const openEnv = createEnv();
+  Object.assign(openEnv._state.permits[0], { status: "active", contractor_name: "ACME\\BUILD LLC", contractor_slug: "acme" });
+  const openHtml = await (await worker.fetch(new Request("http://example.com/permits/PERM123"), openEnv, createCtx())).text();
+  assert.match(openHtml, /id="permit-alerts"/);
+  assert.match(openHtml, /<dialog id="leadModal"/);
+  assert.match(openHtml, /Work is being performed by/);
+  assert.match(openHtml, /Acme\/Build LLC/);
+  assert.match(openHtml, /href="\/privacy"[^>]*>Privacy notice/);
+
+  const closedEnv = createEnv();
+  Object.assign(closedEnv._state.permits[0], { status: "completed", contractor_name: null, contractor_slug: null, work_performed_by: null });
+  const closedHtml = await (await worker.fetch(new Request("http://example.com/permits/PERM123"), closedEnv, createCtx())).text();
+  assert.match(closedHtml, /id="permit-alerts"[\s\S]*?has no status changes left/);
+  assert.doesNotMatch(closedHtml, /<dialog id="leadModal"/);
+  assert.doesNotMatch(closedHtml, /openModal\(\)/);
+  assert.doesNotMatch(closedHtml, /Get an email if a contractor is attached/);
+  assert.match(closedHtml, /<span class="bs-status"[^>]*>[^<]*Completed/);
 });
