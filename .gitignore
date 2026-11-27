@@ -6,15 +6,27 @@ gen_mcp_js.py
 node_modules/
 .venv/
 __pycache__/
+*.py[cod]
 .pytest_cache/
+
+# Build output (e.g. `wrangler deploy --dry-run --outdir dist`) and logs
+/dist/
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db
 
 # Secrets — never commit (.dev.vars holds INGEST_API_TOKEN etc.)
 .dev.vars
 .env
 .env.*
 
-# Editor/agent state
+# Editor/agent state (local only; .claude/skills/ is tracked on purpose)
 .antigravitycli/
+.claude/settings.local.json
+.idea/
+.vscode/
 
 # Generated SQL import artifacts (regenerate via scripts; never commit)
 sql_chunk_*.sql
@@ -28,6 +40,7 @@ buildingseattle_full_export.jsonl
 sdci_enrichment_*.jsonl
 sdci_permit_enrichments.jsonl
 sdci_detail_probe_results.jsonl
+sdci_detail_probe_summary.md
 unenriched_permits.json
 seattle_permits.jsonl
 seattle_contractors.jsonl

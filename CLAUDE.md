@@ -162,8 +162,10 @@ gitignored `gumroad/dist/` and uploaded to Gumroad; only the free 100-row sample
 is tracked (see `docs/gumroad-dataset-in-git-history.md`). Column contracts
 live in `gumroad/columns.py`; `refresh.py` (ships standalone inside the Pro ZIP)
 keeps its own inline copy that tests assert never drifts. The scripts this
-pipeline superseded (`export_full.py`, `generate_csv.py`, and other one-off
-import/push helpers) live in `scripts/legacy/` for reference only.
+pipeline superseded (`export_full.py`, `generate_csv.py`, the old requests-based
+`enrich_sdci.py`, and other one-off import/push helpers) live in `scripts/legacy/`
+for reference only. Despite its name, root `sdci_detail_probe.py` is live: the
+enrichment scripts import its parser and fetchers.
 
 ### SEO Tooling
 

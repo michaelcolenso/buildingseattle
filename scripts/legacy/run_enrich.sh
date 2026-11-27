@@ -5,7 +5,7 @@ export PATH="$VIRTUAL_ENV/bin:/usr/local/bin:/usr/bin:/bin"
 export PYTHONPATH="$VIRTUAL_ENV/lib/python3.12/site-packages:$PYTHONPATH"
 
 cd /home/openclaw/projects/buildingseattle
-exec "$VIRTUAL_ENV/bin/python3" enrich_sdci.py \
+exec "$VIRTUAL_ENV/bin/python3" scripts/legacy/enrich_sdci.py \
   --input unenriched_permits.json \
   --output sdci_enrichment_20260705.jsonl \
   --delay 1.0 \
