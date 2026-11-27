@@ -2,6 +2,10 @@
 """
 BuildingSeattle SDCI Enrichment Scraper v4
 Text-based extraction from ASP.NET portal (the data is all there, just in complex tables).
+
+LEGACY: superseded by scripts/enrich_unenriched.py (which uses
+sdci_detail_probe.py + sdci_enrich.py). Kept for reference only; needs
+`requests`, which is not a project dependency.
 """
 import json, sys, time, re
 import requests

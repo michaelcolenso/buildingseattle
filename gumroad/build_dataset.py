@@ -2,16 +2,20 @@
 """One-command reproducible build for the Gumroad dataset products.
 
 Rebuilds every shipped artifact from a fresh snapshot of the production
-database:
+database. The paid files are written only to the gitignored gumroad/dist/
+directory; never commit them (the repo is public):
 
-  gumroad/buildingseattle_permits.csv   full export, 38 columns
+  gumroad/dist/buildingseattle_permits.csv   full export, 38 columns (paid)
+  gumroad/dist/contractors.csv               contractor aggregate (paid, Pro)
+  gumroad/dist/buildingseattle-permits-YYYY-MM_foundation.zip
+  gumroad/dist/buildingseattle-permits-YYYY-MM_pro.zip
+
+Free, tracked files regenerated in gumroad/:
+
   gumroad/buildingseattle_sample.csv    100 rows (top-25 by value + 75 random, seed-pinned)
-  gumroad/contractors.csv               contractor aggregate (no empty columns)
   gumroad/data-dictionary.md            stats/version sections regenerated in place
   gumroad/VERSION.txt                   version, counts, totals, SHA256 checksums
   gumroad/CHANGELOG.md                  entry prepended for this version
-  gumroad/dist/buildingseattle-permits-YYYY-MM_foundation.zip
-  gumroad/dist/buildingseattle-permits-YYYY-MM_pro.zip
 
 Data sources (picked automatically, or force with --source):
   d1    Cloudflare D1 REST API snapshot — keyset-paginated on permit_number,
@@ -19,7 +23,10 @@ Data sources (picked automatically, or force with --source):
         Requires CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN (D1 read scope);
         BUILDINGSEATTLE_D1_ID overrides the default database ID.
   api   Public /api/permits pagination at per_page=100. Fallback when no
-        Cloudflare credentials are available; dedupes by permit_number.
+        Cloudflare credentials are available; dedupes by permit_number and
+        fails unless the row count equals /api/stats `permits` (before and
+        after the pull). --allow-count-mismatch downgrades that to a warning.
+        Needs BUILDINGSEATTLE_API_KEY (the anonymous API is a small sample).
 
 Usage:
   python3 gumroad/build_dataset.py                 # d1 if creds present, else api
@@ -53,6 +60,10 @@ from columns import (  # noqa: E402
 )
 
 GUMROAD_DIR = Path(__file__).resolve().parent
+DIST_DIRNAME = "dist"  # gitignored; holds every paid artifact
+PERMITS_CSV_NAME = "buildingseattle_permits.csv"
+SAMPLE_CSV_NAME = "buildingseattle_sample.csv"
+CONTRACTORS_CSV_NAME = "contractors.csv"
 DEFAULT_DB_ID = "e065e988-045f-42b5-b47a-4027c2e5c417"
 API_BASE = "https://buildingseattle.com"
 USER_AGENT = "BuildingSeattle-Build/1.0"
@@ -60,6 +71,8 @@ D1_PAGE_SIZE = 1000
 API_PER_PAGE = 100
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
+# Base rows come from the Open Data feed; only enrichment comes from the portal.
+SOURCE_ATTRIBUTION = "Seattle Open Data k44w-2dcq + SDCI portal detail pages"
 
 PERMIT_SELECT = (
     "SELECT p.id, p.address_id, p.permit_number, p.address, p.neighborhood, p.type, p.value, p.status, "
@@ -138,7 +151,10 @@ def fetch_permits_api(base=API_BASE):
     records, seen = [], set()
     page = 1
     while True:
-        data = http_json(f"{base}/api/permits?per_page={API_PER_PAGE}&page={page}")
+        # Full rows and paging past the anonymous sample need an API key.
+        api_key = os.environ.get("BUILDINGSEATTLE_API_KEY", "").strip()
+        data = http_json(f"{base}/api/permits?per_page={API_PER_PAGE}&page={page}",
+                         headers={"X-API-Key": api_key} if api_key else None)
         results = data.get("results", [])
         if not results:
             return records
@@ -152,6 +168,27 @@ def fetch_permits_api(base=API_BASE):
             return records
         page += 1
         time.sleep(0.15)
+
+
+def fetch_api_permit_count(base=API_BASE):
+    """Live permit count from the public /api/stats endpoint."""
+    data = http_json(f"{base}/api/stats")
+    count = data.get("permits") if isinstance(data, dict) else None
+    if not isinstance(count, int) or count < 0:
+        raise SystemExit(f"/api/stats returned no usable permit count: {count!r}")
+    return count
+
+
+def check_row_count(source, expected, actual, allow_mismatch=False):
+    """Fail the build when the export does not hold exactly the live row count."""
+    if expected is None or expected == actual:
+        return
+    label = "D1 counts" if source == "d1" else "/api/stats reports"
+    message = f"row drift: {label} {expected} permits but export has {actual}"
+    if allow_mismatch:
+        sys.stderr.write(f"WARNING: {message} (continuing: --allow-count-mismatch)\n")
+        return
+    raise SystemExit(message)
 
 
 def fetch_d1_permit_count(account_id, token, db_id):
@@ -361,7 +398,7 @@ def render_version_txt(stats, version, export_date, checksums):
         f"Total value: ${stats['total_value']:,} (repeated demolition valuations counted once)",
         f"Declared value (raw sum): ${stats.get('declared_value', stats['total_value']):,}",
         f"Neighborhoods: {stats['neighborhoods']}",
-        "Source: Seattle SDCI (services.seattle.gov/portal)",
+        f"Source: {SOURCE_ATTRIBUTION}",
         f"Export date: {export_date:%B %-d, %Y}",
         "",
         "SHA256:",
@@ -428,17 +465,22 @@ def build_zip(path, members):
 
 # ------------------------------------------------------------------ main
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", choices=["auto", "d1", "api"], default="auto")
     parser.add_argument("--version", default=None,
                         help="Version label, default current YYYY-MM")
     parser.add_argument("--out-dir", default=str(GUMROAD_DIR),
-                        help="Directory holding the product files (default gumroad/)")
-    args = parser.parse_args()
+                        help="Directory holding the tracked product files (default gumroad/)")
+    parser.add_argument("--allow-count-mismatch", action="store_true",
+                        help="Warn instead of failing when the export row count differs "
+                             "from the live count (D1 COUNT(*) or /api/stats)")
+    parser.add_argument("--dist-dir", default=None,
+                        help="Gitignored directory for the paid CSVs and ZIPs (default <out-dir>/dist)")
+    args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
-    dist_dir = out_dir / "dist"
+    dist_dir = Path(args.dist_dir) if args.dist_dir else out_dir / DIST_DIRNAME
     dist_dir.mkdir(parents=True, exist_ok=True)
     export_date = dt.date.today()
     version = args.version or f"{export_date:%Y-%m}"
@@ -459,23 +501,31 @@ def main():
         expected = fetch_d1_permit_count(account_id, token, db_id)
         raw = fetch_permits_d1(account_id, token, db_id)
     else:
+        # The public API pages with LIMIT/OFFSET, so rows that move while the
+        # build runs can be skipped or duplicated. Compare against /api/stats
+        # before and after and refuse to ship a short or padded file.
+        expected = fetch_api_permit_count()
         raw = fetch_permits_api()
+        after = fetch_api_permit_count()
+        if after != expected and not args.allow_count_mismatch:
+            raise SystemExit(f"live permit count changed during the build ({expected} -> {after}); "
+                             "re-run outside the daily ingest window")
 
     if any("development_site_fetched_at" not in row for row in raw):
         raise SystemExit("Development-site API fields are unavailable. Complete the rollout before building the 38-column release.")
     records = [normalize_permit(r) for r in raw]
     records.sort(key=lambda r: r["permit_number"])
-    if expected is not None and len(records) != expected:
-        raise SystemExit(f"row drift: D1 counts {expected} permits but export has {len(records)}")
+    check_row_count(source, expected, len(records), args.allow_count_mismatch)
 
     stats = compute_stats(records, value_rows=raw)
     sample = build_sample(records)
     counted_by_permit = dict(zip((r.get("permit_number") for r in raw), counted_values(raw)))
     contractors = derive_contractors(records, counted_by_permit)
 
-    permits_csv = out_dir / "buildingseattle_permits.csv"
-    sample_csv = out_dir / "buildingseattle_sample.csv"
-    contractors_csv = out_dir / "contractors.csv"
+    # Paid files go to the gitignored dist dir only; the free sample stays tracked.
+    permits_csv = dist_dir / PERMITS_CSV_NAME
+    sample_csv = out_dir / SAMPLE_CSV_NAME
+    contractors_csv = dist_dir / CONTRACTORS_CSV_NAME
     write_csv(permits_csv, records, PERMIT_COLUMNS)
     write_csv(sample_csv, sample, PERMIT_COLUMNS)
     write_csv(contractors_csv, contractors, CONTRACTOR_COLUMNS)
@@ -509,7 +559,7 @@ def main():
     print("=== Build manifest ===")
     print(f"version:        {version}")
     print(f"records:        {stats['records']:,}" +
-          (f" (D1 count: {expected:,})" if expected is not None else ""))
+          (f" ({source} count: {expected:,})" if expected is not None else ""))
     print(f"columns:        {stats['columns']}")
     print(f"total value:    ${stats['total_value']:,}")
     print(f"neighborhoods:  {stats['neighborhoods']}")
@@ -522,6 +572,7 @@ def main():
     for name, digest in checksums.items():
         print(f"sha256 {name}: {digest}")
     print(f"zips:           {foundation_zip.name}, {pro_zip.name}")
+    print(f"paid artifacts: {dist_dir} (gitignored; upload to Gumroad, never commit)")
     return 0
 
 

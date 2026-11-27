@@ -5,8 +5,16 @@ BuildingSeattle Data Refresh Script (Pro Tier)
 Pulls fresh building permit data from buildingseattle.com API
 and exports it as a CSV with the same 38 columns as the product.
 
-Usage:   python3 refresh.py [--output FILE] [--max-pages N]
+Usage:   python3 refresh.py [--output FILE] [--max-pages N] [--api-key KEY]
 Output:  buildingseattle_fresh.csv (default)
+
+Exit status is 0 only for a complete pull. If any page fails after retries,
+the rows that did arrive go to FILE.partial.csv (FILE itself is left
+untouched) and the script exits 1.
+
+The full 38-column API needs an API key: pass --api-key or set the
+BUILDINGSEATTLE_API_KEY environment variable. Without one the public API
+returns only a small sample.
 
 Requirements: Python 3.10+ (stdlib only — no pip installs needed)
 """
@@ -15,8 +23,10 @@ import json
 import csv
 import urllib.request
 import urllib.error
+import os
 import time
 import sys
+from pathlib import Path
 
 API_BASE = "https://buildingseattle.com"
 PER_PAGE = 100  # API maximum page size
@@ -25,6 +35,8 @@ MAX_RETRIES = 4
 RETRY_DELAY = 2  # seconds, doubled per attempt
 CONSECUTIVE_EMPTY_LIMIT = 3  # stop after this many empty pages in a row
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+API_KEY_ENV = "BUILDINGSEATTLE_API_KEY"
+API_KEY = os.environ.get(API_KEY_ENV, "").strip()
 
 # Same 38 columns as the shipped product (see data-dictionary.md)
 PERMIT_COLUMNS = [
@@ -93,10 +105,10 @@ def fetch_json(url):
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "BuildingSeattle-Refresh/1.1"},
-            )
+            headers = {"User-Agent": "BuildingSeattle-Refresh/1.2"}
+            if API_KEY:
+                headers["X-API-Key"] = API_KEY
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
@@ -105,6 +117,8 @@ def fetch_json(url):
             else:
                 # Other 4xx — the server is saying no; don't hammer it
                 sys.stderr.write(f"  HTTP {e.code}: {e.reason} ({url})\n")
+                if e.code in (401, 403):
+                    sys.stderr.write(f"  Full access needs a valid API key (--api-key or {API_KEY_ENV}).\n")
                 return None
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             last_error = e
@@ -115,6 +129,12 @@ def fetch_json(url):
         sys.stderr.write(f"  Attempt {attempt} failed ({last_error}). Retrying in {delay}s...\n")
         time.sleep(delay)
     return None
+
+
+def partial_output_path(output):
+    """FILE.csv -> FILE.partial.csv (where an incomplete pull is written)."""
+    path = Path(output)
+    return str(path.with_name(f"{path.stem}.partial{path.suffix or '.csv'}"))
 
 
 def fetch_page(page):
@@ -128,14 +148,19 @@ def main():
                         help=f"Output CSV path (default: {DEFAULT_OUTPUT})")
     parser.add_argument("--max-pages", type=int, default=0,
                         help="Stop after N pages (0 = fetch everything)")
+    parser.add_argument("--api-key", default="",
+                        help=f"API key for full access (default: ${API_KEY_ENV})")
     args = parser.parse_args()
+    global API_KEY
+    if args.api_key:
+        API_KEY = args.api_key.strip()
 
     print("Refreshing BuildingSeattle permit data...")
     print(f"Source: {API_BASE}/api/permits (page size {PER_PAGE})")
 
     stats = fetch_json(f"{API_BASE}/api/stats")
-    if stats:
-        print(f"Snapshot: {stats.get('permits', '?'):,} permits in the live database "
+    if isinstance(stats, dict) and isinstance(stats.get("permits"), int):
+        print(f"Snapshot: {stats['permits']:,} permits in the live database "
               f"as of {stats.get('timestamp', 'now')}")
     print()
 
@@ -198,7 +223,10 @@ def main():
         sys.stderr.write("Development-site fields are unavailable; the 38-column rollout is not enabled. No CSV was written.\n")
         return 1
 
-    with open(args.output, "w", newline="", encoding="utf-8") as f:
+    # A failed page means rows are missing. Never overwrite a good CSV with
+    # an incomplete one: write the partial result beside it and exit nonzero.
+    output = args.output if errors == 0 else partial_output_path(args.output)
+    with open(output, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=PERMIT_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(records)
@@ -209,16 +237,28 @@ def main():
         set(r.get("neighborhood", "") for r in records if r.get("neighborhood")))
 
     print()
-    print(f"✅ Done. {len(records):,} records written to {args.output}")
+    if errors == 0:
+        print(f"✅ Done. {len(records):,} records written to {output}")
+    else:
+        print(f"❌ Incomplete. {len(records):,} records written to {output}")
     print(f"   Total construction value: ${total_value:,.0f} "
           f"(declared ${declared_value:,.0f}; repeated demolition valuations counted once)")
     print(f"   Neighborhoods: {neighborhoods}")
     print(f"   Pages fetched: {page}")
     print(f"   Errors encountered: {errors}")
 
+    live_count = stats.get("permits") if isinstance(stats, dict) else None
+    if (errors == 0 and not args.max_pages and isinstance(live_count, int)
+            and live_count != len(records)):
+        print(f"\n⚠️  The live database reported {live_count:,} permits but "
+              f"{len(records):,} were fetched; the data changed during the pull "
+              f"or pages shifted. Re-run to confirm.")
+
     if errors > 0:
-        print(f"\n⚠️  Refresh completed with {errors} error(s). "
-              f"Some records may be missing.")
+        sys.stderr.write(
+            f"\n❌ Refresh failed: {errors} page(s) could not be fetched, so some "
+            f"records are missing. {args.output} was not changed. Re-run later.\n")
+        return 1
 
     return 0
 

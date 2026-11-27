@@ -16,7 +16,6 @@ function payload(ids = ["DV0025961"], sites = [site()]) {
 function fixture() {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
-  db.exec(readFileSync(new URL("../migration_entity_graph.sql", import.meta.url), "utf8"));
   db.exec("DELETE FROM permits; DELETE FROM contractors; DELETE FROM ingest_logs");
   const insert = db.prepare("INSERT INTO permits (permit_number, address, parcel_number, value, status, issued_date, type) VALUES (?, ?, ?, ?, 'active', '2026-01-01', 'residential')");
   insert.run("P-1", "1 MAIN ST", " dv0025961 ", 10000);
@@ -28,7 +27,9 @@ function fixture() {
     first: async () => db.prepare(sql).get(...binds) ?? null,
     run: async () => ({ success: true, meta: db.prepare(sql).run(...binds) }),
   });
-  const env = { INGEST_API_TOKEN: "test-ingest", DB: {
+  // Development-site fields are part of the keyed API tier (anonymous callers
+  // get slim rows), so these tests call the API with a key unless told not to.
+  const env = { INGEST_API_TOKEN: "test-ingest", API_KEYS: "test-api-key", DB: {
     prepare: sql => wrap(sql),
     batch: async statements => {
       db.exec("BEGIN");
@@ -39,8 +40,11 @@ function fixture() {
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     },
   } };
-  const fetch = async (path, options = {}) => {
+  const fetch = async (path, { anonymous = false, ...options } = {}) => {
     const pending = [];
+    if (!anonymous && (path.startsWith("/api/") || path === "/mcp")) {
+      options = { ...options, headers: { ...(options.headers || {}), "X-API-Key": "test-api-key" } };
+    }
     const response = await worker.fetch(new Request(`https://buildingseattle.com${path}`, options), env, { waitUntil: p => pending.push(p) });
     await Promise.allSettled(pending);
     return response;
@@ -72,6 +76,12 @@ test("matched site data preserves permit grain, pagination, values and raw refer
     const page = await (await fetch("/api/permits?per_page=1&page=2")).json();
     assert.equal(page.total, 3);
     assert.equal(page.results.length, 1);
+    // Anonymous callers get the slim sample without enrichment fields.
+    const anonymous = await (await fetch("/api/permits", { anonymous: true })).json();
+    assert.equal(anonymous.access, "anonymous");
+    assert.equal(anonymous.results.length, 3);
+    assert.equal("development_site_id" in anonymous.results[0], false);
+    assert.equal("parcel_number" in anonymous.results[0], false);
   } finally { db.close(); }
 });
 
@@ -149,7 +159,7 @@ test("permit pages render the outline and unavailable state, and MCP inherits fi
     assert.match(html, /Development-site boundary for DV0025961/);
     assert.match(html, /maps.google.com\/maps/);
     const unmatched = await (await fetch("/permits/P-3")).text();
-    assert.match(unmatched, /Development-site information unavailable/);
+    assert.doesNotMatch(unmatched, /Development-site information unavailable|card-label">Development site</);
     const response = await fetch("/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search_permits", arguments: { q: "P-1" } } }) });
     const result = await response.json();
     assert.equal(result.result.structuredContent.results[0].development_site_sqft, 5000);

@@ -1,18 +1,35 @@
 name = "buildingseattle"
 main = "worker.js"
 compatibility_date = "2026-03-14"
+# Preview URLs sit outside the zone's protections and serve a duplicate site,
+# so they are off (review S8). The *.workers.dev mirror stays on for now: the
+# enrichment job used it because the apex bot rule has blocked GitHub runners
+# (error 1010). Set workers_dev = false once enrich-daily has run green against
+# https://buildingseattle.com (docs/deploy-runbook.md).
+preview_urls = false
 
 [vars]
 # Enable after the migration and verified backfill; cache keys change with this flag.
 DEVELOPMENT_SITES_PUBLIC = "true"
+# Share of non-bot HTML page views written to the D1 page_views table (0..1;
+# "0" turns first-party logging off). Bots and crawlers are never logged.
+PAGE_VIEW_SAMPLE_RATE = "1"
 
 # Static brand assets (design tokens, IBM Plex fonts, SVG favicon) served from ./public.
 # Matching paths are served before the Worker runs; everything else falls through to worker.js.
 [assets]
 directory = "./public"
 
+# Exposes the deployed version id to the Worker (free; no extra product). The
+# HTML edge cache keys on it so every deploy starts from fresh HTML.
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+# 13:00 UTC: base-feed ingest, entity-graph rebuild, alerts (runScheduledIngest).
+# 09:30 UTC: page_views retention on its own quiet hour (PAGE_VIEW_RETENTION_CRON
+# in page_views.js; scheduled() dispatches on event.cron).
 [triggers]
-crons = ["0 13 * * *"]
+crons = ["0 13 * * *", "30 9 * * *"]
 
 # Persist Workers Logs so the next GitHub auto-deploy does not wipe
 # script-settings observability (enabled live 2026-09-05 via API).
@@ -30,7 +47,48 @@ head_sampling_rate = 1
 binding = "DB"
 database_name = "buildingseattle"
 database_id = "e065e988-045f-42b5-b47a-4027c2e5c417"  # Replace with your actual ID from Dashboard
+# Schema changes are numbered files in ./migrations (wrangler d1 migrations).
+# Production was baselined on 2026-11-27; see "Database migrations" in CLAUDE.md.
+migrations_dir = "migrations"
 
 [[send_email]]
 name = "EMAIL"
 allowed_sender_addresses = ["alerts@buildingseattle.com"]
+
+# Workers Rate Limiting bindings (audit A1/A7/A8/B3/F2). Counters are
+# approximate and per Cloudflare location; period must be 10 or 60 seconds.
+# Each namespace_id is an account-unique integer chosen here. For the forms
+# (alerts, leads) these are only the per-minute burst limit: the hourly caps in
+# security.js are always enforced with a D1 counter (request_rate_limits). The
+# API is only throttled when its binding exists.
+[[ratelimits]]
+name = "ALERTS_RATE_LIMITER"
+namespace_id = "261127001"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+[[ratelimits]]
+name = "LEADS_RATE_LIMITER"
+namespace_id = "261127002"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+[[ratelimits]]
+name = "API_RATE_LIMITER"
+namespace_id = "261127003"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
+[[ratelimits]]
+name = "API_KEY_RATE_LIMITER"
+namespace_id = "261127004"
+
+  [ratelimits.simple]
+  limit = 600
+  period = 60

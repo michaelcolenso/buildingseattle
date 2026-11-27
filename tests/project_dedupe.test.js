@@ -5,18 +5,18 @@ import { DatabaseSync } from "node:sqlite";
 
 import worker, { buildEntityHubQuery, buildEntityHubState } from "../worker.js";
 import { developmentSiteColumns, developmentSiteJoin } from "../development_sites.js";
+import { MULTI_PERMIT_PROJECT_SQL } from "../entity_hubs.js";
 
 // A cluster of one permit is not a project: it repeats the record the address
-// page already publishes. These tests pin the two halves of that rule — the
+// page already publishes. Nor is a cluster holding every permit at its address
+// and nothing else. These tests pin the two halves of that rule — the
 // duplicate redirects to the property page, and every project listing
-// (sitemap, hub, address page, permit page) only surfaces multi-permit groups.
+// (sitemap, hub, address page, permit page) only surfaces real projects.
 
 const workerSource = readFileSync(new URL("../worker.js", import.meta.url), "utf8");
 
 function multiPermitPredicate() {
-  const match = workerSource.match(/const MULTI_PERMIT_PROJECT_SQL =\s*"([^"]+)";/);
-  assert.ok(match, "MULTI_PERMIT_PROJECT_SQL is declared in worker.js");
-  return match[1];
+  return MULTI_PERMIT_PROJECT_SQL;
 }
 
 // Every query written as `${MULTI_PERMIT_PROJECT_SQL}` in the worker, with the
@@ -40,26 +40,44 @@ function queriesEmbeddingPredicate() {
 
 function seededDatabase() {
   const db = new DatabaseSync(":memory:");
-  for (const file of ["../schema.sql", "../migration_entity_graph.sql"]) {
-    db.exec(readFileSync(new URL(file, import.meta.url), "utf8"));
-  }
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  // The fixture seeds a dangling project_permits row on purpose (the redirect path must ignore it).
+  db.exec("PRAGMA foreign_keys = OFF;");
   db.exec(`
     INSERT INTO addresses (id, slug, display_address, normalized_address)
       VALUES (1, '1-single-ave-seattle-wa', '1 Single Ave', '1 SINGLE AVE'),
-             (2, '2-double-ave-seattle-wa', '2 Double Ave', '2 DOUBLE AVE');
+             (2, '2-double-ave-seattle-wa', '2 Double Ave', '2 DOUBLE AVE'),
+             (3, '3-whole-ave-seattle-wa', '3 Whole Ave', '3 WHOLE AVE'),
+             (4, '4-dangling-ave-seattle-wa', '4 Dangling Ave', '4 DANGLING AVE');
     INSERT INTO projects (id, slug, address_id, name, confidence_score)
       VALUES (10, 'single-permit-cluster', 1, 'Single permit cluster', 50),
-             (11, 'two-permit-project', 2, 'Two permit project', 85);
+             (11, 'two-permit-project', 2, 'Two permit project', 85),
+             (12, 'whole-address-cluster', 3, 'Whole address cluster', 80),
+             (13, 'small-subset-cluster', 2, 'Small subset cluster', 70),
+             (14, 'dangling-link-cluster', 4, 'Dangling link cluster', 70);
     INSERT INTO permits (id, permit_number, address, address_id, project_id, status, issued_date)
       VALUES (100, '1000001-CN', '1 SINGLE AVE', 1, 10, 'active', '2026-01-01'),
              (101, '1000002-CN', '2 DOUBLE AVE', 2, 11, 'active', '2026-01-02'),
-             (102, '1000003-CN', '2 DOUBLE AVE', 2, 11, 'active', '2026-01-03');
-    INSERT INTO project_permits (project_id, permit_id) VALUES (10, 100), (11, 101), (11, 102);
+             (102, '1000003-CN', '2 DOUBLE AVE', 2, 11, 'active', '2026-01-03'),
+             (103, '1000004-CN', '2 DOUBLE AVE', 2, NULL, 'active', '2026-01-04'),
+             (104, '1000005-CN', '3 WHOLE AVE', 3, 12, 'active', '2026-01-05'),
+             (105, '1000006-CN', '3 WHOLE AVE', 3, 12, 'active', '2026-01-06'),
+             (106, '1000007-CN', '2 DOUBLE AVE', 2, 11, 'active', '2026-01-07'),
+             (107, '1000008-CN', '2 DOUBLE AVE', 2, 13, 'active', '2026-01-08'),
+             (108, '1000009-CN', '2 DOUBLE AVE', 2, 13, 'active', '2026-01-09'),
+             (109, '1000010-CN', '4 DANGLING AVE', 4, 14, 'active', '2026-01-10'),
+             (110, '1000011-CN', '4 DANGLING AVE', 4, 14, 'active', '2026-01-11');
+    -- Project 14 also has a link to permit 999, which no longer exists. Its
+    -- real permits are every permit at address 4, so its page redirects; the
+    -- dangling row must not keep it listed.
+    INSERT INTO project_permits (project_id, permit_id)
+      VALUES (10, 100), (11, 101), (11, 102), (11, 106), (12, 104), (12, 105),
+             (13, 107), (13, 108), (14, 109), (14, 110), (14, 999);
   `);
   return db;
 }
 
-function createProjectEnv(permits) {
+function createProjectEnv(permits, addressPermitTotal = permits.length + 1) {
   return {
     DB: {
       prepare(query) {
@@ -83,6 +101,10 @@ function createProjectEnv(permits) {
               };
             }
             if (sql.includes("FROM neighborhoods n")) return null;
+            if (sql.includes("SELECT COUNT(*) AS total FROM permits WHERE address_id = ?")) {
+              if (addressPermitTotal instanceof Error) throw addressPermitTotal;
+              return { total: addressPermitTotal };
+            }
             throw new Error(`unexpected first() query: ${sql}`);
           },
           async all() {
@@ -101,10 +123,10 @@ function createCtx() {
   return { waitUntil() {} };
 }
 
-async function fetchProject(permits) {
+async function fetchProject(permits, addressPermitTotal) {
   const response = await worker.fetch(
     new Request("https://buildingseattle.com/project/single-permit-cluster"),
-    createProjectEnv(permits),
+    createProjectEnv(permits, addressPermitTotal),
     createCtx(),
   );
   return { response, html: await response.text() };
@@ -148,8 +170,26 @@ test("a project whose permits cannot be read is not redirected", async () => {
   assert.equal(response.headers.get("Location"), null);
 });
 
+const threePermits = [
+  ...twoPermits,
+  { id: 102, permit_number: "1000003-CN", status: "active", type: "residential", address_id: 1 },
+];
+
+test("a two-permit project that is a strict subset of its address is noindex, not redirected", async () => {
+  // The address holds a third permit, so the pages differ; but every permit on
+  // this page is also on the address page, so it is not published on its own.
+  const { response, html } = await fetchProject(twoPermits, 3);
+
+  assert.equal(response.status, 200);
+  assert.match(html, /<meta name="robots" content="noindex,follow">/);
+  assert.match(
+    html,
+    /<link rel="canonical" href="https:\/\/buildingseattle\.com\/project\/single-permit-cluster">/,
+  );
+});
+
 test("a multi-permit project keeps a self-referencing canonical", async () => {
-  const { response, html } = await fetchProject(twoPermits);
+  const { response, html } = await fetchProject(threePermits);
 
   assert.equal(response.status, 200);
   assert.match(
@@ -157,6 +197,36 @@ test("a multi-permit project keeps a self-referencing canonical", async () => {
     /<link rel="canonical" href="https:\/\/buildingseattle\.com\/project\/single-permit-cluster">/,
   );
   assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
+});
+
+test("a multi-permit project holding every permit at its address redirects there", async () => {
+  const { response, html } = await fetchProject(twoPermits, 2);
+
+  assert.equal(response.status, 301);
+  assert.equal(response.headers.get("Location"), "https://buildingseattle.com/address/1-single-ave-seattle-wa");
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=3600");
+  assert.equal(html, "");
+});
+
+test("a whole-address project answers 503 when the address count cannot be read", async () => {
+  // The count decides between redirect, noindex and index; guessing would
+  // either publish a duplicate or redirect blind.
+  const { response } = await fetchProject(twoPermits, new Error("D1 unavailable"));
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("Location"), null);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("a multi-permit project spanning another address stays a page", async () => {
+  const spanning = [twoPermits[0], { ...twoPermits[1], address_id: 2 }];
+  const { response, html } = await fetchProject(spanning, 2);
+
+  assert.equal(response.status, 200);
+  assert.match(
+    html,
+    /<link rel="canonical" href="https:\/\/buildingseattle\.com\/project\/single-permit-cluster">/,
+  );
 });
 
 test("project listings and the project sitemap skip single-permit clusters", () => {
@@ -172,6 +242,9 @@ test("project listings and the project sitemap skip single-permit clusters", () 
       !slugs.includes("single-permit-cluster"),
       `single-permit cluster leaked into: ${sql.trim().slice(0, 80)}`,
     );
+    for (const hidden of ["whole-address-cluster", "small-subset-cluster", "dangling-link-cluster"]) {
+      assert.ok(!slugs.includes(hidden), `${hidden} leaked into: ${sql.trim().slice(0, 80)}`);
+    }
   }
 
   // The property page still lists the real project on the same address.
@@ -182,8 +255,9 @@ test("project listings and the project sitemap skip single-permit clusters", () 
     ["two-permit-project"],
   );
 
-  const sitemapRows = workerSource.split("/* sitemap:rows:projects */")[1].split("`")[0];
-  const sitemapStats = workerSource.split("/* sitemap:stats:projects */")[1].split("`")[0];
+  const withPredicate = (sql) => sql.replaceAll("${MULTI_PERMIT_PROJECT_SQL}", multiPermitPredicate());
+  const sitemapRows = withPredicate(workerSource.split("/* sitemap:rows:projects */")[1].split("`")[0]);
+  const sitemapStats = withPredicate(workerSource.split("/* sitemap:stats:projects */")[1].split("`")[0]);
   assert.deepEqual(
     db.prepare(sitemapRows).all(50, 0).map((row) => row.slug),
     ["two-permit-project"],

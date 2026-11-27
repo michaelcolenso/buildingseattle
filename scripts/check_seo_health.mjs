@@ -3,7 +3,14 @@ import { pathToFileURL } from "node:url";
 
 const DEFAULT_BASE_URL = "https://buildingseattle.com";
 const MAX_CHILD_SITEMAPS = 20;
-const MAX_SAMPLE_PAGES = 30;
+const MAX_SAMPLE_PAGES = 80;
+// URLs drawn at random from every child sitemap per run. The draw is seeded
+// by the UTC date (or SEO_SAMPLE_SEED), so a failing run can be replayed and
+// successive days cover different URLs.
+const SAMPLE_PER_SITEMAP = 3;
+// Entity templates whose sitemapped URLs must never answer 200 noindex: that is
+// the signature of a failed lookup cached as a page (audit D1).
+const ENTITY_PATH_PREFIXES = ["/address/", "/project/", "/neighborhood/", "/contractor/", "/permits/"];
 const MAX_LINK_CHECKS = 30;
 const ENTITY_HUB_PATHS = ["/contractors", "/neighborhoods", "/projects", "/addresses"];
 // Public pages the homepage must link to, so no important page is orphaned
@@ -57,6 +64,63 @@ export function pngDimensions(bytes) {
   const height = readUint32(20);
   if (!width || !height) return null;
   return { width, height };
+}
+
+// <url> entries with their <lastmod>, for the stability check.
+export function xmlEntries(xml) {
+  return [...String(xml).matchAll(/<url>([\s\S]*?)<\/url>/g)].map((match) => ({
+    loc: match[1].match(/<loc>([^<]+)<\/loc>/)?.[1]?.replaceAll("&amp;", "&").trim() || null,
+    lastmod: match[1].match(/<lastmod>([^<]+)<\/lastmod>/)?.[1]?.trim() || null,
+  })).filter((entry) => entry.loc);
+}
+
+// URLs whose <lastmod> differs between two fetches of the same sitemap. A
+// lastmod that moves without a content change teaches crawlers to ignore it.
+export function unstableLastmods(firstXml, secondXml) {
+  const before = new Map(xmlEntries(firstXml).map((entry) => [entry.loc, entry.lastmod]));
+  return xmlEntries(secondXml)
+    .filter((entry) => before.has(entry.loc) && before.get(entry.loc) !== entry.lastmod)
+    .map((entry) => entry.loc);
+}
+
+function hashSeed(seed) {
+  let hash = 2166136261;
+  for (const char of String(seed)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return hash >>> 0;
+}
+
+// Deterministic sample of `count` distinct items for a given seed (mulberry32
+// driving a partial Fisher-Yates shuffle); the input array is not modified.
+export function seededSample(items, count, seed) {
+  const pool = [...items];
+  let state = hashSeed(seed);
+  const next = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const take = Math.min(Math.max(0, count), pool.length);
+  for (let index = 0; index < take; index += 1) {
+    const pick = index + Math.floor(next() * (pool.length - index));
+    [pool[index], pool[pick]] = [pool[pick], pool[index]];
+  }
+  return pool.slice(0, take);
+}
+
+export function isEntityPath(pathname) {
+  return ENTITY_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
+// robots.txt must advertise the sitemap and must not block the whole site.
+export function robotsTxtProblems(text, baseUrl) {
+  const problems = [];
+  const lines = String(text).split(/\r?\n/).map((line) => line.trim());
+  const sitemapLine = `sitemap: ${new URL("/sitemap.xml", baseUrl).href}`.toLowerCase();
+  if (!lines.some((line) => line.toLowerCase() === sitemapLine)) problems.push("Missing Sitemap line");
+  if (lines.some((line) => /^disallow:\s*\/\s*$/i.test(line))) problems.push("Disallow: / blocks the site");
+  return problems;
 }
 
 export function xmlLocations(xml) {
@@ -141,6 +205,14 @@ export function schemaTypes(jsonLdBlocks) {
   return [...types];
 }
 
+// Contractor URLs serve curated contractors (LocalBusiness) and people/org
+// pages (Organization or Person), so that route accepts any of the three.
+export function expectedSchemaTypes(pathname) {
+  if (pathname.startsWith("/contractor/")) return ["LocalBusiness", "Organization", "Person"];
+  const type = expectedSchemaType(pathname);
+  return type ? [type] : [];
+}
+
 export function expectedSchemaType(pathname) {
   if (pathname === "/") return "WebSite";
   if (ENTITY_HUB_PATHS.includes(pathname) || pathname === "/insights") return "CollectionPage";
@@ -197,10 +269,12 @@ function sameCanonicalHost(url, baseUrl) {
   }
 }
 
+// Redirects are never followed: a sitemapped or linked URL that 301s is a
+// finding, not something to look through.
 async function fetchText(url) {
   const response = await fetch(url, {
     headers: { "User-Agent": "BuildingSeattle-SEO-Monitor/1.0" },
-    redirect: "follow",
+    redirect: "manual",
   });
   return { response, text: await response.text() };
 }
@@ -213,9 +287,11 @@ async function fetchAsset(url) {
   return { response, bytes: new Uint8Array(await response.arrayBuffer()) };
 }
 
-export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
+export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL, { seed = new Date().toISOString().slice(0, 10) } = {}) {
   const base = new URL(baseUrl);
   const checks = [];
+  // Pages that came from a sitemap: they must answer 200 directly, index.
+  const sitemappedPages = new Set();
   const discoveredPages = new Set([
     new URL("/", base).href,
     ...ENTITY_HUB_PATHS.map((path) => new URL(path, base).href),
@@ -227,6 +303,12 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   const sitemap = await fetchText(sitemapUrl);
   checks.push(result("sitemap-index-status", sitemapUrl, sitemap.response.status === 200, `HTTP ${sitemap.response.status}`));
   checks.push(result("sitemap-index-xml", sitemapUrl, /<sitemapindex\b/.test(sitemap.text), "Expected sitemapindex root"));
+
+  const robotsUrl = new URL("/robots.txt", base).href;
+  const robots = await fetchText(robotsUrl);
+  const robotsProblems = robotsTxtProblems(robots.text, base.href);
+  checks.push(result("robots-txt-status", robotsUrl, robots.response.status === 200, `HTTP ${robots.response.status}`));
+  checks.push(result("robots-txt-directives", robotsUrl, robotsProblems.length === 0, robotsProblems.join("; ") || "Sitemap advertised; site crawlable"));
 
   for (const [path, expectedWidth, expectedHeight] of IMAGE_ASSETS) {
     const assetUrl = new URL(path, base).href;
@@ -252,17 +334,33 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
     checks.push(result("sitemap-child-xml", childUrl, /<urlset\b/.test(child.text), `${locations.length} URLs`));
     const canonicalUrls = locations.every((location) => sameCanonicalHost(location, base.href));
     checks.push(result("sitemap-url-hosts", childUrl, canonicalUrls, canonicalUrls ? "All canonical" : "Unexpected host found"));
-    if (locations[0]) discoveredPages.add(locations[0]);
+    const again = await fetchText(childUrl);
+    const moved = unstableLastmods(child.text, again.text);
+    checks.push(result("sitemap-lastmod-stable", childUrl, moved.length === 0, moved.length ? `${moved.length} lastmod values changed between fetches, e.g. ${moved[0]}` : "Stable"));
+    for (const location of seededSample(locations, SAMPLE_PER_SITEMAP, `${seed}:${childUrl}`)) {
+      if (!sameCanonicalHost(location, base.href)) continue;
+      sitemappedPages.add(location);
+      discoveredPages.add(location);
+    }
   }
 
-  const samplePages = [...discoveredPages].slice(0, MAX_SAMPLE_PAGES);
+  // Sitemap samples first, so the page budget never crowds them out.
+  const samplePages = [...new Set([...sitemappedPages, ...discoveredPages])].slice(0, MAX_SAMPLE_PAGES);
   const internalLinks = new Set();
   const homeLinks = new Set();
   for (const pageUrl of samplePages) {
     const page = await fetchText(pageUrl);
     const meta = htmlMetadata(page.text);
     const pathname = new URL(pageUrl).pathname;
-    checks.push(result("page-status", pageUrl, page.response.status === 200, `HTTP ${page.response.status}`));
+    const location = page.response.headers.get("location");
+    checks.push(result("page-status", pageUrl, page.response.status === 200, location ? `HTTP ${page.response.status} -> ${location}` : `HTTP ${page.response.status}`));
+    if (sitemappedPages.has(pageUrl)) {
+      checks.push(result("sitemap-url-direct", pageUrl, page.response.status === 200 && !location, location ? `Redirects to ${location}` : `HTTP ${page.response.status}`));
+      if (isEntityPath(pathname)) {
+        const softNoindex = page.response.status === 200 && /noindex/i.test(meta.robots || "");
+        checks.push(result("sitemap-entity-not-noindex", pageUrl, !softNoindex, meta.robots || "Missing robots directive"));
+      }
+    }
     checks.push(result("page-title", pageUrl, Boolean(meta.title), meta.title || "Missing title"));
     const budget = titleBudget(pathname);
     if (meta.title && budget) {
@@ -284,10 +382,11 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
       }
     }
     checks.push(result("page-jsonld", pageUrl, structuredDataValid, `${meta.jsonLd.length} JSON-LD blocks`));
-    const requiredType = expectedSchemaType(new URL(pageUrl).pathname);
-    if (requiredType) {
+    const requiredTypes = expectedSchemaTypes(pathname);
+    if (requiredTypes.length) {
       const types = schemaTypes(meta.jsonLd);
-      checks.push(result("page-schema-type", pageUrl, types.includes(requiredType), types.length ? `Found ${types.join(", ")}; expected ${requiredType}` : `Missing ${requiredType}`));
+      const expected = requiredTypes.join(" or ");
+      checks.push(result("page-schema-type", pageUrl, requiredTypes.some((type) => types.includes(type)), types.length ? `Found ${types.join(", ")}; expected ${expected}` : `Missing ${expected}`));
     }
     if (pageUrl === new URL("/", base).href) {
       for (const href of meta.links) homeLinks.add(href);
@@ -312,9 +411,10 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
   for (const linkUrl of internalLinks) {
     const response = await fetch(linkUrl, {
       headers: { "User-Agent": "BuildingSeattle-SEO-Monitor/1.0" },
-      redirect: "follow",
+      redirect: "manual",
     });
-    checks.push(result("internal-link", linkUrl, response.status < 400, `HTTP ${response.status}`));
+    const location = response.headers.get("location");
+    checks.push(result("internal-link", linkUrl, response.status < 400, location ? `HTTP ${response.status} -> ${location}` : `HTTP ${response.status}`));
   }
 
 
@@ -352,8 +452,10 @@ export async function runSeoHealthCheck(baseUrl = DEFAULT_BASE_URL) {
     version: 1,
     generated_at: new Date().toISOString(),
     base_url: base.href,
+    sample_seed: seed,
     limits: {
       child_sitemaps: MAX_CHILD_SITEMAPS,
+      sample_per_sitemap: SAMPLE_PER_SITEMAP,
       sample_pages: MAX_SAMPLE_PAGES,
       internal_links: MAX_LINK_CHECKS,
     },
@@ -368,7 +470,7 @@ async function main() {
   const outputPath = process.env.SEO_REPORT_PATH || "seo-health-report.json";
   let report;
   try {
-    report = await runSeoHealthCheck(baseUrl);
+    report = await runSeoHealthCheck(baseUrl, process.env.SEO_SAMPLE_SEED ? { seed: process.env.SEO_SAMPLE_SEED } : {});
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     report = {

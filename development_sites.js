@@ -174,7 +174,9 @@ export function renderSiteOutline(geometry, siteId) {
 }
 
 export function renderDevelopmentSiteCard(permit) {
-  if (!permit.development_site_id) return `<div class="bs-card"><div class="card-label">Development site</div><p style="margin-top:0.75rem;color:var(--text-muted)">Development-site information unavailable.</p></div>`;
+  // No matched development site: render nothing rather than an empty card
+  // that only says the information is unavailable (audit E21).
+  if (!permit.development_site_id) return "";
   let geometry = null;
   try { geometry = JSON.parse(permit.development_site_boundary || "null"); } catch { /* Omit an unusable outline. */ }
   const date = value => value ? escape(new Date(value).toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", year: "numeric", month: "short", day: "numeric" })) : "Not supplied";

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Daily enrichment: top up un-enriched permits from production D1.
+"""Daily enrichment: top up un-enriched permits and refresh stale ones.
 
-Pulls permit_numbers with NULL parcel_number from D1 via the Cloudflare
-API, then runs the existing sdci_detail_probe + sdci_enrich pipeline in
-chunks. POSTs results to the Worker's /ingest/permit/enrichment/batch
-endpoint, which writes back to D1.
+Reads two queues from D1 via the Cloudflare API (see
+scripts/enrichment_queue.py): permits never enriched (NULL parcel_number,
+with misses retried weekly rather than daily), and a bounded rotation of
+enriched permits whose status changed since their last enrichment or that
+are still open and were enriched more than --stale-days ago. Runs the
+existing sdci_detail_probe + sdci_enrich pipeline on them in chunks and
+POSTs results to the Worker's /ingest/permit/enrichment/batch endpoint,
+which writes back to D1 and stamps last_enriched_at.
 
 Intended to run from .github/workflows/enrich-daily.yml an hour after
 the Worker's scheduled SDCI ingest, so new permits are enriched the
@@ -14,6 +18,10 @@ Required environment:
   CLOUDFLARE_ACCOUNT_ID  Cloudflare account ID
   CLOUDFLARE_API_TOKEN   Token with D1 read scope for the buildingseattle DB
   INGEST_API_TOKEN       Token expected by the Worker /ingest endpoints
+
+Optional environment:
+  WORKER_URL             Worker base URL (default https://buildingseattle.com)
+  BUILDINGSEATTLE_D1_ID  D1 database ID override
 """
 
 import argparse
@@ -31,8 +39,21 @@ from direct_import import ingest_headers, post_batch_with_retries  # noqa: E402
 from sdci_detail_probe import enrich_with_license_data, run_probe  # noqa: E402
 from sdci_enrich import flatten_enrichment  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from enrichment_queue import (  # noqa: E402
+    DEFAULT_MISS_RETRY_DAYS,
+    DEFAULT_STALE_DAYS,
+    DEFAULT_STALE_LIMIT,
+    merge_targets,
+    new_permits_sql,
+    stale_permits_sql,
+)
+
 DEFAULT_DB_ID = "e065e988-045f-42b5-b47a-4027c2e5c417"
-DEFAULT_WORKER_URL = "https://buildingseattle.aged-morning-c8e4.workers.dev"
+# The apex, not workers.dev: zone protections apply and workers.dev can be
+# switched off without breaking this job. Override with WORKER_URL.
+DEFAULT_WORKER_URL = "https://buildingseattle.com"
+USER_AGENT = "buildingseattle-enrich/1.0 (+https://buildingseattle.com)"
 ENRICH_ENDPOINT = "/ingest/permit/enrichment/batch"
 
 
@@ -72,7 +93,25 @@ def build_parser():
         "--limit",
         type=int,
         default=300,
-        help="Max permits to enrich this run. Default 300.",
+        help="Max new (never-enriched) permits to enrich this run. Default 300.",
+    )
+    p.add_argument(
+        "--stale-limit",
+        type=int,
+        default=DEFAULT_STALE_LIMIT,
+        help=f"Max already-enriched permits to re-enrich this run (0 disables). Default {DEFAULT_STALE_LIMIT}.",
+    )
+    p.add_argument(
+        "--stale-days",
+        type=int,
+        default=DEFAULT_STALE_DAYS,
+        help=f"Re-enrich open permits last enriched more than N days ago. Default {DEFAULT_STALE_DAYS}.",
+    )
+    p.add_argument(
+        "--miss-retry-days",
+        type=int,
+        default=DEFAULT_MISS_RETRY_DAYS,
+        help=f"Retry permits whose last probe found no parcel after N days. Default {DEFAULT_MISS_RETRY_DAYS}.",
     )
     p.add_argument(
         "--chunk-size",
@@ -135,16 +174,23 @@ async def main():
     token = require_env("CLOUDFLARE_API_TOKEN")
     require_env("INGEST_API_TOKEN")
 
-    sql = (
-        "SELECT permit_number FROM permits "
-        "WHERE parcel_number IS NULL AND permit_number IS NOT NULL "
-        "ORDER BY issued_date DESC NULLS LAST "
-        f"LIMIT {int(args.limit)}"
+    new_rows = await d1_query(
+        account_id, args.db_id, token, new_permits_sql(args.limit, args.miss_retry_days)
     )
-    rows = await d1_query(account_id, args.db_id, token, sql)
-    permits = [r["permit_number"] for r in rows if r["permit_number"]]
+    stale_rows = []
+    if args.stale_limit > 0:
+        stale_rows = await d1_query(
+            account_id, args.db_id, token, stale_permits_sql(args.stale_limit, args.stale_days)
+        )
+    permits = merge_targets(new_rows, stale_rows)
     total = len(permits)
-    print(f"to enrich: {total} (limit={args.limit})", flush=True)
+    status_changed = sum(1 for r in stale_rows if r.get("status_changed"))
+    print(
+        f"to enrich: {total} (new={len(new_rows)} limit={args.limit}; "
+        f"stale={len(stale_rows)} limit={args.stale_limit}, "
+        f"{status_changed} with a status change since last enrichment)",
+        flush=True,
+    )
 
     if not total:
         print("DONE: nothing to enrich", flush=True)
@@ -155,7 +201,7 @@ async def main():
     total_errors = 0
     post_failures = 0
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=120.0, headers={"User-Agent": USER_AGENT}) as client:
         for i in range(0, total, args.chunk_size):
             chunk = permits[i : i + args.chunk_size]
             chunk_num = i // args.chunk_size + 1

@@ -11,11 +11,9 @@ import { ENTITY_HUBS } from "../entity_hubs.js";
 // the hub empty and noindexed. Run every hub query against the real schema.
 function schemaDatabase() {
   const db = new DatabaseSync(":memory:");
-  // Production is schema.sql plus the entity-graph migration, which is what
-  // adds permits.address_id / permits.project_id. Apply both.
-  for (const file of ["../schema.sql", "../migration_entity_graph.sql"]) {
-    db.exec(readFileSync(new URL(file, import.meta.url), "utf8"));
-  }
+  // schema.sql is the complete production schema (permits.address_id /
+  // permits.project_id included); see tests/schema_migrations.test.js.
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
   return db;
 }
 

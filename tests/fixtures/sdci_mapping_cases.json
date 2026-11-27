@@ -1,0 +1,169 @@
+{
+  "_comment": "Shared by tests/sdci_mappings.test.js and tests/test_sdci_mappings.py so both languages are held to the same answers.",
+  "statuses": [
+    [
+      "Application Completed",
+      "pending"
+    ],
+    [
+      "Reviews In Process",
+      "pending"
+    ],
+    [
+      "Corrections Required",
+      "pending"
+    ],
+    [
+      "Corrections Submitted",
+      "pending"
+    ],
+    [
+      "Awaiting Information",
+      "pending"
+    ],
+    [
+      "Ready for Issuance",
+      "pending"
+    ],
+    [
+      "Issued",
+      "active"
+    ],
+    [
+      "Phase Issued",
+      "active"
+    ],
+    [
+      "Completed",
+      "completed"
+    ],
+    [
+      "Inspections Completed",
+      "completed"
+    ],
+    [
+      "Approved to Occupy",
+      "completed"
+    ],
+    [
+      "Expired",
+      "expired"
+    ],
+    [
+      "Withdrawn",
+      "cancelled"
+    ],
+    [
+      "Canceled",
+      "cancelled"
+    ],
+    [
+      "  issued ",
+      "active"
+    ],
+    [
+      "",
+      "new"
+    ],
+    [
+      null,
+      "new"
+    ],
+    [
+      "Something New From SDCI",
+      "pending"
+    ]
+  ],
+  "points": [
+    [
+      47.58,
+      -122.41,
+      "Alki"
+    ],
+    [
+      47.578,
+      -122.39,
+      "Admiral"
+    ],
+    [
+      47.59,
+      -122.3,
+      "North Beacon Hill"
+    ],
+    [
+      47.565,
+      -122.305,
+      "Beacon Hill"
+    ],
+    [
+      47.675,
+      -122.28,
+      "Bryant"
+    ],
+    [
+      47.537,
+      -122.27,
+      "Dunlap"
+    ],
+    [
+      47.73,
+      -122.29,
+      "Olympic Hills"
+    ],
+    [
+      47.725,
+      -122.35,
+      "Bitter Lake"
+    ],
+    [
+      47.7,
+      -122.335,
+      "Licton Springs"
+    ],
+    [
+      47.601,
+      -122.333,
+      "Pioneer Square"
+    ],
+    [
+      47.55,
+      -122.38,
+      "West Seattle"
+    ],
+    [
+      47.68,
+      -122.39,
+      "Ballard"
+    ],
+    [
+      47.495,
+      -122.43,
+      "Other Seattle"
+    ],
+    [
+      47.8,
+      -122.3,
+      "Other"
+    ],
+    [
+      null,
+      null,
+      "Other"
+    ],
+    [
+      "",
+      "",
+      "Other"
+    ],
+    [
+      "abc",
+      "-122.3",
+      "Other"
+    ],
+    [
+      "47.580",
+      "-122.410",
+      "Alki"
+    ]
+  ]
+}

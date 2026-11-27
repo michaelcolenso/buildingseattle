@@ -177,7 +177,8 @@ test("isHtmlCacheablePath allows public pages and excludes dynamic/asset routes"
 test("htmlCacheTtl honors the page's own max-age and clamps", () => {
   assert.equal(htmlCacheTtl(new Response(null, { headers: { "Cache-Control": "public, max-age=3600" } })), 3600);
   assert.equal(htmlCacheTtl(new Response(null, { headers: { "Cache-Control": "public, max-age=300" } })), 300);
-  assert.equal(htmlCacheTtl(new Response(null, { headers: { "Cache-Control": "no-store" } })), 3600);
+  assert.equal(htmlCacheTtl(new Response(null, { headers: { "Cache-Control": "no-store" } })), 0);
+  assert.equal(htmlCacheTtl(new Response(null, { headers: { "Cache-Control": "private, max-age=600" } })), 0);
   assert.equal(htmlCacheTtl(new Response(null, { headers: { "Cache-Control": "public, max-age=999999" } })), 86400);
   assert.equal(htmlCacheTtl(new Response(null, { headers: { "Cache-Control": "public, max-age=5" } })), 60);
 });
@@ -264,7 +265,11 @@ test("template-wide HTML edge cache: warm second fetch skips the render's D1 wor
   };
   try {
     const env = createPermitEnv();
-    const request = () => new Request("https://buildingseattle.com/permits/PERM123");
+    // A browser UA, so the page-view insert runs (bots are not logged).
+    const request = () =>
+      new Request("https://buildingseattle.com/permits/PERM123", {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15" },
+      });
 
     const first = await worker.fetch(request(), env, createCtx());
     const firstHtml = await first.text();
@@ -273,8 +278,8 @@ test("template-wide HTML edge cache: warm second fetch skips the render's D1 wor
     assert.ok(callsAfterFirst > 1, "first fetch actually queried D1");
     assert.equal(store.size, 1, "fresh page stored in the edge cache");
     const [key] = store.keys();
-    assert.ok(key.includes("__bsv=v10"), `cache key is versioned, got ${key}`);
-    assert.match(first.headers.get("Cache-Control") || "", /s-maxage=3600/);
+    assert.ok(key.includes("__bsv=v11"), `cache key is versioned, got ${key}`);
+    assert.match(first.headers.get("Cache-Control") || "", /max-age=3600, s-maxage=86400, stale-while-revalidate=/);
 
     const second = await worker.fetch(request(), env, createCtx());
     const secondHtml = await second.text();

@@ -10,15 +10,13 @@ import worker, { getCanonicalStats } from "../worker.js";
 // pages that were fine), and must say so loudly when it cannot finish.
 //
 // These tests run the real rebuild against a real SQLite database (the
-// production schema plus the entity-graph migration) through a small D1 shim.
+// production schema, schema.sql) through a small D1 shim.
 
 const ADMIN_TOKEN = "test-admin-token";
 
 function openDatabase() {
   const db = new DatabaseSync(":memory:");
-  for (const file of ["../schema.sql", "../migration_entity_graph.sql"]) {
-    db.exec(readFileSync(new URL(file, import.meta.url), "utf8"));
-  }
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
   db.exec("DELETE FROM permits; DELETE FROM contractors; DELETE FROM ingest_logs;");
   return db;
 }
@@ -100,6 +98,15 @@ function seedPermits(db) {
     b1: addPermit(db, { address: "200 OAK AVE, SEATTLE, WA", neighborhood: "Ballard", description: "Addition to single family residence" }),
     c1: addPermit(db, { address: "300 ELM WAY, SEATTLE, WA", neighborhood: "Fremont", description: "Electrical service upgrade" }),
   };
+}
+
+// Production D1 enforces the schema's foreign keys (project_permits and
+// permit_participants reference permits), so a permit can only disappear
+// once its join rows are gone. Delete it the same way here.
+function deletePermit(db, id) {
+  db.prepare("DELETE FROM project_permits WHERE permit_id = ?").run(id);
+  db.prepare("DELETE FROM permit_participants WHERE permit_id = ?").run(id);
+  db.prepare("DELETE FROM permits WHERE id = ?").run(id);
 }
 
 const q = (db, sql, ...binds) => db.prepare(sql).get(...binds);
@@ -192,7 +199,7 @@ test("the rebuild never deletes or NULLs links before replacements exist", async
   // one address disappears entirely.
   addPermit(db, { address: "200 OAK AVE, SEATTLE, WA", neighborhood: "Ballard", description: "Addition, phase two" });
   db.prepare("UPDATE permits SET address = ? WHERE id = ?").run("400 MAPLE CT, SEATTLE, WA", ids.a2);
-  db.prepare("DELETE FROM permits WHERE id = ?").run(ids.c1);
+  deletePermit(db, ids.c1);
 
   const linkedBefore = new Set(rows(db, "SELECT id FROM permits WHERE address_id IS NOT NULL").map((r) => r.id));
   const sawDestructiveSql = [];
@@ -441,7 +448,7 @@ test("an emptied address is 410 after a clean rebuild but 503 once the latest re
   await rebuild(env);
   const slug = q(db, "SELECT a.slug FROM permits p JOIN addresses a ON a.id = p.address_id WHERE p.id = ?", ids.c1).slug;
   // the address row outlives its only permit until the next rebuild deletes it
-  db.prepare("DELETE FROM permits WHERE id = ?").run(ids.c1);
+  deletePermit(db, ids.c1);
   const get = async () =>
     (await worker.fetch(new Request(`https://buildingseattle.com/address/${slug}`), env, { waitUntil() {} })).status;
 
@@ -556,7 +563,7 @@ test("a failed run whose final log write also fails still keeps empty addresses 
   const ids = seedPermits(db);
   await rebuild(createEnv(db));
   const slug = q(db, "SELECT a.slug FROM permits p JOIN addresses a ON a.id = p.address_id WHERE p.id = ?", ids.c1).slug;
-  db.prepare("DELETE FROM permits WHERE id = ?").run(ids.c1); // address row outlives its only permit
+  deletePermit(db, ids.c1); // address row outlives its only permit
 
   const env = createEnv(db, {
     beforeStatement(sql) {
@@ -571,6 +578,59 @@ test("a failed run whose final log write also fails still keeps empty addresses 
   const page = await worker.fetch(new Request(`https://buildingseattle.com/address/${slug}`), env, { waitUntil() {} });
   assert.equal(page.status, 503, "empty address is not declared gone while the latest rebuild is unfinished");
 
-  await rebuild(createEnv(db)); // the next clean run restores trust (and removes the stale address)
+  // The stuck marker holds the single-flight lock until it is 30 minutes old...
+  const blocked = await rebuild(createEnv(db));
+  assert.equal(blocked.status, 409);
+  assert.equal(lastRebuildStatus(db), "running");
+  db.prepare("UPDATE ingest_logs SET start_time = datetime('now', '-31 minutes') WHERE status = 'running'").run();
+
+  await rebuild(createEnv(db)); // ...then the next clean run restores trust (and removes the stale address)
   assert.equal(lastRebuildStatus(db), "success");
+});
+
+test("a second rebuild while one is running is refused with 409 and changes nothing", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  // An in-flight rebuild (cron or admin) holds a fresh `running` row.
+  db.prepare(
+    "INSERT INTO ingest_logs (run_type, source, status, start_time, end_time) VALUES ('entity_graph', 'scheduled', 'running', datetime('now', '-2 minutes'), datetime('now', '-2 minutes'))",
+  ).run();
+  const before = snapshot(db);
+  const env = createEnv(db);
+  const second = await rebuild(env);
+  assert.equal(second.status, 409);
+  assert.equal(second.body.locked, true);
+  assert.match(second.body.error, /already running/);
+  assert.deepEqual(snapshot(db), before, "nothing was mutated");
+  const runs = rows(db, "SELECT status FROM ingest_logs WHERE run_type = 'entity_graph'").map((r) => r.status);
+  assert.deepEqual(runs, ["running"], "the refused run wrote no ingest_logs row");
+  assert.ok(
+    env.statements.every((sql) => !/^\s*(UPDATE|DELETE)/i.test(sql)),
+    "the refused run issued no UPDATE/DELETE",
+  );
+});
+
+test("?force=1 overrides a stale running marker; the lock ignores markers older than 30 minutes", async () => {
+  const db = openDatabase();
+  seedPermits(db);
+  db.prepare(
+    "INSERT INTO ingest_logs (run_type, source, status, start_time, end_time) VALUES ('entity_graph', 'admin', 'running', datetime('now', '-5 minutes'), datetime('now', '-5 minutes'))",
+  ).run();
+  assert.equal((await rebuild(createEnv(db))).status, 409);
+
+  const forced = await worker.fetch(
+    new Request("https://buildingseattle.com/admin/build-graph?force=1", { method: "POST", headers: { "X-Admin-Token": ADMIN_TOKEN } }),
+    createEnv(db),
+    { waitUntil() {} },
+  );
+  assert.equal(forced.status, 200);
+  assert.equal(lastRebuildStatus(db), "success");
+
+  const stale = openDatabase();
+  seedPermits(stale);
+  stale.prepare(
+    "INSERT INTO ingest_logs (run_type, source, status, start_time, end_time) VALUES ('entity_graph', 'scheduled', 'running', datetime('now', '-45 minutes'), datetime('now', '-45 minutes'))",
+  ).run();
+  assert.equal((await rebuild(createEnv(stale))).status, 200, "a 45-minute-old marker is treated as dead");
+  assert.equal(lastRebuildStatus(stale), "success");
 });

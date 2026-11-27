@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   makeSlug,
@@ -11,6 +12,9 @@ import {
   clusterPermits,
   projectNameFor,
   buildEntityGraph,
+  isDemolitionPermit,
+  isUnaddressable,
+  unaddressableAddressSql,
 } from "../entity_graph.js";
 
 test("makeSlug lowercases, strips punctuation and collapses whitespace", () => {
@@ -206,4 +210,105 @@ test("neighborhood slugs are preserved by name and new ones avoid stored slugs",
   assert.equal(g.neighborhoods.find((n) => n.name === "Mt Baker").slug, "mt-baker");
   // "Mt. Baker" also slugifies to mt-baker, which is taken, so it gets a suffix.
   assert.equal(g.neighborhoods.find((n) => n.name === "Mt. Baker").slug, "mt-baker-2");
+});
+
+test("parseAddress returns a null street for city-only or empty input (C10)", () => {
+  for (const raw of ["Seattle, WA", "SEATTLE, WA", "", "   ", null, ", Seattle, WA", "WA", "Unknown location"]) {
+    const parsed = parseAddress(raw);
+    assert.equal(parsed.street, null, JSON.stringify(raw));
+    assert.equal(parsed.normalized_address, null, JSON.stringify(raw));
+  }
+  assert.equal(parseAddress("Ballard Warehouse District").street, "Ballard Warehouse District");
+  assert.equal(parseAddress("100 Main St, Seattle, WA 98101").zip, "98101");
+});
+
+test("permits without a street get no address or project entity", () => {
+  const graph = buildEntityGraph([
+    { id: 1, address: "Seattle, WA", type: "residential", description: "a", contractor_name: "Acme Builders LLC" },
+    { id: 2, address: "Seattle, WA", type: "commercial", description: "b" },
+    { id: 3, address: "100 Main St, Seattle, WA", type: "residential", description: "c" },
+  ]);
+  assert.equal(graph.addresses.length, 1);
+  assert.equal(graph.projects.length, 1);
+  assert.equal(graph.permitAddress.has(1), false);
+  assert.equal(graph.permitProject.has(2), false);
+  assert.equal(graph.peopleOrgs.length, 1, "participants are still recorded");
+});
+
+test("unaddressableAddressSql agrees with isUnaddressable", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE permits (id INTEGER PRIMARY KEY, address TEXT)");
+  const samples = ["Seattle, WA", "seattle , WA", "", "WA", ", 1 Main St", "Unknown location", "100 Main St, Seattle, WA",
+    "Ballard Warehouse District", "SEATTLE", "1 Seattle Way, Seattle, WA", null];
+  const insert = db.prepare("INSERT INTO permits (address) VALUES (?)");
+  for (const sample of samples) insert.run(sample);
+  const rows = db.prepare(`SELECT address, ${unaddressableAddressSql("p")} AS flag FROM permits p ORDER BY id`).all();
+  rows.forEach((row, index) => {
+    assert.equal(Boolean(row.flag), isUnaddressable(samples[index]), JSON.stringify(samples[index]));
+  });
+});
+
+test("a project is named for its highest-value non-demolition permit (G3)", () => {
+  // 900 University St: the teardown carries the largest declared value.
+  assert.equal(
+    projectNameFor(
+      [
+        { permit_number: "7082181-CN", value: 500, description: "Change of use from assisted living to mercantile" },
+        { permit_number: "6898714-DM", value: 180000000, description: "Demolish existing apartment building, per plan." },
+        { permit_number: "6971406-PH", value: 111755914, description: "Phased project: Construct high rise residential building addition" },
+      ],
+      "900 UNIVERSITY ST",
+    ),
+    "New construction at 900 UNIVERSITY ST",
+  );
+  // Grading leads on value but says nothing; the other work permits do.
+  assert.match(
+    projectNameFor(
+      [
+        { permit_number: "7125269-GR", value: 127620000, description: "Grading activities for future institutional building" },
+        { permit_number: "7132709-PH", value: 30906891, description: "Phased Project: Construct institutional building" },
+        { permit_number: "7125270-CN", value: 127620, description: "Construct site demolition and preparation" },
+      ],
+      "X",
+    ),
+    /^New construction at/,
+  );
+  assert.match(
+    projectNameFor(
+      [
+        { permit_number: "7037762-CN", value: 41875934, description: "Construct addition & substantial alterations to institutional building" },
+        { permit_number: "7092382-DM", value: 100000000, description: "Demolish Northern portable classroom" },
+      ],
+      "X",
+    ),
+    /^Addition at/,
+  );
+  // A demolition project with only a trivial, unlabelled work permit stays a demolition.
+  assert.match(
+    projectNameFor(
+      [
+        { permit_number: "7078871-CN", value: 10000, description: "Construct shoring, bracing and related work" },
+        { permit_number: "7037761-DM", value: 85000000, description: "Demolish portions of Memorial Stadium" },
+      ],
+      "X",
+    ),
+    /^Demolition at/,
+  );
+  assert.match(projectNameFor([{ description: "Construct alterations to existing building" }], "X"), /^Renovation at/);
+  assert.equal(isDemolitionPermit({ permit_number: "6898714-dm" }), true);
+  assert.equal(isDemolitionPermit({ permit_number: "6898714-CN", type: "residential" }), false);
+});
+
+test("renaming a project keeps its stored slug (URLs stay stable)", () => {
+  const permits = [
+    { id: 1, permit_number: "6898714-DM", address: "900 University St, Seattle, WA", type: "residential", value: 180000000, description: "Demolish existing apartment building", issued_date: "2025-01-01" },
+    { id: 2, permit_number: "6971406-PH", address: "900 University St, Seattle, WA", type: "residential", value: 111755914, description: "Construct high rise residential building", issued_date: "2025-02-01" },
+  ];
+  const graph = buildEntityGraph(permits, {
+    projectSlugByPermit: new Map([[1, "demolition-at-900-university-st"], [2, "demolition-at-900-university-st"]]),
+    reservedProjectSlugs: ["demolition-at-900-university-st"],
+  });
+  assert.equal(graph.projects.length, 1);
+  assert.equal(graph.projects[0].name, "New construction at 900 University St");
+  assert.equal(graph.projects[0].slug, "demolition-at-900-university-st");
 });

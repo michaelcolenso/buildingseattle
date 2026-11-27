@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
+import { PERMIT_UPSERT_COLUMNS } from "../permit_upsert.js";
 import worker, {
   summarizePlanReview,
   percentileSorted,
@@ -104,9 +105,12 @@ function createEnv() {
   const alertSubscriptions = [];
   const sentEmails = [];
   const ingestLogs = [];
+  const suppressions = new Set();
+  const rateLimitHits = new Map();
+  const deliveries = new Map();
 
   return {
-    _state: { permits, contractors, statusChanges, leads, alertSubscriptions, sentEmails, ingestLogs },
+    _state: { permits, contractors, statusChanges, leads, alertSubscriptions, sentEmails, ingestLogs, suppressions, deliveries },
     INGEST_API_TOKEN: "test-ingest-token",
     EMAIL: {
       async send(message) {
@@ -182,8 +186,8 @@ function createEnv() {
               return { results: statuses };
             }
 
-            if (sql.includes("SELECT id, name FROM contractors")) {
-              return { results: contractors.map((contractor) => ({ id: contractor.id, name: contractor.name })) };
+            if (sql.trim() === "SELECT id, slug FROM contractors") {
+              return { results: contractors.map((contractor) => ({ id: contractor.id, slug: contractor.slug })) };
             }
 
             if (sql.includes("SELECT id, slug FROM contractors WHERE slug IN")) {
@@ -194,11 +198,11 @@ function createEnv() {
               };
             }
 
-            if (sql.includes("SELECT permit_number, status FROM permits WHERE permit_number IN")) {
+            if (sql.includes("SELECT permit_number, status") && sql.includes("FROM permits WHERE permit_number IN")) {
               return {
                 results: permits
                   .filter((permit) => params.includes(permit.permit_number))
-                  .map((permit) => ({ permit_number: permit.permit_number, status: permit.status })),
+                  .map((permit) => ({ permit_number: permit.permit_number, status: permit.status, status_raw: permit.status_raw ?? null })),
               };
             }
 
@@ -272,14 +276,22 @@ function createEnv() {
                 : null;
             }
 
+            if (sql.includes("INSERT INTO request_rate_limits")) {
+              const key = `${params[0]}|${params[1]}`;
+              rateLimitHits.set(key, (rateLimitHits.get(key) || 0) + 1);
+              return { hits: rateLimitHits.get(key) };
+            }
+
+            if (sql.includes("FROM alert_email_suppressions WHERE email = ?")) {
+              return suppressions.has(params[0]) ? { suppressed: 1 } : null;
+            }
+
             if (sql.includes("FROM permit_alert_subscriptions") && sql.includes("lower(email) = ?")) {
-              return (
-                alertSubscriptions.find(
-                  (subscription) =>
-                    subscription.email.toLowerCase() === String(params[0]).toLowerCase() &&
-                    subscription.permit_number === params[1],
-                ) || null
+              const subscription = alertSubscriptions.find(
+                (item) => item.email.toLowerCase() === String(params[1]).toLowerCase() && item.permit_number === params[2],
               );
+              // The mock treats any stored confirmation as outside the resend cooldown.
+              return subscription ? { ...subscription, recently_sent: 0 } : null;
             }
 
             if (sql.includes("FROM permit_alert_subscriptions") && sql.includes("confirmation_token_hash = ?")) {
@@ -347,7 +359,7 @@ function createEnv() {
               return permit ? { id: permit.id } : null;
             }
 
-            if (sql.includes("SELECT status FROM permits WHERE permit_number = ?")) {
+            if (sql.includes("FROM permits WHERE permit_number = ?") && /SELECT status(, status_raw)? FROM/.test(sql)) {
               const permit = permits.find((item) => item.permit_number === params[0]);
               return permit ? { status: permit.status } : null;
             }
@@ -409,17 +421,42 @@ function createEnv() {
             }
 
             if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("status = 'unsubscribed'")) {
-              const subscription = alertSubscriptions.find((item) => item.id === params[0]);
-              if (!subscription) return { success: true, meta: { changes: 0 } };
-              subscription.status = "unsubscribed";
-              subscription.unsubscribed_at = "2026-06-12 08:02:00";
+              const matches = sql.includes("lower(email) = ?")
+                ? alertSubscriptions.filter((item) => item.email.toLowerCase() === params[0])
+                : alertSubscriptions.filter((item) => item.id === params[0]);
+              for (const subscription of matches) {
+                subscription.status = "unsubscribed";
+                subscription.unsubscribed_at = "2026-06-12 08:02:00";
+              }
+              return { success: true, meta: { changes: matches.length } };
+            }
+
+            if (sql.includes("DELETE FROM request_rate_limits")) {
+              return { success: true, meta: { changes: 0 } };
+            }
+
+            if (sql.includes("INSERT INTO alert_email_suppressions")) {
+              suppressions.add(params[0]);
               return { success: true, meta: { changes: 1 } };
             }
 
-            if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("last_notified_change_id = ?")) {
+            if (sql.includes("INSERT INTO permit_alert_deliveries")) {
+              const key = `${params[0]}:${params[1]}`;
+              const existing = deliveries.get(key);
+              if (existing && existing !== "failed") return { success: true, meta: { changes: 0 } };
+              deliveries.set(key, "sending");
+              return { success: true, meta: { changes: 1 } };
+            }
+
+            if (sql.includes("UPDATE permit_alert_deliveries")) {
+              deliveries.set(`${params[0]}:${params[1]}`, sql.includes("status = 'sent'") ? "sent" : "failed");
+              return { success: true, meta: { changes: 1 } };
+            }
+
+            if (sql.includes("UPDATE permit_alert_subscriptions") && sql.includes("last_notified_change_id = MAX(")) {
               const subscription = alertSubscriptions.find((item) => item.id === params[2]);
               if (!subscription) return { success: true, meta: { changes: 0 } };
-              subscription.last_notified_change_id = params[0];
+              subscription.last_notified_change_id = Math.max(subscription.last_notified_change_id || 0, params[0]);
               subscription.last_notified_at = "2026-06-12 08:03:00";
               return { success: true, meta: { changes: 1 } };
             }
@@ -447,43 +484,23 @@ function createEnv() {
 
             if (sql.includes("INSERT INTO permits") && sql.includes("ON CONFLICT(permit_number)")) {
               const existingIndex = permits.findIndex((permit) => permit.permit_number === params[0]);
-              const baseFields = {
-                address: params[3],
-                neighborhood: params[4],
-                type: params[5],
-                value: params[6],
-                status: params[7],
-                description: params[8],
-                housing_units: params[9],
-                applied_date: params[10],
-                issued_date: params[11],
-                completed_date: params[12],
-                housing_units_added: params[13],
-                housing_units_removed: params[14],
-                housing_category: params[15],
-                dwelling_unit_type: params[16],
-                zoning: params[17],
-                parent_permit_number: params[18],
-                related_mup: params[19],
-                number_review_cycles: params[20],
-                total_days_plan_review: params[21],
-                days_out_corrections: params[22],
-              };
+              const row = Object.fromEntries(PERMIT_UPSERT_COLUMNS.map((column, index) => [column, params[index]]));
+              const { permit_number: _permitNumber, contractor_id: _contractorId, applicant_name: _applicant, ...baseFields } = row;
               if (existingIndex >= 0) {
                 const existing = permits[existingIndex];
                 permits[existingIndex] = {
                   ...existing,
                   ...baseFields,
-                  contractor_id: params[1] ?? existing.contractor_id,
-                  applicant_name: params[2] ?? existing.applicant_name,
+                  contractor_id: row.contractor_id ?? existing.contractor_id,
+                  applicant_name: row.applicant_name ?? existing.applicant_name,
                   updated_at: "2026-05-16 12:00:00",
                 };
               } else {
                 permits.push({
                   id: permits.length + 1,
-                  permit_number: params[0],
-                  contractor_id: params[1],
-                  applicant_name: params[2],
+                  permit_number: row.permit_number,
+                  contractor_id: row.contractor_id,
+                  applicant_name: row.applicant_name,
                   ...baseFields,
                 });
               }
@@ -658,7 +675,20 @@ async function subscribeAndConfirm(env, permitNumber = "PERM123", email = "reade
 
   const confirmationEmail = env._state.sentEmails.at(-1);
   const confirmationUrl = confirmationEmail.text.match(/https?:\/\/\S+\/alerts\/confirm\?token=[^\s]+/)[0];
-  const confirmResponse = await worker.fetch(new Request(confirmationUrl), env, createCtx());
+  // GET only shows the confirmation page; the button's POST activates it.
+  const pageResponse = await worker.fetch(new Request(confirmationUrl), env, createCtx());
+  assert.equal(pageResponse.status, 200);
+  assert.match(await pageResponse.text(), /<form method="post" action="\/alerts\/confirm"/);
+  const token = new URL(confirmationUrl).searchParams.get("token");
+  const confirmResponse = await worker.fetch(
+    new Request("http://example.com/alerts/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }).toString(),
+    }),
+    env,
+    createCtx(),
+  );
   assert.equal(confirmResponse.status, 200);
 }
 
@@ -891,7 +921,7 @@ test("HTML and JSON responses include baseline security headers", async () => {
     assert.match(response.headers.get("Strict-Transport-Security") || "", /max-age=/);
   }
 
-  assert.match(htmlResponse.headers.get("Content-Security-Policy") || "", /frame-ancestors 'none'/);
+  assert.match(htmlResponse.headers.get("Content-Security-Policy-Report-Only") || "", /frame-ancestors 'none'/);
 });
 
 test("GET /api/permits honors bounded per_page requests", async () => {
@@ -919,32 +949,21 @@ test("permit browser escapes permit and contractor data before rendering HTML", 
   assert.match(html, /&lt;script&gt;alert\(&quot;permit&quot;\)&lt;\/script&gt;/);
 });
 
-test("GET /favicon.ico returns the site icon", async () => {
-  const response = await worker.fetch(new Request("http://example.com/favicon.ico"), createEnv(), createCtx());
-
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("Content-Type") || "", /image\/png/);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+test("/favicon.ico is the 32px site icon, served as a static asset", () => {
+  const bytes = new Uint8Array(readFileSync(new URL("../public/favicon.ico", import.meta.url)));
   assert.equal(bytes.length, 895);
   assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 32, 0, 0, 0, 32]);
-  assert.match(response.headers.get("Cache-Control") || "", /immutable/);
+  const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
+  assert.match(headers, /\/favicon\.ico\n\s+Cache-Control: public, max-age=604800, immutable/);
 });
 
-test("GET /icons serves square install icons at their declared dimensions", async () => {
+test("/icons are square install icons at their declared dimensions, served as static assets", () => {
   for (const [size, expectedLength] of [
     [32, 895],
     [192, 1367],
     [512, 3605],
   ]) {
-    const response = await worker.fetch(
-      new Request(`http://example.com/icons/icon-${size}.png`),
-      createEnv(),
-      createCtx(),
-    );
-
-    assert.equal(response.status, 200);
-    assert.match(response.headers.get("Content-Type") || "", /image\/png/);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = new Uint8Array(readFileSync(new URL(`../public/icons/icon-${size}.png`, import.meta.url)));
     assert.equal(bytes.length, expectedLength);
     assert.deepEqual([...bytes.slice(16, 24)], [
       (size >>> 24) & 255,
@@ -1014,8 +1033,11 @@ test("GET /sitemaps/permits-1.xml returns canonical URLs with accurate lastmod v
   assert.doesNotMatch(xml, /<priority>|<changefreq>/);
 });
 
-test("GET /data renders the dataset landing page with live stats", async () => {
+test("GET /data describes the shipped release, not live D1 counts (audit F6/E12/G11)", async () => {
   const env = createEnv();
+  const queries = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => { queries.push(sql); return prepare(sql); };
   const response = await worker.fetch(new Request("http://example.com/data"), env, createCtx());
   const html = await response.text();
 
@@ -1025,8 +1047,25 @@ test("GET /data renders the dataset landing page with live stats", async () => {
   assert.match(html, /utm_source=buildingseattle/);
   assert.match(html, /\$49/);
   assert.match(html, /\$89/);
-  // stats come from the mock DB: 2 permits totalling $63.8M
-  assert.match(html, /\$0\.06B/);
+  // Counts, coverage and version come from the release constants. The mock
+  // DB holds 2 permits; none of its figures may leak onto the sales page.
+  assert.equal(queries.filter((sql) => /FROM permits/i.test(sql)).length, 0, "the /data page reads no live counts");
+  assert.match(html, /15,581/);
+  assert.match(html, /2,367/);
+  assert.match(html, /\$11\.3B/);
+  assert.match(html, /applied for May 15, 2024 to November 6, 2026/);
+  assert.match(html, /Release 2026-11, built November 8, 2026/);
+  assert.doesNotMatch(html, /\$0\.06B|\$12B\+|13,000\+|2,000\+/);
+  // No coverage overclaims or the old "parcel numbers" claim.
+  assert.doesNotMatch(html, /Every construction permit|Every Seattle construction permit|Everything on this site/i);
+  assert.doesNotMatch(html, /parcel numbers,/i);
+  assert.match(html, /City of Seattle/);
+  // Tier differences are explicit.
+  assert.match(html, /<table class="tier-table">/);
+  assert.match(html, /Contractor CSV: 2,367 contractors/);
+  assert.match(html, /"version":"2026-11"/);
+  assert.match(html, /"temporalCoverage":"2024-05-15\/2026-11-06"/);
+  assert.match(html, /href="\/privacy"/);
 });
 
 test("trust, dataset, API, and error pages ship complete metadata and schema", async () => {
@@ -1094,7 +1133,9 @@ test("GET /sitemaps/static.xml lists the public aggregate pages", async () => {
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 21);
+  assert.equal((xml.match(/<url>/g) || []).length, 23);
+  assert.match(xml, /<loc>https:\/\/buildingseattle\.com\/alerts<\/loc>/);
+  assert.match(xml, /<loc>https:\/\/buildingseattle\.com\/privacy<\/loc>/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/api-docs/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/network/);
   assert.match(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
@@ -1120,7 +1161,7 @@ test("GET /sitemaps/static.xml omits the ADU tracker while its page is noindex",
   const xml = await response.text();
 
   assert.equal(response.status, 200);
-  assert.equal((xml.match(/<url>/g) || []).length, 20);
+  assert.equal((xml.match(/<url>/g) || []).length, 22);
   assert.doesNotMatch(xml, /https:\/\/buildingseattle\.com\/insights\/adu-dadu/);
 });
 
@@ -1342,7 +1383,9 @@ test("address hub filters by bounded latest activity, neighborhood, permit count
   assert.match(html, /<option value="recent90" selected>Past 90 days<\/option>/);
   assert.match(seenSql, /p\.neighborhood = \?/);
   assert.match(seenSql, /date\('now', '-90 days'\)/);
-  assert.match(seenSql, /HAVING COALESCE\(SUM\(\(CASE WHEN p\.permit_number LIKE '%-DM'[\s\S]*?END\)\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
+  // The hub only lists addresses with more than one permit (single-permit
+  // addresses are noindex), then applies the requested filters.
+  assert.match(seenSql, /HAVING COUNT\(DISTINCT p\.id\) >= 2 AND COALESCE\(SUM\(\(CASE WHEN p\.permit_number LIKE '%-DM'[\s\S]*?END\)\), 0\) >= \? AND COUNT\(DISTINCT p\.id\) >= \?/);
   assert.deepEqual(seenBinds, ["Ballard", 1000000, 5]);
 });
 
@@ -1432,21 +1475,29 @@ test("methodology page documents source, freshness, matching, and cost limitatio
   assert.match(html, /"@type":"AboutPage"/);
 });
 
-test("bounded social image routes return crawler-compatible PNGs with immutable caching", async () => {
+test("social, OG and app-icon PNGs are static assets with immutable caching", async () => {
+  // Served by the [assets] binding from public/ (moved out of inlined base64
+  // in worker.js); the Worker no longer has routes for them.
+  const png = (path) => new Uint8Array(readFileSync(new URL(`../public/${path}`, import.meta.url)));
   for (const type of ["permit", "contractor", "project", "address", "neighborhood", "insight"]) {
-    const response = await worker.fetch(
-      new Request(`http://example.com/social/${type}.png`),
-      createEnv(),
-      createCtx(),
-    );
-    const bytes = new Uint8Array(await response.arrayBuffer());
-
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Content-Type"), "image/png");
-    assert.match(response.headers.get("Cache-Control") || "", /immutable/);
+    const bytes = png(`social/${type}.png`);
     assert.deepEqual([...bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-    assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118]);
+    assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118], `${type} is 1200x630`);
   }
+  assert.deepEqual([...png("og-image.png").slice(16, 24)], [0, 0, 4, 176, 0, 0, 2, 118]);
+  for (const size of [32, 192, 512]) {
+    const bytes = png(`icons/icon-${size}.png`);
+    const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    assert.equal(width, size);
+  }
+  assert.deepEqual(png("favicon.ico"), png("icons/icon-32.png"));
+
+  const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
+  assert.match(headers, /\/social\/\*\n\s+Cache-Control: public, max-age=604800, immutable/);
+  assert.match(headers, /\/icons\/\*\n\s+Cache-Control: public, max-age=604800, immutable/);
+
+  const source = readFileSync(new URL("../worker.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /iVBORw0KGgo/, "no inlined base64 PNGs left in worker.js");
 
   const response = await worker.fetch(
     new Request("http://example.com/social/not-a-real-type.png"),
@@ -1682,7 +1733,7 @@ test("ADU classification migration backfills realistic permit descriptions", () 
   for (const fixture of fixtures) insert.run(...fixture);
 
   const migration = readFileSync(
-    new URL("../migration_permit_adu_classification.sql", import.meta.url),
+    new URL("../migrations/legacy/migration_permit_adu_classification.sql", import.meta.url),
     "utf8",
   );
   db.exec(migration);
@@ -1775,7 +1826,7 @@ test("ADU classification agrees between the migration SQL and the worker classif
     insert.run(`DIFF${index}`, description),
   );
   db.exec(
-    readFileSync(new URL("../migration_permit_adu_classification.sql", import.meta.url), "utf8"),
+    readFileSync(new URL("../migrations/legacy/migration_permit_adu_classification.sql", import.meta.url), "utf8"),
   );
   const sqlResults = new Map(
     db
@@ -1793,7 +1844,7 @@ test("ADU classification agrees between the migration SQL and the worker classif
 
 test("migration SQL and worker reclassification SQL do not drift", () => {
   const migration = readFileSync(
-    new URL("../migration_permit_adu_classification.sql", import.meta.url),
+    new URL("../migrations/legacy/migration_permit_adu_classification.sql", import.meta.url),
     "utf8",
   );
   const collapse = (sql) => sql.replace(/\s+/g, " ").trim();
@@ -1970,11 +2021,15 @@ test("GET /insights/plan-review renders the insights page", async () => {
   assert.match(html, /Insights/);
 });
 
-test("latestPermitActivity selects the freshest available source timestamp", () => {
+test("latestPermitActivity selects the newest SDCI source event, not row-touch timestamps", () => {
+  // updated_at/created_at are bumped by every upsert, so they would report
+  // the ingest date rather than permit activity (audit E14).
   assert.equal(latestPermitActivity([
     { issued_date: "2026-06-01", updated_at: "2026-07-30" },
     { applied_date: "2026-07-01", created_at: "2026-07-02" },
-  ]), "2026-07-30");
+  ]), "2026-07-01");
+  assert.equal(latestPermitActivity([{ applied_date: "2026-05-01", completed_date: "2026-08-02T00:00:00" }]), "2026-08-02");
+  assert.equal(latestPermitActivity([{ updated_at: "2026-07-30" }]), null);
   assert.equal(latestPermitActivity([]), null);
 });
 
@@ -1992,7 +2047,7 @@ test("address detail renders record-level freshness and methodology context", as
           },
           async all() {
             if (sql.includes("FROM permits p LEFT JOIN contractors")) {
-              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, updated_at: "2026-07-30" }] };
+              return { results: [{ permit_number: "TEST-1", type: "Construction", status: "active", value: 100000, issued_date: "2026-07-30", updated_at: "2026-11-27" }] };
             }
             return { results: [] };
           },
@@ -2004,7 +2059,8 @@ test("address detail renders record-level freshness and methodology context", as
   const html = await response.text();
 
   assert.equal(response.status, 200);
-  assert.match(html, /Source records updated through Jul 30, 2026/);
+  assert.match(html, /Latest permit activity on record here: Jul 30, 2026\./);
+  assert.doesNotMatch(html, /Nov 27, 2026/);
   assert.match(html, /declared value is not verified project cost/i);
   assert.match(html, /Read the full methodology and limitations/);
 });
@@ -2082,10 +2138,13 @@ test("lead modals expose accessible dialog markup and associated labels", async 
   // Native <dialog> opened with showModal() supplies the dialog role, modality,
   // an inert background and Escape handling, so no hand-rolled ARIA is needed.
   assert.match(html, /<dialog id="leadModal"[^>]*aria-labelledby="leadModalTitle"/);
-  assert.match(html, /leadModal\.showModal\(\)/);
-  assert.match(html, /addEventListener\('close', function\(\) \{[^}]*leadTrigger\.focus\(\)/);
-  assert.match(html, /aria-describedby', 'lead-error'/);
-  assert.doesNotMatch(html, /alert\(err\.message/);
+  // The dialog behaviour lives in a static script (the CSP forbids inline ones).
+  assert.match(html, /<script src="\/brand\/permit-alert\.js" defer><\/script>/);
+  const script = readFileSync(new URL("../public/brand/permit-alert.js", import.meta.url), "utf8");
+  assert.match(script, /leadModal\.showModal\(\)/);
+  assert.match(script, /addEventListener\('close', function \(\) \{[^}]*leadTrigger\.focus\(\)/);
+  assert.match(script, /aria-describedby', 'lead-error'/);
+  assert.doesNotMatch(script, /alert\(err\.message/);
   assert.match(html, /<iframe title="Map of /);
   assert.match(html, /aria-label="Close dialog"/);
   assert.match(html, /<label for="lead-email">Email \*<\/label>/);
@@ -2098,7 +2157,8 @@ test("permit alert form requests only an email and posts to the alert subscripti
 
   assert.equal(response.status, 200);
   assert.match(html, /Email Me Permit Updates/i);
-  assert.match(html, /fetch\('\/alerts\/subscribe'/);
+  assert.match(html, /data-permit-number="PERM123"/);
+  assert.match(readFileSync(new URL("../public/brand/permit-alert.js", import.meta.url), "utf8"), /fetch\('\/alerts\/subscribe'/);
   assert.doesNotMatch(html, /name="company"/);
   assert.doesNotMatch(html, /name="interest"/);
   assert.match(html, /Check your inbox to confirm/i);
@@ -2165,8 +2225,22 @@ test("unsubscribe link deactivates only the selected permit alert", async () => 
   const firstSubscription = env._state.alertSubscriptions.find(
     (subscription) => subscription.permit_number === "PERM123",
   );
-  const response = await worker.fetch(
+  // A plain GET (link scanner, prefetch) only shows the confirmation page.
+  const page = await worker.fetch(
     new Request(`http://example.com/alerts/unsubscribe?token=${firstSubscription.unsubscribe_token}`),
+    env,
+    createCtx(),
+  );
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<form method="post" action="\/alerts\/unsubscribe\?token=/);
+  assert.equal(firstSubscription.status, "active");
+
+  const response = await worker.fetch(
+    new Request(`http://example.com/alerts/unsubscribe?token=${firstSubscription.unsubscribe_token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: firstSubscription.unsubscribe_token }).toString(),
+    }),
     env,
     createCtx(),
   );
@@ -2291,7 +2365,7 @@ test("GET /permits/:permit_number builds a specific title, meta description, and
   // to the verified address and contractor entity pages.
   const h1Matches = html.match(/<h1[^>]*>/g) || [];
   assert.equal(h1Matches.length, 1);
-  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>\s*<span class="bs-status"[^>]*>[^<]*<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
+  assert.match(html, /<h1 class="permit-title">760 Aloha St, Seattle, WA <span class="permit-title-id">Permit <span class="bs-id">PERM123<\/span><\/span><\/h1>\s*<span class="bs-status"[^>]*>[^<]*<\/span>\s*<p class="permit-summary">([\s\S]*?)<\/p>/);
   const summaryMatch = html.match(/<p class="permit-summary">([\s\S]*?)<\/p>/);
   assert.ok(summaryMatch);
   const summaryHtml = summaryMatch[1];
@@ -2559,8 +2633,10 @@ test("POST /ingest/permit/enrichment/batch links permits from contractor license
   assert.equal(permit.has_required_inspections, 1);
 });
 
-test("POST /ingest/refresh clears imported permit and contractor data after explicit confirmation", async () => {
+test("POST /ingest/refresh no longer exists, so the ingest token cannot wipe production", async () => {
   const env = createEnv();
+  const permitsBefore = env._state.permits.length;
+  const contractorsBefore = env._state.contractors.length;
   const response = await worker.fetch(
     new Request("http://example.com/ingest/refresh", {
       method: "POST",
@@ -2574,14 +2650,25 @@ test("POST /ingest/refresh clears imported permit and contractor data after expl
     createCtx(),
   );
 
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    success: true,
-    permits_deleted: 2,
-    contractors_deleted: 1,
-  });
-  assert.equal(env._state.permits.length, 0);
-  assert.equal(env._state.contractors.length, 0);
+  assert.notEqual(response.status, 200);
+  assert.equal(env._state.permits.length, permitsBefore);
+  assert.equal(env._state.contractors.length, contractorsBefore);
+});
+
+test("POST /ingest/permit/batch rejects more than 100 items", async () => {
+  const env = createEnv();
+  const items = Array.from({ length: 101 }, (_, i) => ({ permit_number: `P${i}`, address: `${i} Main St, Seattle, WA` }));
+  const response = await worker.fetch(
+    new Request("http://example.com/ingest/permit/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Ingest-Token": "test-ingest-token" },
+      body: JSON.stringify({ items }),
+    }),
+    env,
+    createCtx(),
+  );
+  assert.equal(response.status, 413);
+  assert.equal(env._state.permits.some((permit) => permit.permit_number === "P0"), false);
 });
 
 test("POST /ingest/permit rejects requests without the ingest token", async () => {
@@ -2747,10 +2834,10 @@ test("permit and address pages promote source-backed project descriptors and ent
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/7120268-CN"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<title>760 Aloha St, Seattle — MangoApps Tenant improvement for offices \(#7120268-CN\) \| Building Seattle<\/title>/);
   assert.doesNotMatch(permitHtml, /<title>[^<]*MangoApps Tenant improvement for offices \(MangoApps\)/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*MangoApps[^>]*760 ALOHA ST/);
-  assert.match(permitHtml, /<h1 class="permit-title">760 Aloha St, Seattle, WA<\/h1>[\s\S]*MangoApps/);
+  assert.match(permitHtml, /<h1 class="permit-title">760 Aloha St, Seattle, WA <span class="permit-title-id">Permit <span class="bs-id">7120268-CN<\/span><\/span><\/h1>[\s\S]*MangoApps/);
   assert.match(permitHtml, /href="\/address\/760-aloha-st"/);
   assert.match(permitHtml, /href="\/contractor\/d-p-inc-general-contractors"/);
   assert.match(permitHtml, /href="\/project\/tenant-improvement-at-760-aloha-st"/);
@@ -2870,8 +2957,8 @@ test("permit and address pages use safe, useful fallbacks for sparse records", a
   const permitResponse = await worker.fetch(new Request("http://example.com/permits/SPARSE-1"), env, createCtx());
   const permitHtml = await permitResponse.text();
   assert.equal(permitResponse.status, 200);
-  assert.match(permitHtml, /<h1 class="permit-title">Seattle<\/h1>/);
-  assert.match(permitHtml, /<title>Seattle — General Construction \(Unknown\) \| Building Seattle<\/title>/);
+  assert.match(permitHtml, /<h1 class="permit-title">Seattle <span class="permit-title-id">Permit <span class="bs-id">SPARSE-1<\/span><\/span><\/h1>/);
+  assert.match(permitHtml, /<title>Seattle — General Construction permit \(#SPARSE-1\) \| Building Seattle<\/title>/);
   assert.match(permitHtml, /<meta name="description" content="[^>]*Permit SPARSE-1/);
   assert.doesNotMatch(permitHtml, /undefined|null|NaN/);
 
@@ -2915,13 +3002,15 @@ test("entity hub pages highlight their own nav item", async () => {
             return this;
           },
           async all() {
-            return { results: [] };
+            return { results: [{ slug: "one", label: "One", detail: "Seattle", permit_count: 2, total_value: 0 }] };
           },
         };
       },
     },
   };
-  const expected = { contractors: "Contractors", neighborhoods: "Neighborhoods", projects: null, addresses: null };
+  // Projects and Addresses are in the global nav now (audit E20), so their
+  // hubs highlight their own item too.
+  const expected = { contractors: "Contractors", neighborhoods: "Neighborhoods", projects: "Projects", addresses: "Addresses" };
   for (const [slug, label] of Object.entries(expected)) {
     const response = await worker.fetch(new Request(`http://example.com/${slug}`), env, createCtx());
     const html = await response.text();
@@ -3010,7 +3099,7 @@ test("GET /contractor/:slug reports the true permit total, not the capped list l
   assert.match(html, /is a General Contractor operating in Seattle/);
   assert.doesNotMatch(html, /Seattle area construction professional/);
   assert.match(html, /General Contractor · 27 Seattle permits · Downtown/);
-  assert.match(html, /Downtown<\/span>\s*<span[^>]*>1 permit<\/span>/);
+  assert.match(html, /href="\/neighborhood\/downtown"[^>]*>Downtown<\/a>\s*<span[^>]*>1 permit<\/span>/);
   assert.match(html, /· 1 permit<\/span>/);
   assert.match(html, /1 <span[^>]*>day<\/span>/);
   assert.match(html, /Value not reported/);
@@ -3030,8 +3119,11 @@ test("global nav hamburger exposes and toggles its expanded state", async () => 
   }), createCtx());
   const html = await response.text();
   assert.match(html, /aria-controls="global-nav-links"/);
-  assert.match(html, /setAttribute\('aria-expanded',String\(/);
-  assert.match(html, /event\.key==='Escape'/);
+  // Toggle and Escape handling live in the hashed theme boot script, not in
+  // inline on* attributes (the CSP sets script-src-attr 'none').
+  assert.match(html, /setAttribute\("aria-expanded",String\(n\.classList\.toggle\("open"\)\)\)/);
+  assert.match(html, /e\.key!=="Escape"/);
+  assert.doesNotMatch(html, / on(click|keydown)=/);
   assert.match(html, /scroll-padding-block-start: 5rem/);
 });
 
@@ -3069,10 +3161,12 @@ test("GET /projects tells a failed query apart from an empty result", async () =
       },
     },
   });
-  const failed = await (
-    await worker.fetch(new Request("http://example.com/projects"), hubEnv(async () => { throw new Error("no such table"); }), createCtx())
-  ).text();
-  assert.match(failed, /Listings are temporarily unavailable/);
+  // A failed read is a 503 the edge never caches, not a 200 noindex page.
+  const failedResponse = await worker.fetch(new Request("http://example.com/projects"), hubEnv(async () => { throw new Error("no such table"); }), createCtx());
+  const failed = await failedResponse.text();
+  assert.equal(failedResponse.status, 503);
+  assert.equal(failedResponse.headers.get("Cache-Control"), "no-store");
+  assert.equal(failedResponse.headers.get("Retry-After"), "3600");
   assert.doesNotMatch(failed, /No matching projects/);
 
   const empty = await (
@@ -3190,7 +3284,7 @@ test("GET /project/:slug counts a valuation SDCI repeats on demolition permits o
   const response = await worker.fetch(new Request("http://example.com/project/demolition-at-4747-30th-ave-ne"), env, createCtx());
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /\$129,000,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /\$129,000,000<\/span><span class="bs-metric__label">Total value/);
   assert.doesNotMatch(html, /\$1,548,000,000/);
   assert.match(html, /SDCI repeats \$129,000,000 on 12 permits; it is counted once\./);
 });
@@ -3249,7 +3343,7 @@ test("GET /project/:slug judges repeats against every permit at the address", as
     all: (q) => (/project_permits jp/.test(q) ? projectPermits : /SELECT id, permit_number, address_id, value FROM permits WHERE address_id = \?/.test(q) ? addressPermits : []),
   });
   const html = await (await worker.fetch(new Request("http://example.com/project/demolition-at-10-elm-st"), env, createCtx())).text();
-  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Est\. value/);
+  assert.match(html, /\$40,000<\/span><span class="bs-metric__label">Total value/);
   assert.match(html, /SDCI repeats \$13,000,000 on 2 permits; it is counted once\./);
 });
 
@@ -3284,4 +3378,43 @@ test("org contractor pages count every permit, not the 50-row list", async () =>
   assert.match(html, />118<\/span><span class="bs-metric__label">Permits/);
   assert.match(html, /Recent permits \(50 of 118\)/);
   assert.doesNotMatch(html, />50<\/span><span class="bs-metric__label">Permits/);
+});
+
+test("permit pages at one address get distinct titles and H1s (audit E6)", async () => {
+  const titles = new Set();
+  const h1s = new Set();
+  for (const permitNumber of ["UNIT-A", "UNIT-B"]) {
+    const env = createEnv();
+    Object.assign(env._state.permits[0], {
+      permit_number: permitNumber,
+      address: "4500 Rainier Ave S, Seattle, WA",
+      description: "Construct townhouse unit per plan.",
+      detailed_description: null,
+    });
+    const html = await (await worker.fetch(new Request(`http://example.com/permits/${permitNumber}`), env, createCtx())).text();
+    titles.add(html.match(/<title>([^<]*)<\/title>/)[1]);
+    h1s.add(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/)[1]);
+  }
+  assert.equal(titles.size, 2);
+  assert.equal(h1s.size, 2);
+});
+
+test("open permits offer alerts beside the timeline; closed permits do not (audit E5/G13)", async () => {
+  const openEnv = createEnv();
+  Object.assign(openEnv._state.permits[0], { status: "active", contractor_name: "ACME\\BUILD LLC", contractor_slug: "acme" });
+  const openHtml = await (await worker.fetch(new Request("http://example.com/permits/PERM123"), openEnv, createCtx())).text();
+  assert.match(openHtml, /id="permit-alerts"/);
+  assert.match(openHtml, /<dialog id="leadModal"/);
+  assert.match(openHtml, /Work is being performed by/);
+  assert.match(openHtml, /Acme\/Build LLC/);
+  assert.match(openHtml, /href="\/privacy"[^>]*>Privacy notice/);
+
+  const closedEnv = createEnv();
+  Object.assign(closedEnv._state.permits[0], { status: "completed", contractor_name: null, contractor_slug: null, work_performed_by: null });
+  const closedHtml = await (await worker.fetch(new Request("http://example.com/permits/PERM123"), closedEnv, createCtx())).text();
+  assert.match(closedHtml, /id="permit-alerts"[\s\S]*?has no status changes left/);
+  assert.doesNotMatch(closedHtml, /<dialog id="leadModal"/);
+  assert.doesNotMatch(closedHtml, /openModal\(\)/);
+  assert.doesNotMatch(closedHtml, /Get an email if a contractor is attached/);
+  assert.match(closedHtml, /<span class="bs-status"[^>]*>[^<]*Completed/);
 });
