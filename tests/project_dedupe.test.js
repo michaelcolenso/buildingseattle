@@ -7,9 +7,10 @@ import worker, { buildEntityHubQuery, buildEntityHubState } from "../worker.js";
 import { developmentSiteColumns, developmentSiteJoin } from "../development_sites.js";
 
 // A cluster of one permit is not a project: it repeats the record the address
-// page already publishes. These tests pin the two halves of that rule — the
+// page already publishes. Nor is a cluster holding every permit at its address
+// and nothing else. These tests pin the two halves of that rule — the
 // duplicate redirects to the property page, and every project listing
-// (sitemap, hub, address page, permit page) only surfaces multi-permit groups.
+// (sitemap, hub, address page, permit page) only surfaces real projects.
 
 const workerSource = readFileSync(new URL("../worker.js", import.meta.url), "utf8");
 
@@ -46,20 +47,26 @@ function seededDatabase() {
   db.exec(`
     INSERT INTO addresses (id, slug, display_address, normalized_address)
       VALUES (1, '1-single-ave-seattle-wa', '1 Single Ave', '1 SINGLE AVE'),
-             (2, '2-double-ave-seattle-wa', '2 Double Ave', '2 DOUBLE AVE');
+             (2, '2-double-ave-seattle-wa', '2 Double Ave', '2 DOUBLE AVE'),
+             (3, '3-whole-ave-seattle-wa', '3 Whole Ave', '3 WHOLE AVE');
     INSERT INTO projects (id, slug, address_id, name, confidence_score)
       VALUES (10, 'single-permit-cluster', 1, 'Single permit cluster', 50),
-             (11, 'two-permit-project', 2, 'Two permit project', 85);
+             (11, 'two-permit-project', 2, 'Two permit project', 85),
+             (12, 'whole-address-cluster', 3, 'Whole address cluster', 80);
     INSERT INTO permits (id, permit_number, address, address_id, project_id, status, issued_date)
       VALUES (100, '1000001-CN', '1 SINGLE AVE', 1, 10, 'active', '2026-01-01'),
              (101, '1000002-CN', '2 DOUBLE AVE', 2, 11, 'active', '2026-01-02'),
-             (102, '1000003-CN', '2 DOUBLE AVE', 2, 11, 'active', '2026-01-03');
-    INSERT INTO project_permits (project_id, permit_id) VALUES (10, 100), (11, 101), (11, 102);
+             (102, '1000003-CN', '2 DOUBLE AVE', 2, 11, 'active', '2026-01-03'),
+             (103, '1000004-CN', '2 DOUBLE AVE', 2, NULL, 'active', '2026-01-04'),
+             (104, '1000005-CN', '3 WHOLE AVE', 3, 12, 'active', '2026-01-05'),
+             (105, '1000006-CN', '3 WHOLE AVE', 3, 12, 'active', '2026-01-06');
+    INSERT INTO project_permits (project_id, permit_id)
+      VALUES (10, 100), (11, 101), (11, 102), (12, 104), (12, 105);
   `);
   return db;
 }
 
-function createProjectEnv(permits) {
+function createProjectEnv(permits, addressPermitTotal = permits.length + 1) {
   return {
     DB: {
       prepare(query) {
@@ -83,6 +90,10 @@ function createProjectEnv(permits) {
               };
             }
             if (sql.includes("FROM neighborhoods n")) return null;
+            if (sql.includes("SELECT COUNT(*) AS total FROM permits WHERE address_id = ?")) {
+              if (addressPermitTotal instanceof Error) throw addressPermitTotal;
+              return { total: addressPermitTotal };
+            }
             throw new Error(`unexpected first() query: ${sql}`);
           },
           async all() {
@@ -101,10 +112,10 @@ function createCtx() {
   return { waitUntil() {} };
 }
 
-async function fetchProject(permits) {
+async function fetchProject(permits, addressPermitTotal) {
   const response = await worker.fetch(
     new Request("https://buildingseattle.com/project/single-permit-cluster"),
-    createProjectEnv(permits),
+    createProjectEnv(permits, addressPermitTotal),
     createCtx(),
   );
   return { response, html: await response.text() };
@@ -159,6 +170,33 @@ test("a multi-permit project keeps a self-referencing canonical", async () => {
   assert.match(html, /<meta name="robots" content="index,follow,max-image-preview:large">/);
 });
 
+test("a multi-permit project holding every permit at its address redirects there", async () => {
+  const { response, html } = await fetchProject(twoPermits, 2);
+
+  assert.equal(response.status, 301);
+  assert.equal(response.headers.get("Location"), "https://buildingseattle.com/address/1-single-ave-seattle-wa");
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=3600");
+  assert.equal(html, "");
+});
+
+test("a whole-address project stays a page when the address count cannot be read", async () => {
+  const { response } = await fetchProject(twoPermits, new Error("D1 unavailable"));
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Location"), null);
+});
+
+test("a multi-permit project spanning another address stays a page", async () => {
+  const spanning = [twoPermits[0], { ...twoPermits[1], address_id: 2 }];
+  const { response, html } = await fetchProject(spanning, 2);
+
+  assert.equal(response.status, 200);
+  assert.match(
+    html,
+    /<link rel="canonical" href="https:\/\/buildingseattle\.com\/project\/single-permit-cluster">/,
+  );
+});
+
 test("project listings and the project sitemap skip single-permit clusters", () => {
   const db = seededDatabase();
   const queries = queriesEmbeddingPredicate();
@@ -172,6 +210,10 @@ test("project listings and the project sitemap skip single-permit clusters", () 
       !slugs.includes("single-permit-cluster"),
       `single-permit cluster leaked into: ${sql.trim().slice(0, 80)}`,
     );
+    assert.ok(
+      !slugs.includes("whole-address-cluster"),
+      `whole-address cluster leaked into: ${sql.trim().slice(0, 80)}`,
+    );
   }
 
   // The property page still lists the real project on the same address.
@@ -182,8 +224,9 @@ test("project listings and the project sitemap skip single-permit clusters", () 
     ["two-permit-project"],
   );
 
-  const sitemapRows = workerSource.split("/* sitemap:rows:projects */")[1].split("`")[0];
-  const sitemapStats = workerSource.split("/* sitemap:stats:projects */")[1].split("`")[0];
+  const withPredicate = (sql) => sql.replaceAll("${MULTI_PERMIT_PROJECT_SQL}", multiPermitPredicate());
+  const sitemapRows = withPredicate(workerSource.split("/* sitemap:rows:projects */")[1].split("`")[0]);
+  const sitemapStats = withPredicate(workerSource.split("/* sitemap:stats:projects */")[1].split("`")[0]);
   assert.deepEqual(
     db.prepare(sitemapRows).all(50, 0).map((row) => row.slug),
     ["two-permit-project"],
