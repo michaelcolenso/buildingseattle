@@ -1,0 +1,64 @@
+name: Notify on workflow failure
+
+# Reusable job: opens (or comments on) one issue per workflow when a run
+# fails, and closes it with a comment on the next success. Called from the
+# scheduled workflows as their last job:
+#
+#   notify:
+#     needs: [<job>]
+#     if: always() && needs.<job>.result != 'skipped'
+#     permissions:
+#       issues: write
+#     uses: ./.github/workflows/notify-failure.yml
+#     with:
+#       workflow: ${{ github.workflow }}
+#       result: ${{ needs.<job>.result }}
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: "Caller workflow name, used as the issue title"
+        required: true
+        type: string
+      result:
+        description: "The watched job's result (success, failure, cancelled, skipped)"
+        required: true
+        type: string
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    timeout-minutes: 5
+    steps:
+      - name: Open, update or resolve the failure issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          JOB_RESULT: ${{ inputs.result }}
+          WORKFLOW_NAME: ${{ inputs.workflow }}
+        with:
+          script: |
+            const result = process.env.JOB_RESULT;
+            const workflow = process.env.WORKFLOW_NAME;
+            const title = `[Workflow failure] ${workflow}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: "open",
+              per_page: 100,
+            });
+            const existing = issues.find((issue) => issue.title === title && !issue.pull_request);
+            const failed = result === "failure" || result === "cancelled";
+            if (failed) {
+              const body = `**${workflow}** ended with \`${result}\` (${context.eventName} on ${context.ref}, ${new Date().toISOString()}).\n\n[Workflow run](${runUrl})`;
+              if (existing) {
+                await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
+              } else {
+                await github.rest.issues.create({ ...context.repo, title, body });
+              }
+            } else if (result === "success" && existing) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body: `Recovered: [run](${runUrl}) succeeded at ${new Date().toISOString()}.` });
+              await github.rest.issues.update({ ...context.repo, issue_number: existing.number, state: "closed", state_reason: "completed" });
+            }

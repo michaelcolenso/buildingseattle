@@ -52,6 +52,8 @@ node --check worker.js                     # syntax check (CI runs this too)
 
 CI (`.github/workflows/test.yml`) runs `node --check worker.js`, all Node tests, and pytest on every push. Secrets for local `wrangler dev` go in `.dev.vars` (gitignored).
 
+Scheduled workflows (`enrich-daily`, `development-sites`, `data-freshness`) end with the reusable `.github/workflows/notify-failure.yml` job, which opens or comments on a `[Workflow failure] <name>` issue and closes it on the next success. `data-freshness.yml` runs `python3 scripts/check_freshness.py` daily against the public `/api/stats` (fails if `latest_record_date` is >4 days or `last_ingest_at` >36 h old). Third-party actions are pinned to full commit SHAs (Dependabot keeps them current); pass dispatch inputs through `env:`, never inline `${{ }}` in `run:`.
+
 ### Gumroad Dataset Build
 
 ```bash

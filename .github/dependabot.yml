@@ -1,0 +1,16 @@
+# Keeps the SHA-pinned GitHub Actions (and the locked npm/uv dependencies)
+# current. Dependabot updates the pinned SHA and its "# vX.Y.Z" comment.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
