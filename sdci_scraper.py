@@ -7,98 +7,14 @@ import httpx
 from datetime import datetime
 import json
 
-# Seattle neighborhood bounding boxes (approximate lat/lng rectangles)
-# Derived from general neighborhood boundaries
-NEIGHBORHOOD_BOUNDS = [
-    # (name, min_lat, max_lat, min_lng, max_lng)
-    # — Northwest Seattle —
-    ("Ballard",             47.668, 47.692, -122.410, -122.370),
-    ("Crown Hill",          47.692, 47.710, -122.390, -122.370),
-    ("Fremont",             47.650, 47.668, -122.370, -122.340),
-    ("Phinney Ridge",       47.668, 47.692, -122.370, -122.350),
-    ("Greenwood",           47.692, 47.710, -122.370, -122.340),
-    ("Broadview",           47.710, 47.735, -122.370, -122.340),
-    ("Bitter Lake",         47.710, 47.735, -122.360, -122.335),
-    ("Magnolia",            47.630, 47.670, -122.420, -122.385),
-    ("Interbay",            47.640, 47.660, -122.385, -122.365),
-    # — North Seattle —
-    ("Green Lake",          47.668, 47.692, -122.360, -122.325),
-    ("Wallingford",         47.650, 47.668, -122.340, -122.315),
-    ("Roosevelt",           47.668, 47.685, -122.325, -122.310),
-    ("Maple Leaf",          47.685, 47.710, -122.325, -122.300),
-    ("Northgate",           47.700, 47.720, -122.340, -122.310),
-    ("Licton Springs",      47.692, 47.710, -122.345, -122.325),
-    ("Haller Lake",         47.715, 47.735, -122.345, -122.320),
-    ("Pinehurst",           47.720, 47.740, -122.320, -122.295),
-    # — Northeast Seattle —
-    ("University District", 47.650, 47.668, -122.315, -122.290),
-    ("Ravenna",             47.668, 47.688, -122.310, -122.280),
-    ("Wedgwood",            47.685, 47.700, -122.300, -122.280),
-    ("View Ridge",          47.680, 47.695, -122.280, -122.260),
-    ("Sand Point",          47.680, 47.695, -122.270, -122.250),
-    ("Laurelhurst",         47.660, 47.680, -122.285, -122.265),
-    ("Bryant",              47.668, 47.685, -122.290, -122.270),
-    ("Meadowbrook",         47.700, 47.715, -122.300, -122.280),
-    ("Lake City",           47.710, 47.735, -122.300, -122.270),
-    ("Olympic Hills",       47.720, 47.740, -122.300, -122.275),
-    # — Central Seattle —
-    ("Queen Anne",          47.625, 47.650, -122.370, -122.345),
-    ("South Lake Union",    47.620, 47.635, -122.345, -122.325),
-    ("Eastlake",            47.635, 47.650, -122.335, -122.320),
-    ("Capitol Hill",        47.610, 47.640, -122.325, -122.300),
-    ("First Hill",          47.600, 47.615, -122.330, -122.315),
-    ("Central District",    47.600, 47.620, -122.310, -122.290),
-    ("Madrona",             47.608, 47.625, -122.295, -122.280),
-    ("Leschi",              47.596, 47.608, -122.295, -122.280),
-    ("Madison Park",        47.630, 47.645, -122.290, -122.270),
-    ("Madison Valley",      47.625, 47.640, -122.300, -122.285),
-    ("Montlake",            47.640, 47.655, -122.310, -122.290),
-    # — Downtown —
-    ("Downtown",            47.600, 47.620, -122.345, -122.325),
-    ("Belltown",            47.612, 47.622, -122.355, -122.340),
-    ("Pioneer Square",      47.598, 47.605, -122.340, -122.325),
-    ("International District", 47.593, 47.602, -122.330, -122.315),
-    # — South Seattle —
-    ("SoDo",                47.565, 47.595, -122.345, -122.320),
-    ("Georgetown",          47.540, 47.565, -122.340, -122.310),
-    ("Beacon Hill",         47.555, 47.600, -122.315, -122.295),
-    ("North Beacon Hill",   47.575, 47.600, -122.315, -122.295),
-    ("Mt Baker",            47.570, 47.590, -122.295, -122.280),
-    ("Columbia City",       47.555, 47.575, -122.295, -122.275),
-    ("Hillman City",        47.545, 47.558, -122.295, -122.275),
-    ("Rainier Beach",       47.505, 47.535, -122.275, -122.245),
-    ("Seward Park",         47.530, 47.560, -122.270, -122.250),
-    ("Rainier Valley",      47.520, 47.555, -122.300, -122.270),
-    ("South Park",          47.520, 47.540, -122.340, -122.315),
-    ("Dunlap",              47.530, 47.545, -122.280, -122.260),
-    # — West Seattle —
-    ("West Seattle",        47.530, 47.600, -122.420, -122.345),
-    ("Admiral",             47.570, 47.585, -122.410, -122.380),
-    ("Alki",                47.576, 47.592, -122.420, -122.400),
-    ("White Center",        47.505, 47.530, -122.380, -122.345),
-]
-
-
-def detect_neighborhood(lat, lng):
-    """Detect Seattle neighborhood from coordinates using bounding boxes."""
-    if not lat or not lng:
-        return "Other"
-
-    try:
-        lat = float(lat)
-        lng = float(lng)
-    except (ValueError, TypeError):
-        return "Other"
-
-    for name, min_lat, max_lat, min_lng, max_lng in NEIGHBORHOOD_BOUNDS:
-        if min_lat <= lat <= max_lat and min_lng <= lng <= max_lng:
-            return name
-
-    # Within Seattle city limits but not in a named neighborhood
-    if 47.49 <= lat <= 47.74 and -122.44 <= lng <= -122.24:
-        return "Other Seattle"
-
-    return "Other"
+# Status and neighborhood mappings are shared with worker.js through
+# data/sdci_mappings.json (see sdci_mappings.py); edit them there, not here.
+from sdci_mappings import (  # noqa: E402,F401  (NEIGHBORHOOD_BOUNDS re-exported)
+    NEIGHBORHOOD_BOUNDS,
+    detect_neighborhood,
+    map_status,
+    raw_statuses_for,
+)
 
 
 def classify_permit_type(permitclass, permittypemapped):
@@ -158,24 +74,6 @@ def clean_str(raw):
     return text
 
 
-def map_status(status):
-    """Map permit status to simplified categories."""
-    if not status:
-        return "new"
-    s = str(status).lower()
-    if "issue" in s or "active" in s or "approved" in s:
-        return "active"
-    elif "pending" in s or "review" in s or "applied" in s:
-        return "pending"
-    elif "complete" in s or "final" in s or "closed" in s:
-        return "completed"
-    elif "expir" in s:
-        return "expired"
-    elif "cancel" in s:
-        return "cancelled"
-    return "new"
-
-
 def extract_date(date_str):
     """Extract date in YYYY-MM-DD format."""
     if not date_str:
@@ -200,22 +98,21 @@ def slugify(name):
     return slug.strip('-')
 
 
-STATUS_FILTER_MAP = {
-    "active":   "(statuscurrent LIKE '%Issue%' OR statuscurrent LIKE '%Active%' OR statuscurrent LIKE '%Approved%')",
-    "pending":  "(statuscurrent LIKE '%Pending%' OR statuscurrent LIKE '%Review%' OR statuscurrent LIKE '%Applied%')",
-    "completed":"(statuscurrent LIKE '%Complete%' OR statuscurrent LIKE '%Final%' OR statuscurrent LIKE '%Closed%')",
-    "expired":  "(statuscurrent LIKE '%Expir%')",
-    "cancelled":"(statuscurrent LIKE '%Cancel%')",
-    "new":      "(statuscurrent IS NULL OR statuscurrent = '')",
-}
-
-
 def build_status_filter(status):
-    """Build a SODA $where clause fragment for a given simplified status."""
+    """Build a SODA $where fragment selecting the raw SDCI statuses of one stored status."""
     if not status:
         return None
     s = status.lower().strip()
-    return STATUS_FILTER_MAP.get(s)
+    if s == "new":
+        return "(statuscurrent IS NULL OR statuscurrent = '' OR upper(statuscurrent) IN ({}))".format(
+            ", ".join("'{}'".format(v.upper().replace("'", "''")) for v in raw_statuses_for("new"))
+        )
+    values = raw_statuses_for(s)
+    if not values:
+        return None
+    return "upper(statuscurrent) IN ({})".format(
+        ", ".join("'{}'".format(v.upper().replace("'", "''")) for v in values)
+    )
 
 
 async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
@@ -235,6 +132,7 @@ async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
         "parentpermitnum", "relatedmup",
         "numberreviewcycles", "totaldaysplanreview", "daysoutcorrections",
         "housingunitsadded", "housingunitsremoved",
+        ":updated_at",
     ])
 
     headers = {
@@ -256,7 +154,7 @@ async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
                 "$select": select_fields,
                 "$limit": batch_size,
                 "$offset": offset,
-                "$order": "applieddate DESC",
+                "$order": "applieddate DESC, permitnum",
                 "$where": where_clause,
             }
 
@@ -326,6 +224,8 @@ async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
                 "type": permit_type,
                 "value": extract_value(item.get("estprojectcost")),
                 "status": map_status(item.get("statuscurrent")),
+                "status_raw": clean_str(item.get("statuscurrent")) or None,
+                "source_updated_at": item.get(":updated_at"),
                 "description": item.get("description", "No description"),
                 "applied_date": extract_date(item.get("applieddate")),
                 "issued_date": extract_date(item.get("issueddate")),
@@ -346,8 +246,11 @@ async def fetch_seattle_permits(total=5000, page_size=1000, status_filter=None):
                 "permit_class": item.get("permitclass", ""),
                 "permit_type_detail": item.get("permittypemapped", ""),
                 "zip_code": item.get("originalzip", ""),
+                "zip": item.get("originalzip") or None,
                 "latitude": item.get("latitude"),
                 "longitude": item.get("longitude"),
+                "lat": item.get("latitude"),
+                "lng": item.get("longitude"),
                 "contractor_name": contractor_name if contractor_name.lower() not in ("n/a", "none", "") else "",
                 "applicant_name": "", # Still empty as it's not in the API
                 "link": item.get("link", {}).get("url", "") if isinstance(item.get("link"), dict) else "",
