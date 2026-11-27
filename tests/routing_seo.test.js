@@ -82,3 +82,14 @@ test("/permits?page=N past the last page is a 404; the last page still renders",
   const filteredBeyond = await worker.fetch(new Request(`${BASE}/permits?type=commercial&page=9`), permitBrowserEnv(120), ctx);
   assert.equal(filteredBeyond.status, 404);
 });
+
+test("JSON and agent endpoints carry exactly one X-Robots-Tag: noindex; HTML pages carry none", async () => {
+  for (const path of ["/api/stats", "/api/adu-dadu", "/api/permits", "/openapi.json", "/.well-known/api-catalog", "/api/nope"]) {
+    const response = await worker.fetch(new Request(`${BASE}${path}`), emptyEnv(), ctx);
+    assert.equal(response.headers.get("X-Robots-Tag"), "noindex", path);
+  }
+  for (const path of ["/api-docs", "/about", "/robots.txt"]) {
+    const response = await worker.fetch(new Request(`${BASE}${path}`), emptyEnv(), ctx);
+    assert.equal(response.headers.get("X-Robots-Tag"), null, path);
+  }
+});

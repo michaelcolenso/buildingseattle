@@ -154,7 +154,7 @@ export default {
     return withHtmlEdgeCache(request, env, ctx, async () => {
     const url = new URL(request.url);
     const path = url.pathname;
-    const secure = (response) => withSecurityHeaders(response);
+    const secure = (response) => withCrawlerHeaders(path, withSecurityHeaders(response));
 
     if (request.method === "OPTIONS") {
       return secure(new Response(null, { headers: corsHeaders }));
@@ -665,6 +665,21 @@ function withSecurityHeaders(response) {
     statusText: response.statusText,
     headers,
   });
+}
+
+// JSON and agent endpoints stay crawlable (agents fetch them) but out of the
+// search index (D12). A header set, not append, so another layer setting the
+// same directive cannot produce a duplicate.
+const NOINDEX_PATH_PREFIXES = ["/api/", "/mcp", "/openapi.json", "/.well-known/"];
+
+export function isNoindexMachinePath(path) {
+  return NOINDEX_PATH_PREFIXES.some((prefix) => path === prefix.replace(/\/$/, "") || path.startsWith(prefix));
+}
+
+function withCrawlerHeaders(path, response) {
+  if (!isNoindexMachinePath(path)) return response;
+  response.headers.set("X-Robots-Tag", "noindex");
+  return response;
 }
 
 function timeAgo(date) {
