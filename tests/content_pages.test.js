@@ -232,3 +232,18 @@ test("plan-review cycle figures share the reviewed population (audit G7)", async
   assert.match(html, /Commercial Construction/);
   assert.match(html, /1 day<span class="pr-sub"> · 1 permit/);
 });
+
+test("permit browser filters and cards use human labels (audit E17)", async () => {
+  const env = routedEnv([
+    ["SELECT DISTINCT type FROM permits", [{ type: "residential" }]],
+    ["SELECT DISTINCT status FROM permits", [{ status: "in_review" }]],
+    ["SELECT COUNT(*) as total", { total: 1 }],
+    ["SELECT p.*, c.name as contractor_name", [{ ...openPermit, address: "1 MAIN ST, SEATTLE, WA", contractor_name: "ACME\\BUILD LLC", contractor_slug: "acme", issued_date: "2026-03-20" }]],
+  ]);
+  const html = await (await worker.fetch(new Request("https://buildingseattle.com/permits"), env, ctx())).text();
+  assert.match(html, /<option value="residential">Residential Construction<\/option>/);
+  assert.match(html, /<option value="in_review">In review<\/option>/);
+  assert.match(html, /1 Main St, Seattle, WA<\/a>/);
+  assert.match(html, />Acme\/Build LLC<\/a>/);
+  assert.match(html, /Mar 20, 2026/);
+});

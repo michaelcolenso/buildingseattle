@@ -83,6 +83,7 @@ test("displayName gives one display form for names and addresses (audit E17/G8)"
   assert.equal(displayName("100 PINE ST, SEATTLE, WA"), "100 Pine St, Seattle, WA");
   assert.equal(displayName("SELLEN CONSTR CO INC"), "Sellen Constr CO INC");
   assert.equal(displayName("McKinstry Co"), "McKinstry Co");
+  assert.equal(displayName("<img src=x>"), "<img src=x>");
   assert.equal(displayName("  "), "");
 });
 

@@ -77,16 +77,15 @@ export function smartTitleCase(value) {
 /**
  * One display form for entity names and addresses on every template: SDCI
  * shorthand backslashes ("DSN\CNST") become slashes, whitespace collapses, and
- * ALL-CAPS (or all-lowercase) source text is title-cased. Mixed-case names
- * are kept as written ("McKinstry Co").
+ * ALL-CAPS source text is title-cased. Anything else is kept as written
+ * ("McKinstry Co").
  */
 export function displayName(value) {
   const text = String(value ?? "").replace(/\\+/g, "/").replace(/\s+/g, " ").trim();
   if (!text) return "";
   const letters = text.replace(/[^A-Za-z]/g, "");
   const isAllCaps = letters && letters === letters.toUpperCase();
-  const isAllLower = letters && letters === letters.toLowerCase();
-  return isAllCaps || isAllLower ? smartTitleCase(text) : text;
+  return isAllCaps ? smartTitleCase(text) : text;
 }
 
 const STATUS_LABELS = {

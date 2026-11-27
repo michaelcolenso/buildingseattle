@@ -2271,13 +2271,13 @@ async function renderPermitBrowser(request, env) {
   const typeOptions = types
     .map(
       (item) =>
-        `<option value="${escapeHtml(item.type)}"${item.type === type ? " selected" : ""}>${escapeHtml(item.type)}</option>`,
+        `<option value="${escapeHtml(item.type)}"${item.type === type ? " selected" : ""}>${escapeHtml(permitTypeLabel(item.type))}</option>`,
     )
     .join("");
   const statusOptions = statuses
     .map(
       (item) =>
-        `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}</option>`,
+        `<option value="${escapeHtml(item.status)}"${item.status === status ? " selected" : ""}>${escapeHtml(statusLabel(item.status))}</option>`,
     )
     .join("");
   const isFilteredView = Boolean(q || neighborhood || type || status);
@@ -2317,13 +2317,11 @@ async function renderPermitBrowser(request, env) {
   const cards = permits
     .map((permit) => {
       const value = permit.value ? `$${Number(permit.value).toLocaleString("en-US")}` : "Value not reported";
-      const issued = permit.issued_date
-        ? new Date(permit.issued_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-        : "Date pending";
+      const issued = permit.issued_date ? formatCalendarDate(permit.issued_date) || "Date pending" : "Date pending";
       const contractor = permit.contractor_slug
-        ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(permit.contractor_name || "View contractor")}</a>`
+        ? `<a href="/contractor/${encodeURIComponent(permit.contractor_slug)}" style="color:var(--accent);text-decoration:none;font-weight:600;">${escapeHtml(displayName(permit.contractor_name) || "View contractor")}</a>`
         : `<span style="color:var(--text-muted);">Contractor not linked yet</span>`;
-      const address = escapeHtml(permit.address_display || permit.address || "Unknown address");
+      const address = escapeHtml(displayName(permit.address_display || permit.address) || "Unknown address");
       const addressLink = permit.address_slug
         ? `<a href="/address/${encodeURIComponent(permit.address_slug)}" style="color:var(--accent);text-decoration:none;font-size:0.78rem;font-weight:650;">Property history &rarr;</a>`
         : "";
@@ -2339,7 +2337,7 @@ async function renderPermitBrowser(request, env) {
             ${addressLink}
             <div class="permit-meta">${neighborhoodLabel} &bull; ${typeLabel} &bull; ${issued}</div>
           </div>
-          ${bsStatusPill(permit.status, humanize(permit.status || "new"))}
+          ${bsStatusPill(permit.status, statusLabel(permit.status || "new"))}
         </div>
         <p class="permit-description">${description}</p>
         <div class="permit-footer">
