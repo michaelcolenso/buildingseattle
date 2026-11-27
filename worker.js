@@ -7978,25 +7978,49 @@ async function strictFirst(env, sql, binds = []) {
 }
 
 // Whether the entity graph can be trusted to say "this entity does not exist"
-// or "this entity is empty" right now. Not while the latest rebuild is running
-// or did not finish cleanly (slugs and links may be half-moved), and, when
-// `requireLinked`, not while any permit still waits to be linked to an
-// address. A failed read counts as unsettled. No rebuild row yet counts as
-// settled.
+// or "this entity is empty" right now. A failed read counts as unsettled; no
+// rebuild row yet counts as settled. Otherwise, by the latest entity_graph
+// row in ingest_logs:
+// - running or error: unsettled (slugs and links may be half-moved);
+// - partial (the rebuild finished but could not link every permit):
+//   unsettled only while recent, i.e. ended less than
+//   PARTIAL_REBUILD_UNSETTLED_HOURS ago. A partial rebuild that keeps
+//   recurring (the same permits fail to link every day) would otherwise keep
+//   every unknown or emptied entity URL at 503 forever (review N8); after the
+//   window a re-run cannot change the answer until the next rebuild, so the
+//   graph's answer stands;
+// - success: settled.
+// With `requireLinked`, it is also unsettled while any addressable permit
+// waits to be linked to an address. After an aged partial rebuild, only
+// permits written since that rebuild ended count (the ones it left unlinked
+// are known failures, not work in progress).
+const PARTIAL_REBUILD_UNSETTLED_HOURS = 6;
+
 async function entityGraphSettled(env, { requireLinked = false } = {}) {
   let check = null;
+  const addressable = `address_id IS NULL AND NOT ${unaddressableAddressSql("permits")}`;
   try {
     check = await env.DB.prepare(
-      `SELECT EXISTS(SELECT 1 FROM permits WHERE address_id IS NULL AND NOT ${unaddressableAddressSql("permits")}) AS pending,
-              (SELECT status FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1) AS last_rebuild`,
+      `SELECT EXISTS(SELECT 1 FROM permits WHERE ${addressable}) AS pending,
+              r.status AS last_rebuild,
+              CASE WHEN r.status = 'partial' AND r.end_time IS NOT NULL
+                        AND (julianday('now') - julianday(r.end_time)) * 24 >= ${PARTIAL_REBUILD_UNSETTLED_HOURS}
+                   THEN 1 ELSE 0 END AS partial_aged,
+              EXISTS(SELECT 1 FROM permits WHERE ${addressable}
+                       AND COALESCE(updated_at, created_at) > r.end_time) AS pending_since_rebuild
+       FROM (SELECT 1) AS one
+       LEFT JOIN (SELECT status, end_time FROM ingest_logs WHERE run_type = 'entity_graph' ORDER BY id DESC LIMIT 1) AS r ON 1 = 1`,
     ).first();
   } catch (error) {
     console.error("Entity graph integrity check failed:", error);
     return false;
   }
   if (!check) return !requireLinked;
-  if (["running", "error", "partial"].includes(check.last_rebuild)) return false;
-  return !requireLinked || Number(check.pending) === 0;
+  const agedPartial = check.last_rebuild === "partial" && Number(check.partial_aged) === 1;
+  if (["running", "error"].includes(check.last_rebuild)) return false;
+  if (check.last_rebuild === "partial" && !agedPartial) return false;
+  if (!requireLinked) return true;
+  return agedPartial ? Number(check.pending_since_rebuild) === 0 : Number(check.pending) === 0;
 }
 
 // 404 for a slug the graph does not have, unless the graph is mid-rebuild or

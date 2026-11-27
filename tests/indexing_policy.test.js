@@ -591,3 +591,36 @@ test("/alerts and /privacy are sitemapped and answer 200, index, self-canonical 
     assert.ok(isIndexedSelf(page, path), `${path} answers ${page.status} ${page.robots} ${page.canonical}`);
   }
 });
+
+test("a partial rebuild is unsettled only while recent, so entity URLs do not stay 503 forever (N8)", async () => {
+  const logPartial = (db, hoursAgo) =>
+    db.exec(`INSERT INTO ingest_logs (source, run_type, status, start_time, end_time)
+             VALUES ('test', 'entity_graph', 'partial', datetime('now', '-${hoursAgo + 0.1} hours'), datetime('now', '-${hoursAgo} hours'))`);
+
+  // Just ended partial: unknown slugs and emptied entities wait (503).
+  const fresh = seededDatabase();
+  logPartial(fresh, 1);
+  assert.equal((await get(createEnv(fresh), "/project/nope")).status, 503);
+  assert.equal((await get(createEnv(fresh), "/neighborhood/emptyville")).status, 503);
+
+  // Seven hours later, with the same permit it failed to link still unlinked:
+  // the graph's answer stands (404 / 410).
+  const aged = seededDatabase();
+  aged.exec("INSERT INTO permits (id, permit_number, address, created_at, updated_at) VALUES (900, '7000900-CN', '9 UNLINKED AVE', datetime('now', '-30 hours'), datetime('now', '-30 hours'))");
+  logPartial(aged, 7);
+  assert.equal((await get(createEnv(aged), "/project/nope")).status, 404);
+  assert.equal((await get(createEnv(aged), "/neighborhood/emptyville")).status, 410);
+
+  // A permit written after that rebuild and not linked yet is new work: wait.
+  aged.exec("INSERT INTO permits (id, permit_number, address) VALUES (901, '7000901-CN', '10 NEW AVE')");
+  assert.equal((await get(createEnv(aged), "/neighborhood/emptyville")).status, 503);
+  assert.equal((await get(createEnv(aged), "/project/nope")).status, 404, "unknown slugs do not wait on linking");
+
+  // running / error stay unsettled regardless of age.
+  for (const status of ["running", "error"]) {
+    const db = seededDatabase();
+    db.exec(`INSERT INTO ingest_logs (source, run_type, status, start_time, end_time)
+             VALUES ('test', 'entity_graph', '${status}', datetime('now', '-3 days'), datetime('now', '-3 days'))`);
+    assert.equal((await get(createEnv(db), "/project/nope")).status, 503, status);
+  }
+});

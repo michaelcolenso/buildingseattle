@@ -177,7 +177,9 @@ tables are linked from `permits` via `permits.address_id` / `permits.project_id`
   changed permits, and deletes entities last, so a failure never unlinks live pages. Outcomes are logged in
   `ingest_logs` as `run_type = 'entity_graph'` (`running` while it works, then `success` / `partial` / `error`);
   `/address/:slug` answers 503 (not 410) for an address with no permits while any permit is unlinked or the
-  latest rebuild is not `success`. Every entity route (address, project, neighborhood, contractor, hubs) answers
+  latest rebuild is `running`, `error` or a `partial` that ended less than 6 hours ago
+  (`PARTIAL_REBUILD_UNSETTLED_HOURS`). After that window a `partial` counts as settled and only permits written since
+  it ended count as unlinked, so a rebuild that ends `partial` every day cannot hold entity URLs at 503 forever. Every entity route (address, project, neighborhood, contractor, hubs) answers
   503 + `Retry-After` + `no-store` when a read that decides its status or robots fails, and 404s an unknown slug only
   while the graph is settled (`entityGraphSettled`).
 - Which entity URLs are published (indexable, sitemapped, listed in hubs) is decided once, in `entity_hubs.js`
