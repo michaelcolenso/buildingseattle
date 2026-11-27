@@ -548,3 +548,36 @@ test("the SEO monitor flags a sitemapped entity that stops answering 200 (D5)", 
   assert.ok(flagged.length > 0);
   assert.ok(flagged.every((path) => path.startsWith("/address/")), flagged.join());
 });
+
+test("policy-noindex entity pages are edge-cached; a failed lookup's 503 never is (S6)", async () => {
+  const original = globalThis.caches;
+  const store = new Map();
+  globalThis.caches = {
+    default: {
+      async match(request) { return store.get(request.url)?.clone(); },
+      async put(request, response) { store.set(request.url, response.clone()); },
+    },
+  };
+  const waits = [];
+  const cacheCtx = { waitUntil: (promise) => waits.push(promise) };
+  try {
+    const env = createEnv(seededDatabase());
+    const path = "/address/200-pine-st-seattle-wa"; // single-permit address: noindex by policy
+    const first = await worker.fetch(new Request(`${BASE}${path}`), env, cacheCtx);
+    await Promise.all(waits);
+    assert.equal(first.status, 200);
+    assert.match(await first.text(), /<meta name="robots" content="noindex,follow">/);
+    assert.equal([...store.keys()].filter((key) => key.includes(path)).length, 1, "noindex entity page stored");
+    assert.match(first.headers.get("Cache-Control") || "", /s-maxage=/);
+
+    const failing = createEnv(seededDatabase(), { faults: ["FROM addresses WHERE slug"] });
+    const before = store.size;
+    const broken = await worker.fetch(new Request(`${BASE}/address/400-oak-st-seattle-wa`), failing, cacheCtx);
+    await Promise.all(waits);
+    assert.equal(broken.status, 503);
+    assert.equal(store.size, before, "503 not stored");
+  } finally {
+    if (original === undefined) delete globalThis.caches;
+    else globalThis.caches = original;
+  }
+});

@@ -56,7 +56,7 @@ import {
 } from "./security.js";
 import {
   cacheControlForbidsStore, dataDay, edgeCacheControl, hardenAdminResponse, htmlCacheKeyUrl, htmlCacheVersion,
-  isAdminPath, isNoindexResponse, pageCacheTtl,
+  isAdminPath, isNoindexResponse, noindexIsCacheable, pageCacheTtl,
 } from "./edge_cache.js";
 import { claimEntityGraphRebuild, ENTITY_GRAPH_LOCKED_CODE, entityGraphRebuildLockedError } from "./rebuild_lock.js";
 import { clampAnalyticsDays, pageViewSampleRate, pageViewTemplatePath, recordPageView, runPageViewRetention } from "./page_views.js";
@@ -169,9 +169,10 @@ function edgeHtmlCache() {
 // (edge_cache.js) keeps only the query parameters the route reads, plus the
 // template/deploy version and the data day, so tracking or random parameters
 // share the warm copy. A page is stored only when its own URL is already in
-// key form, is a 200, allows caching, and is not noindex (transient D1 errors
-// render as noindex "no data" pages). Admin responses are hardened here so no
-// route can forget it.
+// key form, is a 200, and allows caching (never a 5xx or no-store). A noindex
+// page is stored only on the entity routes (noindexIsCacheable), whose noindex
+// is policy; elsewhere a transient D1 error can render a noindex "no data"
+// page. Admin responses are hardened here so no route can forget it.
 async function withHtmlEdgeCache(request, env, ctx, render) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -203,7 +204,7 @@ async function withHtmlEdgeCache(request, env, ctx, render) {
     if (contentType.includes("text/html") && ttl > 0 && !cacheControlForbidsStore(response.headers.get("Cache-Control"))) {
       const html = await response.text();
       const headers = new Headers(response.headers);
-      if (isNoindexResponse(headers, html)) {
+      if (isNoindexResponse(headers, html) && !noindexIsCacheable(path)) {
         return new Response(html, { status: response.status, statusText: response.statusText, headers });
       }
       // s-maxage + stale-while-revalidate also let the owner's dashboard

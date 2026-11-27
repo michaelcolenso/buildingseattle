@@ -15,8 +15,8 @@
 // - F14: the version is the deployed Worker version (CF_VERSION_METADATA)
 //   when available, so a template change can no longer serve stale HTML after
 //   a deploy that forgot to bump HTML_CACHE_VERSION; no-store/private/no-cache
-//   responses are never stored; noindex pages (which include the
-//   "no data" pages a transient D1 error produces) are never stored.
+//   responses are never stored; noindex pages are stored only on the entity
+//   routes in NOINDEX_EDGE_CACHEABLE_PREFIXES (review S6, below).
 // - A6: /admin* and /api/admin* responses are `private, no-store`, noindex,
 //   and carry no CORS headers.
 
@@ -108,6 +108,22 @@ export function edgeHtmlTtl(pageTtl) {
 export function edgeCacheControl(pageTtl) {
   const edgeTtl = edgeHtmlTtl(pageTtl);
   return `public, max-age=${pageTtl}, s-maxage=${edgeTtl}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`;
+}
+
+// Entity routes whose noindex is publishing policy (thin projects, single-
+// permit addresses, org roles, placeholder neighborhoods; entity_hubs.js),
+// decided from strict reads: when a read that decides status or robots fails
+// they answer 503 + no-store instead (entityGraphSettled / strictFirst in
+// worker.js). Their noindex 200s are therefore stable and are edge-cached
+// like any other page, so crawlers re-fetching them no longer hit D1 every
+// time (review S6). Other routes (insights, /permits, hubs) still derive
+// noindex from reads that swallow errors (safeAll -> "no data"), so their
+// noindex pages are not stored.
+export const NOINDEX_EDGE_CACHEABLE_PREFIXES = ["/address/", "/project/", "/contractor/", "/neighborhood/"];
+
+export function noindexIsCacheable(path) {
+  const p = String(path || "");
+  return NOINDEX_EDGE_CACHEABLE_PREFIXES.some((prefix) => p.startsWith(prefix) && p.length > prefix.length);
 }
 
 // True when the response asks search engines not to index it, by header or by

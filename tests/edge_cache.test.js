@@ -12,6 +12,7 @@ import {
   htmlCacheVersion,
   isAdminPath,
   isNoindexResponse,
+  noindexIsCacheable,
   pageCacheTtl,
 } from "../edge_cache.js";
 
@@ -67,6 +68,15 @@ test("TTLs: long-lived pages get a day at the edge, short ones an hour, uncachea
   assert.equal(edgeHtmlTtl(0), 0);
   assert.equal(edgeCacheControl(3600), "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600");
   assert.equal(edgeCacheControl(300), "public, max-age=300, s-maxage=3600, stale-while-revalidate=3600");
+});
+
+test("only entity routes may store a noindex page (S6)", () => {
+  for (const path of ["/address/1-main-st-seattle-wa", "/project/x", "/contractor/acme", "/neighborhood/ballard"]) {
+    assert.equal(noindexIsCacheable(path), true, path);
+  }
+  for (const path of ["/permits", "/insights/plan-review", "/projects", "/addresses", "/address/", "/neighborhoods", "/"]) {
+    assert.equal(noindexIsCacheable(path), false, path);
+  }
 });
 
 test("noindex detection reads the robots header and the head's robots meta only", () => {
@@ -148,7 +158,7 @@ test("a tracking-tagged URL is served the warm copy but never stored under its o
   });
 });
 
-test("noindex pages (including empty-data pages after a DB error) and errors are never stored", async () => {
+test("noindex pages outside the entity routes (e.g. empty-data pages after a DB error) and errors are never stored", async () => {
   await withCaches(async (store) => {
     const env = emptyEnv();
     // With no permits the browser renders the noindex "0 permits" page.
